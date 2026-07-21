@@ -3,6 +3,7 @@
 PQViewer is a local molecular trajectory viewer built on PQAnalysis. It pairs
 indexed trajectory access with a fast Three.js interface for playback,
 inspection, forces, cells, bonds, and energy traces.
+Periodic cells use PQ's centered `[-0.5, 0.5)` convention.
 
 ## Install
 
@@ -30,6 +31,15 @@ Add a PQ energy file when available:
 
 ```bash
 pqviewer path/to/md.xyz --energy path/to/md.en
+```
+
+Same-stem PQ companions are detected automatically; override them explicitly:
+
+```bash
+pqviewer path/to/md.xyz \
+  --forces path/to/md.force \
+  --velocities path/to/md.vel \
+  --charges path/to/md.chrg
 ```
 
 The viewer runs locally and opens in the default browser. Use `--no-open` for

@@ -1,6 +1,7 @@
 """Tests for the local PQViewer API and CLI."""
 
 import os
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 import pytest
@@ -87,6 +88,20 @@ def test_empty_trajectory_has_a_manifest_and_no_frames(tmp_path):
     assert client.get("/api/frames/0").status_code == 404
 
 
+def test_api_accepts_a_force_companion(tmp_path):
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    forces = tmp_path / "water.force"
+    forces.write_text("1\n\nH 1 2 3\n", encoding="utf-8")
+
+    manifest = TestClient(
+        create_app(trajectory, forces_path=forces)
+    ).get("/api/manifest").json()
+
+    assert manifest["properties"]["forces"]["unit"] == "kcal/(mol Å)"
+    assert manifest["companion_files"]["forces"]["complete"] is True
+
+
 def test_reload_cli_uses_factory_and_restores_environment(
     tmp_path,
     monkeypatch,
@@ -110,6 +125,43 @@ def test_reload_cli_uses_factory_and_restores_environment(
     assert call["kwargs"]["port"] == 8765
     assert call["trajectory"] == str(trajectory.resolve())
     assert os.environ[cli.TRAJECTORY_ENV] == previous
+
+
+def test_cli_passes_companion_paths(tmp_path, monkeypatch):
+    trajectory = tmp_path / "run.xyz"
+    forces = tmp_path / "run.force"
+    velocities = tmp_path / "run.vel"
+    charges = tmp_path / "run.chrg"
+    for path in (trajectory, forces, velocities, charges):
+        path.write_text("", encoding="utf-8")
+    captured = {}
+
+    def fake_create_app(path, **kwargs):
+        captured["path"] = path
+        captured.update(kwargs)
+        dataset = SimpleNamespace(manifest=lambda: {})
+        return SimpleNamespace(state=SimpleNamespace(dataset=dataset))
+
+    monkeypatch.setattr(cli, "create_app", fake_create_app)
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
+
+    cli.main(
+        [
+            str(trajectory),
+            "--forces",
+            str(forces),
+            "--velocities",
+            str(velocities),
+            "--charges",
+            str(charges),
+            "--no-open",
+        ]
+    )
+
+    assert captured["path"] == trajectory
+    assert captured["forces_path"] == forces
+    assert captured["velocities_path"] == velocities
+    assert captured["charges_path"] == charges
 
 
 def test_cli_rejects_info_without_energy(tmp_path, capsys):

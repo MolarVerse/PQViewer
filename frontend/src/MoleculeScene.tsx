@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { frameArray } from "./api";
-import type { FrameData, LayerState, Manifest } from "./types";
+import type { CellOffset, FrameData, LayerState, Manifest } from "./types";
 
 interface MoleculeSceneProps {
   manifest: Manifest;
@@ -10,7 +10,16 @@ interface MoleculeSceneProps {
   layers: LayerState;
   selectedAtom: number | null;
   resetSignal: number;
+  cellOffset: CellOffset;
+  forceScale: number;
   onSelect: (index: number | null) => void;
+}
+
+type Pbc = [boolean, boolean, boolean];
+
+interface CellBasis {
+  vectors: [THREE.Vector3, THREE.Vector3, THREE.Vector3];
+  reciprocal: [THREE.Vector3, THREE.Vector3, THREE.Vector3];
 }
 
 interface SceneState {
@@ -20,20 +29,44 @@ interface SceneState {
   controls: OrbitControls;
   root: THREE.Group;
   atoms: THREE.InstancedMesh | null;
-  bonds: THREE.LineSegments | null;
-  cell: THREE.LineSegments | null;
-  forces: THREE.LineSegments | null;
+  bonds: THREE.InstancedMesh | null;
+  cell: THREE.Group | null;
+  forces: THREE.Group | null;
   selection: THREE.Mesh;
   atomCount: number;
   bondPairs: Array<[number, number]>;
   bondsForCount: number;
+  inferredForFrame: FrameData | null;
   radii: number[];
   positions: Float32Array | null;
   fittedForCount: number;
   lastResetSignal: number;
 }
 
-const accent = new THREE.Color("#40d9ff");
+interface Segment {
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+}
+
+const accent = new THREE.Color("#55ddff");
+const forceColor = new THREE.Color("#ffba55");
+const yAxis = new THREE.Vector3(0, 1, 0);
+
+export function centeredFramePositions(frame: FrameData | null, count: number): Float32Array | null {
+  const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+  if (!positions) return null;
+  const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
+  return wrapPositions(positions, Math.min(count, Math.floor(positions.length / 3)), basis, resolvePbc(frame, basis));
+}
+
+export function hasFrameCell(frame: FrameData | null): boolean {
+  return Boolean(createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"])));
+}
+
+export function framePbc(frame: FrameData | null): Pbc {
+  const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
+  return resolvePbc(frame, basis);
+}
 
 export function MoleculeScene({
   manifest,
@@ -41,15 +74,15 @@ export function MoleculeScene({
   layers,
   selectedAtom,
   resetSignal,
+  cellOffset,
+  forceScale,
   onSelect,
 }: MoleculeSceneProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<SceneState | null>(null);
   const selectRef = useRef(onSelect);
-  const selectedRef = useRef(selectedAtom);
 
   selectRef.current = onSelect;
-  selectedRef.current = selectedAtom;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -63,11 +96,11 @@ export function MoleculeScene({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.2;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#0d1012");
-    scene.fog = new THREE.FogExp2("#0d1012", 0.018);
+    scene.background = new THREE.Color("#090c0e");
+    scene.fog = new THREE.FogExp2("#090c0e", 0.014);
 
     const camera = new THREE.PerspectiveCamera(34, 1, 0.02, 5000);
     camera.position.set(7, 5, 9);
@@ -80,11 +113,11 @@ export function MoleculeScene({
 
     const root = new THREE.Group();
     scene.add(root);
-    scene.add(new THREE.HemisphereLight("#f5f0e8", "#151a1d", 2.4));
-    const key = new THREE.DirectionalLight("#ffffff", 3.2);
+    scene.add(new THREE.HemisphereLight("#fffaf0", "#12181c", 3.1));
+    const key = new THREE.DirectionalLight("#ffffff", 3.8);
     key.position.set(7, 10, 8);
     scene.add(key);
-    const rim = new THREE.DirectionalLight("#6bdcf5", 0.9);
+    const rim = new THREE.DirectionalLight("#70e1ff", 1.25);
     rim.position.set(-8, -2, -5);
     scene.add(rim);
 
@@ -94,7 +127,7 @@ export function MoleculeScene({
         color: accent,
         wireframe: true,
         transparent: true,
-        opacity: 0.72,
+        opacity: 0.8,
       }),
     );
     selection.visible = false;
@@ -114,6 +147,7 @@ export function MoleculeScene({
       atomCount: 0,
       bondPairs: [],
       bondsForCount: -1,
+      inferredForFrame: null,
       radii: [],
       positions: null,
       fittedForCount: -1,
@@ -158,7 +192,7 @@ export function MoleculeScene({
     renderer.setAnimationLoop(() => {
       controls.update();
       if (selection.visible && selection.material instanceof THREE.MeshBasicMaterial) {
-        selection.material.opacity = 0.66 + Math.sin(clock.getElapsedTime() * 4.2) * 0.16;
+        selection.material.opacity = 0.72 + Math.sin(clock.getElapsedTime() * 4.2) * 0.14;
       }
       renderer.render(scene, camera);
     });
@@ -177,41 +211,51 @@ export function MoleculeScene({
 
   useEffect(() => {
     const state = stateRef.current;
-    const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
-    if (!state || !positions) return;
+    const sourcePositions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+    if (!state || !sourcePositions) return;
 
-    const count = Math.min(manifest.topology.atom_count, Math.floor(positions.length / 3));
+    const count = Math.min(manifest.topology.atom_count, Math.floor(sourcePositions.length / 3));
     const atomicNumbers = resolveAtomicNumbers(manifest, count);
+    const cellArray = frameArray(frame, ["cell", "cell_vectors", "box"]);
+    const basis = createCellBasis(cellArray);
+    const pbc = resolvePbc(frame, basis);
+    const positions = centeredFramePositions(frame, count) ?? sourcePositions;
     const topologyChanged = count !== state.atomCount;
+
     if (topologyChanged) {
       replaceAtoms(state, count, atomicNumbers);
       state.bondsForCount = -1;
+      state.inferredForFrame = null;
       state.fittedForCount = -1;
     }
     state.positions = positions;
     updateAtoms(state, positions, atomicNumbers);
 
-    if (state.bondsForCount !== count) {
-      const declared = normalizeBonds(manifest.topology.bonds, count);
-      state.bondPairs = declared.length > 0 ? declared : inferBonds(positions, state.radii, count);
+    const declared = normalizeBonds(manifest.topology.bonds, count);
+    if (declared.length > 0 && state.bondsForCount !== count) {
+      state.bondPairs = declared;
       state.bondsForCount = count;
+      state.inferredForFrame = null;
+    } else if (declared.length === 0 && state.inferredForFrame !== frame) {
+      state.bondPairs = inferBonds(positions, state.radii, count, basis, pbc);
+      state.bondsForCount = -1;
+      state.inferredForFrame = frame;
     }
-    updateBonds(state, positions);
-    const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+    updateBonds(state, positions, basis, pbc);
+    updateCell(state, basis, cellOffset);
     const forces = frameArray(frame, ["forces", "force"]);
-    updateCell(state, cell);
-    updateForces(state, positions, forces, count);
+    updateForces(state, positions, forces, count, forceScale);
 
-    state.atoms && (state.atoms.visible = layers.atoms);
-    state.bonds && (state.bonds.visible = layers.bonds);
-    state.cell && (state.cell.visible = layers.cell && Boolean(cell && cell.length >= 9));
-    state.forces && (state.forces.visible = layers.forces && Boolean(forces && forces.length >= count * 3));
+    if (state.atoms) state.atoms.visible = layers.atoms;
+    if (state.bonds) state.bonds.visible = layers.bonds;
+    if (state.cell) state.cell.visible = layers.cell && Boolean(basis);
+    if (state.forces) state.forces.visible = layers.forces && Boolean(forces && forces.length >= count * 3);
 
     const selected = selectedAtom !== null && selectedAtom >= 0 && selectedAtom < count ? selectedAtom : null;
     if (selected !== null && layers.atoms) {
       const radius = state.radii[selected] ?? 0.35;
       state.selection.position.fromArray(positions, selected * 3);
-      state.selection.scale.setScalar(radius * 1.48);
+      state.selection.scale.setScalar(radius * 1.5);
       state.selection.visible = true;
     } else {
       state.selection.visible = false;
@@ -222,7 +266,7 @@ export function MoleculeScene({
       state.fittedForCount = count;
       state.lastResetSignal = resetSignal;
     }
-  }, [frame, layers, manifest, resetSignal, selectedAtom]);
+  }, [cellOffset, forceScale, frame, layers, manifest, resetSignal, selectedAtom]);
 
   return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" />;
 }
@@ -230,14 +274,10 @@ export function MoleculeScene({
 function replaceAtoms(state: SceneState, count: number, atomicNumbers: number[]): void {
   if (state.atoms) {
     state.root.remove(state.atoms);
-    state.atoms.geometry.dispose();
-    disposeMaterial(state.atoms.material);
+    disposeObject(state.atoms);
   }
-  const geometry = new THREE.SphereGeometry(1, 28, 18);
-  const material = new THREE.MeshStandardMaterial({
-    roughness: 0.48,
-    metalness: 0.03,
-  });
+  const geometry = new THREE.SphereGeometry(1, 30, 20);
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.02 });
   const atoms = new THREE.InstancedMesh(geometry, material, count);
   atoms.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   state.radii = atomicNumbers.map(displayRadius);
@@ -262,53 +302,103 @@ function updateAtoms(state: SceneState, positions: Float32Array, atomicNumbers: 
   atoms.computeBoundingSphere();
 }
 
-function updateBonds(state: SceneState, positions: Float32Array): void {
-  const values = new Float32Array(state.bondPairs.length * 6);
-  state.bondPairs.forEach(([a, b], index) => {
-    values.set(positions.subarray(a * 3, a * 3 + 3), index * 6);
-    values.set(positions.subarray(b * 3, b * 3 + 3), index * 6 + 3);
+function updateBonds(state: SceneState, positions: Float32Array, basis: CellBasis | null, pbc: Pbc): void {
+  if (state.bonds) {
+    state.root.remove(state.bonds);
+    disposeObject(state.bonds);
+    state.bonds = null;
+  }
+
+  const segments = state.bondPairs.flatMap(([a, b]) => periodicBondSegments(positions, a, b, basis, pbc));
+  if (segments.length === 0) return;
+
+  const geometry = new THREE.CylinderGeometry(0.038, 0.038, 1, 9, 1, false);
+  const material = new THREE.MeshStandardMaterial({
+    color: "#b8c2c7",
+    roughness: 0.56,
+    metalness: 0.01,
+    transparent: true,
+    opacity: 0.82,
   });
-  state.bonds = replaceLines(
-    state,
-    state.bonds,
-    values,
-    new THREE.LineBasicMaterial({ color: "#899197", transparent: true, opacity: 0.56 }),
-  );
+  const mesh = new THREE.InstancedMesh(geometry, material, segments.length);
+  const dummy = new THREE.Object3D();
+  const direction = new THREE.Vector3();
+  segments.forEach(({ from, to }, index) => {
+    direction.subVectors(to, from);
+    const length = direction.length();
+    dummy.position.copy(from).add(to).multiplyScalar(0.5);
+    dummy.quaternion.setFromUnitVectors(yAxis, direction.normalize());
+    dummy.scale.set(1, length, 1);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(index, dummy.matrix);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.computeBoundingSphere();
+  state.bonds = mesh;
+  state.root.add(mesh);
 }
 
-function updateCell(state: SceneState, cell: Float32Array | null): void {
-  if (!cell || cell.length < 9) {
-    if (state.cell) state.cell.visible = false;
+function updateCell(state: SceneState, basis: CellBasis | null, offset: CellOffset): void {
+  if (state.cell) {
+    state.root.remove(state.cell);
+    disposeObject(state.cell);
+    state.cell = null;
+  }
+  if (!basis) {
     return;
   }
-  const a = new THREE.Vector3(cell[0], cell[1], cell[2]);
-  const b = new THREE.Vector3(cell[3], cell[4], cell[5]);
-  const c = new THREE.Vector3(cell[6], cell[7], cell[8]);
-  const corners = [
-    new THREE.Vector3(),
-    a,
-    b,
-    c,
-    a.clone().add(b),
-    a.clone().add(c),
-    b.clone().add(c),
-    a.clone().add(b).add(c),
-  ];
-  const edges = [
-    [0, 1], [0, 2], [0, 3], [1, 4], [1, 5], [2, 4],
-    [2, 6], [3, 5], [3, 6], [4, 7], [5, 7], [6, 7],
-  ];
+  const group = new THREE.Group();
+  const isPrimary = offset.every((value) => value === 0);
+  if (!isPrimary) {
+    group.add(cellLines(
+      basis,
+      [0, 0, 0],
+      new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.2 }),
+    ));
+  }
+  group.add(cellLines(
+    basis,
+    offset,
+    new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.78 }),
+  ));
+  state.cell = group;
+  state.root.add(group);
+}
+
+function cellLines(
+  basis: CellBasis,
+  offset: CellOffset,
+  material: THREE.LineBasicMaterial,
+): THREE.LineSegments {
+  const corners: THREE.Vector3[] = [];
+  for (let i = 0; i <= 1; i += 1) {
+    for (let j = 0; j <= 1; j += 1) {
+      for (let k = 0; k <= 1; k += 1) {
+        corners.push(toCartesian(
+          new THREE.Vector3(offset[0] + i - 0.5, offset[1] + j - 0.5, offset[2] + k - 0.5),
+          basis,
+        ));
+      }
+    }
+  }
+  const index = (i: number, j: number, k: number) => i * 4 + j * 2 + k;
+  const edges: Array<[number, number]> = [];
+  for (let i = 0; i <= 1; i += 1) {
+    for (let j = 0; j <= 1; j += 1) edges.push([index(i, j, 0), index(i, j, 1)]);
+    for (let k = 0; k <= 1; k += 1) edges.push([index(i, 0, k), index(i, 1, k)]);
+  }
+  for (let j = 0; j <= 1; j += 1) {
+    for (let k = 0; k <= 1; k += 1) edges.push([index(0, j, k), index(1, j, k)]);
+  }
+
   const values = new Float32Array(edges.length * 6);
-  edges.forEach(([from, to], index) => {
-    corners[from].toArray(values, index * 6);
-    corners[to].toArray(values, index * 6 + 3);
+  edges.forEach(([from, to], edge) => {
+    corners[from].toArray(values, edge * 6);
+    corners[to].toArray(values, edge * 6 + 3);
   });
-  state.cell = replaceLines(
-    state,
-    state.cell,
-    values,
-    new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.42 }),
-  );
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(values, 3));
+  return new THREE.LineSegments(geometry, material);
 }
 
 function updateForces(
@@ -316,50 +406,214 @@ function updateForces(
   positions: Float32Array,
   forces: Float32Array | null,
   count: number,
+  forceScale: number,
 ): void {
-  if (!forces || forces.length < count * 3) {
-    if (state.forces) state.forces.visible = false;
-    return;
+  if (state.forces) {
+    state.root.remove(state.forces);
+    disposeObject(state.forces);
+    state.forces = null;
   }
-  let largest = 0;
+  if (!forces || forces.length < count * 3) return;
+
+  const magnitudes: number[] = [];
   for (let index = 0; index < count; index += 1) {
     const offset = index * 3;
-    largest = Math.max(largest, Math.hypot(forces[offset], forces[offset + 1], forces[offset + 2]));
+    const magnitude = Math.hypot(forces[offset], forces[offset + 1], forces[offset + 2]);
+    if (Number.isFinite(magnitude) && magnitude > 1e-12) magnitudes.push(magnitude);
   }
-  const scale = largest > 0 ? Math.min(1, 1.8 / largest) : 0;
-  const values = new Float32Array(count * 6);
+  if (magnitudes.length === 0) return;
+  magnitudes.sort((a, b) => a - b);
+  const reference = magnitudes[Math.floor((magnitudes.length - 1) * 0.9)];
+  const scale = (1.45 / reference) * forceScale;
+  const arrows: Array<{ tail: THREE.Vector3; tip: THREE.Vector3; direction: THREE.Vector3; head: number }> = [];
+  const direction = new THREE.Vector3();
+  const atom = new THREE.Vector3();
+
   for (let index = 0; index < count; index += 1) {
-    const source = index * 3;
-    const target = index * 6;
-    values.set(positions.subarray(source, source + 3), target);
-    values[target + 3] = positions[source] + forces[source] * scale;
-    values[target + 4] = positions[source + 1] + forces[source + 1] * scale;
-    values[target + 5] = positions[source + 2] + forces[source + 2] * scale;
+    const offset = index * 3;
+    direction.set(forces[offset], forces[offset + 1], forces[offset + 2]);
+    const magnitude = direction.length();
+    if (!Number.isFinite(magnitude) || magnitude <= 1e-12) continue;
+    direction.normalize();
+    atom.fromArray(positions, offset);
+    const length = magnitude * scale;
+    const head = Math.min(0.24, Math.max(0.075, length * 0.24));
+    const startGap = (state.radii[index] ?? 0.3) * 1.03;
+    arrows.push({
+      tail: atom.clone().addScaledVector(direction, startGap),
+      tip: atom.clone().addScaledVector(direction, startGap + length),
+      direction: direction.clone(),
+      head: Math.min(head, length * 0.5),
+    });
   }
-  state.forces = replaceLines(
-    state,
-    state.forces,
-    values,
-    new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.9 }),
+  if (arrows.length === 0) return;
+
+  const group = new THREE.Group();
+  const shaftGeometry = new THREE.CylinderGeometry(0.018, 0.018, 1, 8, 1, false);
+  const shafts = new THREE.InstancedMesh(
+    shaftGeometry,
+    new THREE.MeshBasicMaterial({ color: forceColor }),
+    arrows.length,
+  );
+  const dummy = new THREE.Object3D();
+  const shaftEnd = new THREE.Vector3();
+  arrows.forEach((arrow, index) => {
+    shaftEnd.copy(arrow.tip).addScaledVector(arrow.direction, -arrow.head * 0.48);
+    const length = arrow.tail.distanceTo(shaftEnd);
+    dummy.position.copy(arrow.tail).add(shaftEnd).multiplyScalar(0.5);
+    dummy.quaternion.setFromUnitVectors(yAxis, arrow.direction);
+    dummy.scale.set(1, length, 1);
+    dummy.updateMatrix();
+    shafts.setMatrixAt(index, dummy.matrix);
+  });
+  shafts.instanceMatrix.needsUpdate = true;
+  group.add(shafts);
+
+  const headGeometry = new THREE.ConeGeometry(1, 1, 9);
+  const heads = new THREE.InstancedMesh(
+    headGeometry,
+    new THREE.MeshBasicMaterial({ color: forceColor }),
+    arrows.length,
+  );
+  arrows.forEach((arrow, index) => {
+    dummy.position.copy(arrow.tip).addScaledVector(arrow.direction, -arrow.head * 0.5);
+    dummy.quaternion.setFromUnitVectors(yAxis, arrow.direction);
+    dummy.scale.set(arrow.head * 0.34, arrow.head, arrow.head * 0.34);
+    dummy.updateMatrix();
+    heads.setMatrixAt(index, dummy.matrix);
+  });
+  heads.instanceMatrix.needsUpdate = true;
+  group.add(heads);
+  state.forces = group;
+  state.root.add(group);
+}
+
+function createCellBasis(cell: Float32Array | null): CellBasis | null {
+  if (!cell || cell.length < 9) return null;
+  const a = new THREE.Vector3(cell[0], cell[1], cell[2]);
+  const b = new THREE.Vector3(cell[3], cell[4], cell[5]);
+  const c = new THREE.Vector3(cell[6], cell[7], cell[8]);
+  const bCrossC = new THREE.Vector3().crossVectors(b, c);
+  const determinant = a.dot(bCrossC);
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-10) return null;
+  return {
+    vectors: [a, b, c],
+    reciprocal: [
+      bCrossC.multiplyScalar(1 / determinant),
+      new THREE.Vector3().crossVectors(c, a).multiplyScalar(1 / determinant),
+      new THREE.Vector3().crossVectors(a, b).multiplyScalar(1 / determinant),
+    ],
+  };
+}
+
+function resolvePbc(frame: FrameData | null, basis: CellBasis | null): Pbc {
+  if (!basis) return [false, false, false];
+  const values = frame?.header.pbc;
+  if (!values) return [true, true, true];
+  return [Boolean(values?.[0]), Boolean(values?.[1]), Boolean(values?.[2])];
+}
+
+function wrapPositions(source: Float32Array, count: number, basis: CellBasis | null, pbc: Pbc): Float32Array {
+  const result = new Float32Array(source.subarray(0, count * 3));
+  if (!basis || !pbc.some(Boolean)) return result;
+  const point = new THREE.Vector3();
+  for (let index = 0; index < count; index += 1) {
+    point.fromArray(source, index * 3);
+    const fractional = toFractional(point, basis);
+    if (pbc[0]) fractional.x -= Math.floor(fractional.x + 0.5);
+    if (pbc[1]) fractional.y -= Math.floor(fractional.y + 0.5);
+    if (pbc[2]) fractional.z -= Math.floor(fractional.z + 0.5);
+    toCartesian(fractional, basis).toArray(result, index * 3);
+  }
+  return result;
+}
+
+function toFractional(point: THREE.Vector3, basis: CellBasis): THREE.Vector3 {
+  return new THREE.Vector3(
+    point.dot(basis.reciprocal[0]),
+    point.dot(basis.reciprocal[1]),
+    point.dot(basis.reciprocal[2]),
   );
 }
 
-function replaceLines(
-  state: SceneState,
-  current: THREE.LineSegments | null,
-  positions: Float32Array,
-  material: THREE.LineBasicMaterial,
-): THREE.LineSegments {
-  if (current) {
-    state.root.remove(current);
-    current.geometry.dispose();
-    disposeMaterial(current.material);
+function toCartesian(fractional: THREE.Vector3, basis: CellBasis): THREE.Vector3 {
+  return new THREE.Vector3()
+    .addScaledVector(basis.vectors[0], fractional.x)
+    .addScaledVector(basis.vectors[1], fractional.y)
+    .addScaledVector(basis.vectors[2], fractional.z);
+}
+
+function minimumImageFraction(delta: THREE.Vector3, basis: CellBasis, pbc: Pbc): THREE.Vector3 {
+  const base = delta.clone();
+  if (pbc[0]) base.x -= Math.floor(base.x + 0.5);
+  if (pbc[1]) base.y -= Math.floor(base.y + 0.5);
+  if (pbc[2]) base.z -= Math.floor(base.z + 0.5);
+
+  let best = base.clone();
+  let bestLength = toCartesian(best, basis).lengthSq();
+  for (let i = pbc[0] ? -1 : 0; i <= (pbc[0] ? 1 : 0); i += 1) {
+    for (let j = pbc[1] ? -1 : 0; j <= (pbc[1] ? 1 : 0); j += 1) {
+      for (let k = pbc[2] ? -1 : 0; k <= (pbc[2] ? 1 : 0); k += 1) {
+        const candidate = new THREE.Vector3(base.x + i, base.y + j, base.z + k);
+        const length = toCartesian(candidate, basis).lengthSq();
+        if (length < bestLength - 1e-12) {
+          best = candidate;
+          bestLength = length;
+        }
+      }
+    }
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  const lines = new THREE.LineSegments(geometry, material);
-  state.root.add(lines);
-  return lines;
+  return best;
+}
+
+function periodicBondSegments(
+  positions: Float32Array,
+  aIndex: number,
+  bIndex: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): Segment[] {
+  const a = new THREE.Vector3().fromArray(positions, aIndex * 3);
+  const b = new THREE.Vector3().fromArray(positions, bIndex * 3);
+  if (!basis || !pbc.some(Boolean)) return [{ from: a, to: b }];
+
+  const start = toFractional(a, basis);
+  const directDelta = toFractional(b, basis).sub(start);
+  const delta = minimumImageFraction(directDelta, basis, pbc);
+  const crossings = [0, 1];
+  const starts = [start.x, start.y, start.z];
+  const changes = [delta.x, delta.y, delta.z];
+
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (!pbc[axis] || Math.abs(changes[axis]) < 1e-12) continue;
+    const end = starts[axis] + changes[axis];
+    const low = Math.min(starts[axis], end);
+    const high = Math.max(starts[axis], end);
+    const firstFace = Math.ceil(low - 0.5 + 1e-9);
+    const lastFace = Math.floor(high - 0.5 - 1e-9);
+    for (let image = firstFace; image <= lastFace; image += 1) {
+      const time = (image + 0.5 - starts[axis]) / changes[axis];
+      if (time > 1e-9 && time < 1 - 1e-9) crossings.push(time);
+    }
+  }
+
+  crossings.sort((left, right) => left - right);
+  const times = crossings.filter((value, index) => index === 0 || Math.abs(value - crossings[index - 1]) > 1e-8);
+  const result: Segment[] = [];
+  for (let index = 0; index + 1 < times.length; index += 1) {
+    const fromTime = times[index];
+    const toTime = times[index + 1];
+    const middle = start.clone().addScaledVector(delta, (fromTime + toTime) * 0.5);
+    const shift = new THREE.Vector3(
+      pbc[0] ? Math.floor(middle.x + 0.5) : 0,
+      pbc[1] ? Math.floor(middle.y + 0.5) : 0,
+      pbc[2] ? Math.floor(middle.z + 0.5) : 0,
+    );
+    const from = toCartesian(start.clone().addScaledVector(delta, fromTime).sub(shift), basis);
+    const to = toCartesian(start.clone().addScaledVector(delta, toTime).sub(shift), basis);
+    if (from.distanceToSquared(to) > 1e-10) result.push({ from, to });
+  }
+  return result;
 }
 
 function normalizeBonds(input: Manifest["topology"]["bonds"], count: number): Array<[number, number]> {
@@ -383,41 +637,72 @@ function addBond(result: Array<[number, number]>, a: number | undefined, b: numb
   }
 }
 
-function inferBonds(positions: Float32Array, radii: number[], count: number): Array<[number, number]> {
+function inferBonds(
+  positions: Float32Array,
+  radii: number[],
+  count: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): Array<[number, number]> {
   if (count > 5000) return [];
-  const cellSize = 3.2;
-  const cells = new Map<string, number[]>();
   const result: Array<[number, number]> = [];
+  const largestRadius = radii.reduce((largest, radius) => Math.max(largest, radius), 0.35);
+  const cellSize = largestRadius * 5.8;
+  const cells = new Map<string, Array<[number, number, number, number]>>();
+  const shifts = periodicShifts(basis, pbc);
+
   for (let index = 0; index < count; index += 1) {
     const offset = index * 3;
-    const cell = [
-      Math.floor(positions[offset] / cellSize),
-      Math.floor(positions[offset + 1] / cellSize),
-      Math.floor(positions[offset + 2] / cellSize),
-    ];
-    for (let x = -1; x <= 1; x += 1) {
-      for (let y = -1; y <= 1; y += 1) {
-        for (let z = -1; z <= 1; z += 1) {
-          const peers = cells.get(`${cell[0] + x}:${cell[1] + y}:${cell[2] + z}`) ?? [];
-          for (const peer of peers) {
-            const other = peer * 3;
-            const distance = Math.hypot(
-              positions[offset] - positions[other],
-              positions[offset + 1] - positions[other + 1],
-              positions[offset + 2] - positions[other + 2],
-            );
-            const cutoff = (radii[index] + radii[peer]) * 2.9;
-            if (distance > 0.2 && distance <= cutoff) result.push([peer, index]);
+    const x = positions[offset];
+    const y = positions[offset + 1];
+    const z = positions[offset + 2];
+    const cx = Math.floor(x / cellSize);
+    const cy = Math.floor(y / cellSize);
+    const cz = Math.floor(z / cellSize);
+    const nearest = new Map<number, number>();
+
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const images = cells.get(`${cx + dx}:${cy + dy}:${cz + dz}`) ?? [];
+          for (const [peer, px, py, pz] of images) {
+            const distance = Math.hypot(x - px, y - py, z - pz);
+            const previous = nearest.get(peer);
+            if (previous === undefined || distance < previous) nearest.set(peer, distance);
           }
         }
       }
     }
-    const key = `${cell[0]}:${cell[1]}:${cell[2]}`;
-    const bucket = cells.get(key) ?? [];
-    bucket.push(index);
-    cells.set(key, bucket);
+
+    for (const [peer, distance] of nearest) {
+      const cutoff = (radii[index] + radii[peer]) * 2.9;
+      if (distance > 0.2 && distance <= cutoff) result.push([peer, index]);
+    }
+
+    for (const shift of shifts) {
+      const px = x + shift.x;
+      const py = y + shift.y;
+      const pz = z + shift.z;
+      const key = `${Math.floor(px / cellSize)}:${Math.floor(py / cellSize)}:${Math.floor(pz / cellSize)}`;
+      const bucket = cells.get(key) ?? [];
+      bucket.push([index, px, py, pz]);
+      cells.set(key, bucket);
+    }
   }
   return result;
+}
+
+function periodicShifts(basis: CellBasis | null, pbc: Pbc): THREE.Vector3[] {
+  if (!basis || !pbc.some(Boolean)) return [new THREE.Vector3()];
+  const shifts: THREE.Vector3[] = [];
+  for (let i = pbc[0] ? -1 : 0; i <= (pbc[0] ? 1 : 0); i += 1) {
+    for (let j = pbc[1] ? -1 : 0; j <= (pbc[1] ? 1 : 0); j += 1) {
+      for (let k = pbc[2] ? -1 : 0; k <= (pbc[2] ? 1 : 0); k += 1) {
+        shifts.push(toCartesian(new THREE.Vector3(i, j, k), basis));
+      }
+    }
+  }
+  return shifts;
 }
 
 function fitCamera(state: SceneState, positions: Float32Array, count: number): void {
@@ -428,7 +713,7 @@ function fitCamera(state: SceneState, positions: Float32Array, count: number): v
   const center = bounds.getCenter(new THREE.Vector3());
   const size = bounds.getSize(new THREE.Vector3());
   const radius = Math.max(size.length() * 0.5, 1.6);
-  const distance = radius / Math.tan(THREE.MathUtils.degToRad(state.camera.fov * 0.5)) * 1.25;
+  const distance = radius / Math.tan(THREE.MathUtils.degToRad(state.camera.fov * 0.5)) * 1.2;
   const direction = new THREE.Vector3(1, 0.68, 1.15).normalize();
   state.camera.position.copy(center).addScaledVector(direction, distance);
   state.camera.near = Math.max(distance / 500, 0.01);
@@ -448,7 +733,7 @@ function displayRadius(atomicNumber: number): number {
 }
 
 function elementColor(atomicNumber: number): THREE.Color {
-  return new THREE.Color(elementColors[atomicNumber] ?? "#b7bdc0");
+  return new THREE.Color(elementColors[atomicNumber] ?? "#c7ced1");
 }
 
 function disposeObject(root: THREE.Object3D): void {
@@ -479,8 +764,8 @@ const covalentRadii: Record<number, number> = {
 };
 
 const elementColors: Record<number, string> = {
-  1: "#f2efe8", 2: "#d9f6f5", 3: "#b890d8", 4: "#c6d787", 5: "#d6a07b", 6: "#7e878d",
-  7: "#6689d7", 8: "#e36961", 9: "#79bd82", 10: "#8dd6d8", 11: "#a583d0", 12: "#91ad75",
-  13: "#b8aaa0", 14: "#c49b78", 15: "#d78f50", 16: "#d8c45e", 17: "#68b77b", 18: "#82c9ce",
-  19: "#9972c4", 20: "#88a86e", 26: "#b87a59", 29: "#b98964", 30: "#9a9fa3", 35: "#9d4e43", 53: "#795499",
+  1: "#fffdf7", 2: "#e4ffff", 3: "#c69bea", 4: "#d3e795", 5: "#e4ab82", 6: "#9da9af",
+  7: "#7399ef", 8: "#f2766d", 9: "#89d394", 10: "#9aebed", 11: "#b18ce4", 12: "#a0bf82",
+  13: "#c7b8ae", 14: "#d5aa82", 15: "#ed9e54", 16: "#ead462", 17: "#74ca88", 18: "#8bdce2",
+  19: "#aa7bdd", 20: "#99ba7b", 26: "#cf8964", 29: "#d19a71", 30: "#adb3b7", 35: "#b65a4c", 53: "#8d61b5",
 };

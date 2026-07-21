@@ -43,6 +43,192 @@ class _FrameSpan:
     cell_source: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class _CompanionSpec:
+    traj_format: TrajectoryFormat
+    extensions: tuple[str, ...]
+    atom_fields: int
+    unit: str
+
+
+_COMPANION_SPECS = {
+    "forces": _CompanionSpec(
+        TrajectoryFormat.FORCE,
+        (".force", ".frc", ".forces"),
+        4,
+        "kcal/(mol Å)",
+    ),
+    "velocities": _CompanionSpec(
+        TrajectoryFormat.VEL,
+        (".vel", ".velocs", ".velocity"),
+        4,
+        "Å/s",
+    ),
+    "charges": _CompanionSpec(
+        TrajectoryFormat.CHARGE,
+        (".charge", ".chrg", ".charges"),
+        2,
+        "e",
+    ),
+}
+
+
+class _CompanionFile:
+    """Indexed access to one PQ trajectory companion."""
+
+    def __init__(
+        self,
+        path: Path,
+        spec: _CompanionSpec,
+        md_format: MDEngineFormat,
+    ) -> None:
+        self.path = path
+        self.spec = spec
+        self.md_format = md_format
+        self._spans: list[_FrameSpan] = []
+        self._scan_offset = 0
+        self._file_id: tuple[int, int] | None = None
+        self._anchor_start = 0
+        self._anchor = b""
+        self._scan_frames()
+
+    @property
+    def frame_count(self) -> int:
+        return len(self._spans)
+
+    @property
+    def unit(self) -> str | None:
+        if self.md_format == MDEngineFormat.PQ:
+            return self.spec.unit
+        return None
+
+    def read(self, index: int, atom_names: list[str]) -> np.ndarray | None:
+        if index < 0 or index >= self.frame_count:
+            return None
+
+        span = self._spans[index]
+        with self.path.open("rb") as handle:
+            handle.seek(span.start)
+            frame_text = handle.read(span.end - span.start).decode("utf-8")
+
+        reader = get_frame_reader(self.spec.traj_format, md_format=self.md_format)
+        system = reader.read(frame_text, traj_format=self.spec.traj_format)
+        atom_count = len(atom_names)
+        if system.n_atoms != atom_count:
+            label = self.spec.traj_format.value.lower()
+            raise ValueError(
+                f"{label} frame {index} has {system.n_atoms} atoms; "
+                f"trajectory has {atom_count}"
+            )
+        companion_names = [atom.name for atom in system.topology.atoms]
+        for atom_index, (actual, expected) in enumerate(
+            zip(companion_names, atom_names, strict=True)
+        ):
+            if actual.casefold() != expected.casefold():
+                label = self.spec.traj_format.value.lower()
+                raise ValueError(
+                    f"{label} frame {index} atom {atom_index} is {actual}; "
+                    f"trajectory is {expected}"
+                )
+
+        if self.spec.traj_format == TrajectoryFormat.FORCE:
+            values = system.forces
+        elif self.spec.traj_format == TrajectoryFormat.VEL:
+            values = system.vel
+        else:
+            values = system.charges
+        return np.asarray(values, dtype=np.float64).copy()
+
+    def refresh(self) -> int:
+        previous_count = self.frame_count
+        if not self.path.is_file():
+            self._reset()
+            return 0
+
+        stat = self.path.stat()
+        file_id = (stat.st_dev, stat.st_ino)
+        if (
+            self._file_id is not None
+            and (
+                file_id != self._file_id
+                or stat.st_size < self._scan_offset
+                or not self._anchor_matches()
+            )
+        ):
+            self._reset()
+
+        self._scan_frames()
+        return max(0, self.frame_count - previous_count)
+
+    def _scan_frames(self) -> None:
+        if not self.path.is_file():
+            return
+        stat = self.path.stat()
+        self._file_id = (stat.st_dev, stat.st_ino)
+
+        with self.path.open("rb") as handle:
+            handle.seek(self._scan_offset)
+            while True:
+                start, header = PQTrajectoryDataset._next_header(handle)
+                if header is None:
+                    self._scan_offset = handle.tell()
+                    break
+
+                try:
+                    atom_count = int(header.split(maxsplit=1)[0])
+                except (ValueError, IndexError) as error:
+                    raise ValueError(
+                        f"invalid companion header at byte {start}"
+                    ) from error
+                if atom_count < 0:
+                    raise ValueError(f"negative atom count at byte {start}")
+
+                comment = handle.readline()
+                if not comment:
+                    self._scan_offset = start
+                    break
+
+                complete = True
+                for _ in range(atom_count):
+                    atom_line = handle.readline()
+                    if (
+                        not atom_line
+                        or len(atom_line.split()) < self.spec.atom_fields
+                    ):
+                        complete = False
+                        break
+                if not complete:
+                    self._scan_offset = start
+                    break
+
+                self._spans.append(
+                    _FrameSpan(start, handle.tell(), {}, None)
+                )
+                self._scan_offset = handle.tell()
+
+        self._update_anchor()
+
+    def _anchor_matches(self) -> bool:
+        if not self._anchor:
+            return True
+        with self.path.open("rb") as handle:
+            handle.seek(self._anchor_start)
+            return handle.read(len(self._anchor)) == self._anchor
+
+    def _update_anchor(self) -> None:
+        self._anchor_start = max(0, self._scan_offset - 512)
+        with self.path.open("rb") as handle:
+            handle.seek(self._anchor_start)
+            self._anchor = handle.read(self._scan_offset - self._anchor_start)
+
+    def _reset(self) -> None:
+        self._spans.clear()
+        self._scan_offset = 0
+        self._file_id = None
+        self._anchor_start = 0
+        self._anchor = b""
+
+
 class PQTrajectoryDataset:
     """Random-access XYZ and extxyz trajectory dataset."""
 
@@ -52,6 +238,9 @@ class PQTrajectoryDataset:
         *,
         energy_path: str | Path | None = None,
         info_path: str | Path | None = None,
+        forces_path: str | Path | None = None,
+        velocities_path: str | Path | None = None,
+        charges_path: str | Path | None = None,
         topology: Topology | None = None,
         md_format: MDEngineFormat | str = MDEngineFormat.PQ,
         name: str | None = None,
@@ -70,6 +259,11 @@ class PQTrajectoryDataset:
             if info_path is not None
             else None
         )
+        requested_companions = {
+            "forces": forces_path,
+            "velocities": velocities_path,
+            "charges": charges_path,
+        }
         self.name = name or self.path.name
         self.md_format = MDEngineFormat(md_format)
         self.traj_format = self._detect_format()
@@ -83,6 +277,14 @@ class PQTrajectoryDataset:
         self._last_cell_source: int | None = None
         self._cell_cache: dict[int, Any] = {}
         self._sidecar_series: list[dict[str, Any]] = []
+        self._companions: dict[str, _CompanionFile | None] = {}
+        self._explicit_companions = {
+            key for key, value in requested_companions.items() if value is not None
+        }
+
+        for key, requested in requested_companions.items():
+            companion_path = self._companion_path(key, requested)
+            self._companions[key] = self._open_companion(key, companion_path)
 
         self._scan_frames()
         self._load_energy_series()
@@ -128,6 +330,7 @@ class PQTrajectoryDataset:
             "topology": topology,
             "properties": properties,
             "series": series,
+            "companion_files": self._companion_manifest(),
         }
 
     def get_frame(self, index: int) -> FrameData:
@@ -164,15 +367,35 @@ class PQTrajectoryDataset:
         if system.has_energy:
             scalars["energy"] = float(system.energy)
 
+        forces = self._optional_array(system.forces, system.has_forces)
+        velocities = self._optional_array(system.vel, system.has_vel)
+        charges = self._optional_array(system.charges, system.has_charges)
         units = self._frame_units(metadata)
+        atom_names = [atom.name for atom in system.topology.atoms]
+        companion_values = self._companion_values(index, atom_names)
+        arrays = {
+            "forces": forces,
+            "velocities": velocities,
+            "charges": charges,
+        }
+        for key, companion_value in companion_values.items():
+            if companion_value is None:
+                continue
+            if arrays[key] is None or key in self._explicit_companions:
+                arrays[key] = companion_value
+                companion = self._companions[key]
+                if companion is None:
+                    continue
+                units[key] = companion.unit
+
         return FrameData(
             index=index,
             positions=np.asarray(system.pos, dtype=np.float64).copy(),
             cell=cell,
             pbc=pbc,
-            forces=self._optional_array(system.forces, system.has_forces),
-            velocities=self._optional_array(system.vel, system.has_vel),
-            charges=self._optional_array(system.charges, system.has_charges),
+            forces=arrays["forces"],
+            velocities=arrays["velocities"],
+            charges=arrays["charges"],
             scalars=scalars,
             units=units,
         )
@@ -200,8 +423,88 @@ class PQTrajectoryDataset:
             self.traj_format = self._detect_format()
 
         self._scan_frames()
+        self._refresh_companions()
         self._load_energy_series()
         return max(0, self.frame_count - previous_count)
+
+    def _companion_path(
+        self,
+        key: str,
+        requested: str | Path | None,
+    ) -> Path | None:
+        if requested is not None:
+            path = Path(requested).expanduser().resolve()
+            if not path.is_file():
+                raise FileNotFoundError(path)
+            return path
+        return self._discover_companion(key)
+
+    def _discover_companion(self, key: str) -> Path | None:
+        stem = self._trajectory_stem()
+        matches = [
+            self.path.with_name(f"{stem}{extension}")
+            for extension in _COMPANION_SPECS[key].extensions
+        ]
+        existing = [path for path in matches if path.is_file()]
+        return existing[0] if len(existing) == 1 else None
+
+    def _trajectory_stem(self) -> str:
+        lower_name = self.path.name.lower()
+        for suffix in (".extended.xyz", ".extxyz", ".xyz"):
+            if lower_name.endswith(suffix):
+                return self.path.name[: -len(suffix)]
+        return self.path.stem
+
+    def _open_companion(
+        self,
+        key: str,
+        path: Path | None,
+    ) -> _CompanionFile | None:
+        if path is None:
+            return None
+        return _CompanionFile(path, _COMPANION_SPECS[key], self.md_format)
+
+    def _refresh_companions(self) -> None:
+        for key, companion in self._companions.items():
+            if companion is not None:
+                companion.refresh()
+                if companion.path.is_file() or key in self._explicit_companions:
+                    continue
+                self._companions[key] = None
+            discovered = self._discover_companion(key)
+            if discovered is not None:
+                self._companions[key] = self._open_companion(key, discovered)
+
+    def _companion_values(
+        self,
+        index: int,
+        atom_names: list[str],
+    ) -> dict[str, np.ndarray | None]:
+        return {
+            key: (
+                companion.read(index, atom_names)
+                if companion is not None
+                else None
+            )
+            for key, companion in self._companions.items()
+        }
+
+    def _companion_manifest(self) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for key, companion in self._companions.items():
+            result[key] = {
+                "available": companion is not None and companion.frame_count > 0,
+                "frame_count": (
+                    companion.frame_count if companion is not None else 0
+                ),
+                "file": companion.path.name if companion is not None else None,
+                "alignment": "frame_index",
+                "complete": (
+                    companion is not None
+                    and companion.frame_count == self.frame_count
+                ),
+            }
+        return result
 
     def _detect_format(self) -> TrajectoryFormat:
         suffix = self.path.name.lower()

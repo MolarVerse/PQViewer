@@ -18,6 +18,9 @@ from .packet import encode_frame
 TRAJECTORY_ENV = "PQVIEWER_TRAJECTORY"
 ENERGY_ENV = "PQVIEWER_ENERGY"
 INFO_ENV = "PQVIEWER_INFO"
+FORCES_ENV = "PQVIEWER_FORCES"
+VELOCITIES_ENV = "PQVIEWER_VELOCITIES"
+CHARGES_ENV = "PQVIEWER_CHARGES"
 
 
 class SPAStaticFiles(StaticFiles):
@@ -53,6 +56,9 @@ def create_app(
     *,
     energy_path: str | Path | None = None,
     info_path: str | Path | None = None,
+    forces_path: str | Path | None = None,
+    velocities_path: str | Path | None = None,
+    charges_path: str | Path | None = None,
     dataset: Any | None = None,
     frame_encoder: Callable[[Any], bytes] = encode_frame,
     static_dir: str | Path | None = None,
@@ -66,6 +72,9 @@ def create_app(
             trajectory_path,
             energy_path=energy_path,
             info_path=info_path,
+            forces_path=forces_path,
+            velocities_path=velocities_path,
+            charges_path=charges_path,
         )
 
     application = FastAPI(title="PQViewer")
@@ -131,4 +140,7 @@ def create_app_from_env() -> FastAPI:
         trajectory_path,
         energy_path=os.environ.get(ENERGY_ENV),
         info_path=os.environ.get(INFO_ENV),
+        forces_path=os.environ.get(FORCES_ENV),
+        velocities_path=os.environ.get(VELOCITIES_ENV),
+        charges_path=os.environ.get(CHARGES_ENV),
     )

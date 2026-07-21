@@ -24,6 +24,16 @@ H 0.1 0.2 0.3
 O 1.1 0.2 0.3
 """
 
+FORCES = """2 10 11 12
+0.0 0.0 0.0
+H 1.0 2.0 3.0
+O 4.0 5.0 6.0
+2 10 11 12
+0.0 0.0 0.0
+H 7.0 8.0 9.0
+O 10.0 11.0 12.0
+"""
+
 
 def test_indexes_manifest_and_random_access(tmp_path: Path) -> None:
     path = tmp_path / "water.xyz"
@@ -95,6 +105,141 @@ O 1 0 0 0.4 0.5 0.6 4 5 6 -0.2
         assert item["byte_offset"] == offset
         offset += item["byte_length"]
     assert offset == header["payload_byte_length"]
+
+
+def test_auto_detects_pq_force_companion(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    forces = tmp_path / "water.force"
+    forces.write_text(FORCES, encoding="utf-8")
+
+    dataset = PQTrajectoryDataset(trajectory)
+    manifest = dataset.manifest()
+    frame = dataset.get_frame(1)
+
+    np.testing.assert_allclose(frame.forces, [[7, 8, 9], [10, 11, 12]])
+    assert frame.units["forces"] == "kcal/(mol Å)"
+    assert manifest["properties"]["forces"]["unit"] == "kcal/(mol Å)"
+    assert manifest["companion_files"]["forces"] == {
+        "available": True,
+        "frame_count": 2,
+        "file": "water.force",
+        "alignment": "frame_index",
+        "complete": True,
+    }
+    assert manifest["companion_files"]["velocities"]["available"] is False
+
+
+def test_does_not_guess_between_companion_candidates(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    (tmp_path / "water.force").write_text(FORCES, encoding="utf-8")
+    (tmp_path / "water.frc").write_text(FORCES, encoding="utf-8")
+
+    manifest = PQTrajectoryDataset(trajectory).manifest()
+
+    assert manifest["companion_files"]["forces"]["available"] is False
+    assert "forces" not in manifest["properties"]
+
+
+def test_embedded_arrays_win_unless_companion_is_explicit(tmp_path: Path) -> None:
+    trajectory = tmp_path / "run.extxyz"
+    trajectory.write_text(
+        """1
+Properties=species:S:1:pos:R:3:forces:R:3 force_unit=eV/Angstrom
+H 0 0 0 1 2 3
+""",
+        encoding="utf-8",
+    )
+    auto_forces = tmp_path / "run.force"
+    auto_forces.write_text("1\n\nH 4 5 6\n", encoding="utf-8")
+    selected_forces = tmp_path / "selected.force"
+    selected_forces.write_text("1\n\nH 7 8 9\n", encoding="utf-8")
+
+    automatic = PQTrajectoryDataset(trajectory).get_frame(0)
+    explicit = PQTrajectoryDataset(
+        trajectory,
+        forces_path=selected_forces,
+    ).get_frame(0)
+
+    np.testing.assert_allclose(automatic.forces, [[1, 2, 3]])
+    assert automatic.units["forces"] == "eV/Angstrom"
+    np.testing.assert_allclose(explicit.forces, [[7, 8, 9]])
+    assert explicit.units["forces"] == "kcal/(mol Å)"
+
+
+def test_explicit_pq_companions_merge_by_frame(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    forces = tmp_path / "vectors.dat"
+    velocities = tmp_path / "speeds.dat"
+    charges = tmp_path / "charges.dat"
+    forces.write_text(FORCES, encoding="utf-8")
+    velocities.write_text(FORCES, encoding="utf-8")
+    charges.write_text(
+        """2
+
+H 0.25
+O -0.25
+2
+
+H 0.3
+O -0.3
+""",
+        encoding="utf-8",
+    )
+
+    frame = PQTrajectoryDataset(
+        trajectory,
+        forces_path=forces,
+        velocities_path=velocities,
+        charges_path=charges,
+    ).get_frame(1)
+
+    np.testing.assert_allclose(frame.forces[0], [7, 8, 9])
+    np.testing.assert_allclose(frame.velocities[1], [10, 11, 12])
+    np.testing.assert_allclose(frame.charges, [0.3, -0.3])
+    assert frame.units["velocities"] == "Å/s"
+    assert frame.units["charges"] == "e"
+
+
+def test_companion_validates_atom_count(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    forces = tmp_path / "water.force"
+    forces.write_text("1\n\nH 1 2 3\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="force frame 0 has 1 atoms"):
+        PQTrajectoryDataset(trajectory).manifest()
+
+
+def test_companion_validates_atom_order(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    forces = tmp_path / "water.force"
+    forces.write_text(
+        "2\n\nO 1 2 3\nH 4 5 6\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="force frame 0 atom 0 is O"):
+        PQTrajectoryDataset(trajectory).manifest()
+
+
+def test_refresh_indexes_a_completed_companion_frame(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    forces = tmp_path / "water.force"
+    second_frame = FORCES.find("2 10 11 12\n", 1)
+    forces.write_text(FORCES[:second_frame], encoding="utf-8")
+    dataset = PQTrajectoryDataset(trajectory)
+
+    assert dataset.get_frame(1).forces is None
+    with forces.open("a", encoding="utf-8") as handle:
+        handle.write(FORCES[second_frame:])
+
+    assert dataset.refresh() == 0
+    np.testing.assert_allclose(dataset.get_frame(1).forces[0], [7, 8, 9])
 
 
 def test_packet_layout(tmp_path: Path) -> None:

@@ -36,6 +36,7 @@ export interface ArrayDescriptor {
 
 export interface FrameHeader {
   arrays: ArrayDescriptor[];
+  pbc?: boolean[];
   scalars?: Record<string, number | null>;
   frame_index?: number;
   index?: number;
@@ -64,3 +65,5 @@ export interface LayerState {
   cell: boolean;
   forces: boolean;
 }
+
+export type CellOffset = [number, number, number];

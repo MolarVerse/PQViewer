@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameArray, FrameCache, getManifest, normalizeSeries } from "./api";
-import { MoleculeScene } from "./MoleculeScene";
-import type { DisplaySeries, FrameData, LayerState, Manifest } from "./types";
+import { centeredFramePositions, framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
+import type { CellOffset, DisplaySeries, FrameData, LayerState, Manifest } from "./types";
 
 type LoadState = "loading" | "ready" | "error";
 type IconName = "atoms" | "bonds" | "cell" | "forces" | "home" | "info" | "play" | "pause" | "back" | "next" | "close" | "retry";
 
-const initialLayers: LayerState = { atoms: true, bonds: true, cell: false, forces: false };
+const initialLayers: LayerState = { atoms: true, bonds: true, cell: true, forces: true };
 
 export default function App() {
   const [manifest, setManifest] = useState<Manifest | null>(null);
@@ -24,6 +24,8 @@ export default function App() {
   const [showInspector, setShowInspector] = useState(() => window.innerWidth > 760);
   const [resetSignal, setResetSignal] = useState(0);
   const [seriesName, setSeriesName] = useState("");
+  const [cellOffset, setCellOffset] = useState<CellOffset>([0, 0, 0]);
+  const [forceScale, setForceScale] = useState(1);
   const cache = useRef(new FrameCache());
 
   useEffect(() => {
@@ -38,6 +40,8 @@ export default function App() {
         setFrameIndex(0);
         setLoadedFrame(null);
         setSelectedAtom(null);
+        setCellOffset([0, 0, 0]);
+        setForceScale(1);
         setLoadState("ready");
         document.title = `${value.name || "Trajectory"} · PQViewer`;
       })
@@ -130,6 +134,10 @@ export default function App() {
   }, [frameIndex, manifest?.frame_count, setFrame]);
 
   const frame = loadedFrame?.data ?? null;
+  const cellAvailable = hasFrameCell(frame);
+  const forces = frameArray(frame, ["forces", "force"]);
+  const forceAvailable = Boolean(forces && forces.length >= (manifest?.topology.atom_count ?? 0) * 3);
+  const pbc = framePbc(frame);
   const activeSeries = series.find((entry) => entry.name === seriesName) ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
 
@@ -143,6 +151,8 @@ export default function App() {
             layers={layers}
             selectedAtom={selectedAtom}
             resetSignal={resetSignal}
+            cellOffset={cellOffset}
+            forceScale={forceScale}
             onSelect={setSelectedAtom}
           />
         ) : (
@@ -162,6 +172,7 @@ export default function App() {
               <span className={frameLoading ? "status-dot is-busy" : "status-dot"} />
               {manifest.topology.atom_count.toLocaleString()} atoms
               <span aria-hidden="true">·</span>
+              {cellAvailable && <><span>PBC {pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</span><span aria-hidden="true">·</span></>}
               Å
             </div>
           )}
@@ -169,6 +180,8 @@ export default function App() {
 
         <LayerRail
           layers={layers}
+          cellAvailable={cellAvailable}
+          forceAvailable={forceAvailable}
           showInspector={showInspector}
           onLayer={(name) => setLayers((current) => ({ ...current, [name]: !current[name] }))}
           onReset={() => setResetSignal((value) => value + 1)}
@@ -183,6 +196,13 @@ export default function App() {
             frameIndex={frameIndex}
             selectedAtom={selectedAtom}
             series={activeSeries}
+            cellAvailable={cellAvailable}
+            cellOffset={cellOffset}
+            pbc={pbc}
+            forceAvailable={forceAvailable}
+            forceScale={forceScale}
+            onCellOffset={setCellOffset}
+            onForceScale={setForceScale}
             onClose={() => setShowInspector(false)}
           />
         )}
@@ -226,37 +246,43 @@ export default function App() {
 
 function LayerRail({
   layers,
+  cellAvailable,
+  forceAvailable,
   showInspector,
   onLayer,
   onReset,
   onInspector,
 }: {
   layers: LayerState;
+  cellAvailable: boolean;
+  forceAvailable: boolean;
   showInspector: boolean;
   onLayer: (name: keyof LayerState) => void;
   onReset: () => void;
   onInspector: () => void;
 }) {
-  const items: Array<[keyof LayerState, string, IconName]> = [
-    ["atoms", "Atoms", "atoms"],
-    ["bonds", "Bonds", "bonds"],
-    ["cell", "Cell", "cell"],
-    ["forces", "Forces", "forces"],
+  const items: Array<[keyof LayerState, string, IconName, boolean, string?]> = [
+    ["atoms", "Atoms", "atoms", true],
+    ["bonds", "Bonds", "bonds", true],
+    ["cell", "Cell", "cell", cellAvailable, "No cell data"],
+    ["forces", "Forces", "forces", forceAvailable, "No force data"],
   ];
   return (
     <nav className="layer-rail" aria-label="Scene layers">
-      {items.map(([name, label, icon]) => (
+      {items.map(([name, label, icon, available, reason]) => (
         <button
           key={name}
-          className={layers[name] ? "rail-button is-active" : "rail-button"}
+          className={`${layers[name] && available ? "rail-button is-active" : "rail-button"}${available ? "" : " is-unavailable"}`}
           type="button"
-          title={label}
-          aria-label={label}
-          aria-pressed={layers[name]}
+          title={available ? label : reason}
+          aria-label={available ? label : `${label}: ${reason}`}
+          aria-pressed={available ? layers[name] : false}
+          disabled={!available}
           onClick={() => onLayer(name)}
         >
           <Icon name={icon} />
           <span>{label}</span>
+          {!available && <small>{reason}</small>}
         </button>
       ))}
       <div className="rail-spacer" />
@@ -286,6 +312,13 @@ function Inspector({
   frameIndex,
   selectedAtom,
   series,
+  cellAvailable,
+  cellOffset,
+  pbc,
+  forceAvailable,
+  forceScale,
+  onCellOffset,
+  onForceScale,
   onClose,
 }: {
   open: boolean;
@@ -294,9 +327,16 @@ function Inspector({
   frameIndex: number;
   selectedAtom: number | null;
   series: DisplaySeries | null;
+  cellAvailable: boolean;
+  cellOffset: CellOffset;
+  pbc: [boolean, boolean, boolean];
+  forceAvailable: boolean;
+  forceScale: number;
+  onCellOffset: (offset: CellOffset) => void;
+  onForceScale: (scale: number) => void;
   onClose: () => void;
 }) {
-  const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+  const positions = centeredFramePositions(frame, manifest.topology.atom_count);
   const forces = frameArray(frame, ["forces", "force"]);
   const charges = frameArray(frame, ["charges", "charge"]);
   const atom = selectedAtom !== null && selectedAtom < manifest.topology.atom_count ? selectedAtom : null;
@@ -331,6 +371,37 @@ function Inspector({
         ))}
       </section>
 
+      <PeriodicControls
+        available={cellAvailable}
+        offset={cellOffset}
+        pbc={pbc}
+        onOffset={onCellOffset}
+      />
+
+      <section className="readout-section force-section">
+        <div className="section-heading-row">
+          <h3>Force vectors</h3>
+          {forceAvailable && <output>{formatNumber(forceScale)}×</output>}
+        </div>
+        {forceAvailable ? (
+          <label className="force-scale">
+            <span className="sr-only">Force vector scale</span>
+            <span>0.25×</span>
+            <input
+              type="range"
+              min={0.25}
+              max={4}
+              step={0.25}
+              value={forceScale}
+              onChange={(event) => onForceScale(Number(event.target.value))}
+            />
+            <span>4×</span>
+          </label>
+        ) : (
+          <p className="quiet-copy">No force data</p>
+        )}
+      </section>
+
       <section className="readout-section atom-section">
         <h3>Selection</h3>
         {atom === null ? (
@@ -351,6 +422,54 @@ function Inspector({
 
       <div className="inspector-hint">Drag to rotate · Scroll to zoom</div>
     </aside>
+  );
+}
+
+function PeriodicControls({
+  available,
+  offset,
+  pbc,
+  onOffset,
+}: {
+  available: boolean;
+  offset: CellOffset;
+  pbc: [boolean, boolean, boolean];
+  onOffset: (offset: CellOffset) => void;
+}) {
+  const axes = pbc.map((periodic, index) => periodic ? ["a", "b", "c"][index] : "").join("");
+  const isOrigin = offset.every((value) => value === 0);
+  const move = (axis: number, step: number) => {
+    if (!pbc[axis]) return;
+    const next = [...offset] as CellOffset;
+    next[axis] += step;
+    onOffset(next);
+  };
+
+  return (
+    <section className="readout-section periodic-section">
+      <div className="section-heading-row">
+        <h3>Periodic</h3>
+        {available && <span>{axes ? `Centered wrap · ${axes}` : "PBC off"}</span>}
+      </div>
+      {!available ? (
+        <p className="quiet-copy">No cell data</p>
+      ) : (
+        <>
+          <div className="cell-image-heading">
+            <span>Cell image</span>
+            <output>[{offset.join(" ")}]</output>
+            <button type="button" disabled={isOrigin} onClick={() => onOffset([0, 0, 0])}>Reset</button>
+          </div>
+          {(["a", "b", "c"] as const).map((axis, index) => (
+            <div className="cell-axis-control" key={axis}>
+              <button type="button" disabled={!pbc[index]} onClick={() => move(index, -1)} aria-label={`Move cell by minus ${axis}`}>−{axis}</button>
+              <output>{offset[index]}</output>
+              <button type="button" disabled={!pbc[index]} onClick={() => move(index, 1)} aria-label={`Move cell by plus ${axis}`}>+{axis}</button>
+            </div>
+          ))}
+        </>
+      )}
+    </section>
   );
 }
 

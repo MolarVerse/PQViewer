@@ -3,16 +3,16 @@
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --canvas: #0d1012;
-  --surface: #171a1c;
-  --surface-raised: #1d2123;
-  --line: #303639;
-  --line-soft: #252a2d;
-  --text: #e9e4da;
-  --muted: #999b98;
-  --quiet: #6f7475;
-  --accent: #40d9ff;
-  --accent-soft: #173f49;
+  --canvas: #090c0e;
+  --surface: #14181b;
+  --surface-raised: #1b2124;
+  --line: #354044;
+  --line-soft: #252e32;
+  --text: #f1eee7;
+  --muted: #aeb4b4;
+  --quiet: #7f898c;
+  --accent: #55ddff;
+  --accent-soft: #183f49;
   --numeric: "SFMono-Regular", "Roboto Mono", Consolas, monospace;
 }
 
@@ -71,15 +71,26 @@ svg:focus-visible {
 .molecule-canvas,
 .canvas-field {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
   display: block;
 }
 
+.canvas-field {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .molecule-canvas {
+  top: 64px;
+  left: 64px;
+  width: calc(100% - 342px);
+  height: calc(100% - 224px);
   cursor: grab;
   touch-action: none;
+}
+
+.workspace.inspector-hidden .molecule-canvas {
+  width: calc(100% - 64px);
 }
 
 .molecule-canvas:active {
@@ -98,7 +109,7 @@ svg:focus-visible {
   justify-content: space-between;
   padding: 0 22px;
   border-bottom: 1px solid rgba(48, 54, 57, 0.72);
-  background: rgba(13, 16, 18, 0.82);
+  background: rgba(9, 12, 14, 0.86);
   backdrop-filter: blur(16px);
   animation: topbar-enter 380ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   pointer-events: none;
@@ -205,14 +216,14 @@ svg:focus-visible {
   transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease;
 }
 
-.rail-button:hover {
+.rail-button:hover:not(:disabled) {
   color: var(--text);
-  background: #1c2022;
+  background: #1b2225;
 }
 
 .rail-button.is-active {
   border-left-color: var(--accent);
-  background: #1b2022;
+  background: #182327;
   color: var(--accent);
 }
 
@@ -220,6 +231,25 @@ svg:focus-visible {
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.04em;
+}
+
+.rail-button small {
+  max-width: 58px;
+  color: #606b6f;
+  font-size: 7px;
+  font-weight: 550;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.rail-button.is-unavailable {
+  height: 64px;
+  color: #525d61;
+  cursor: not-allowed;
+}
+
+.rail-button.is-unavailable span {
+  color: #677176;
 }
 
 .rail-spacer {
@@ -322,6 +352,102 @@ svg:focus-visible {
   line-height: 1;
   letter-spacing: 0.13em;
   text-transform: uppercase;
+}
+
+.section-heading-row {
+  min-height: 18px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.section-heading-row h3 {
+  margin: 0;
+}
+
+.section-heading-row > span,
+.section-heading-row > output {
+  color: var(--muted);
+  font-family: var(--numeric);
+  font-size: 9px;
+}
+
+.cell-image-heading {
+  min-height: 28px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.cell-image-heading span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cell-image-heading output,
+.cell-axis-control output {
+  color: var(--text);
+  font-family: var(--numeric);
+  font-size: 10px;
+}
+
+.cell-image-heading button,
+.cell-axis-control button {
+  min-width: 38px;
+  padding: 5px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--numeric);
+  font-size: 9px;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.cell-image-heading button:hover:not(:disabled),
+.cell-axis-control button:hover:not(:disabled) {
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
+.cell-image-heading button:disabled,
+.cell-axis-control button:disabled {
+  color: #4c565a;
+  cursor: default;
+}
+
+.cell-axis-control {
+  min-height: 29px;
+  display: grid;
+  grid-template-columns: 1fr 36px 1fr;
+  align-items: center;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.cell-axis-control output {
+  text-align: center;
+}
+
+.force-scale {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.force-scale > span {
+  color: var(--quiet);
+  font-family: var(--numeric);
+  font-size: 8px;
+}
+
+.force-scale input[type="range"] {
+  height: 18px;
 }
 
 .readout {
@@ -783,6 +909,10 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @media (max-width: 980px) {
+  .molecule-canvas {
+    width: calc(100% - 308px);
+  }
+
   .topbar,
   .timeline {
     right: 244px;
@@ -799,6 +929,10 @@ input[type="range"]::-moz-range-thumb {
 }
 
 @media (max-width: 760px) {
+  .molecule-canvas {
+    width: calc(100% - 64px);
+  }
+
   .topbar,
   .timeline {
     right: 0;
@@ -849,6 +983,17 @@ input[type="range"]::-moz-range-thumb {
   .layer-rail {
     width: 54px;
     padding: 61px 0 174px;
+  }
+
+  .molecule-canvas {
+    top: 58px;
+    left: 54px;
+    width: calc(100% - 54px);
+    height: calc(100% - 232px);
+  }
+
+  .workspace.inspector-hidden .molecule-canvas {
+    width: calc(100% - 54px);
   }
 
   .rail-button {
