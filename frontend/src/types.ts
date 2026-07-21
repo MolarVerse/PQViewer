@@ -22,8 +22,15 @@ export interface Manifest {
   name: string;
   frame_count: number;
   topology: Topology;
-  properties?: unknown;
+  properties?: Record<string, PropertySpec>;
   series?: Record<string, unknown> | SeriesSpec[];
+}
+
+export interface PropertySpec {
+  scope?: string;
+  dtype?: string;
+  shape?: number[];
+  unit?: string | null;
 }
 
 export interface ArrayDescriptor {
@@ -32,12 +39,14 @@ export interface ArrayDescriptor {
   shape: number[];
   byte_offset: number;
   byte_length: number;
+  unit?: string | null;
 }
 
 export interface FrameHeader {
   arrays: ArrayDescriptor[];
   pbc?: boolean[];
   scalars?: Record<string, number | null>;
+  scalar_units?: Record<string, string | null>;
   frame_index?: number;
   index?: number;
   step?: number;
@@ -65,5 +74,7 @@ export interface LayerState {
   cell: boolean;
   forces: boolean;
 }
+
+export type Appearance = "light" | "dark";
 
 export type CellOffset = [number, number, number];

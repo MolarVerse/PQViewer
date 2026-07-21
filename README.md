@@ -7,17 +7,16 @@ Periodic cells use PQ's centered `[-0.5, 0.5)` convention.
 
 ## Install
 
-PQViewer requires Python 3.12 and Node.js 20.19 or newer.
+PQViewer requires Python 3.12 or newer. From a checkout:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
-cd frontend
-npm ci
-npm run build
-cd ..
+python -m pip install .
 ```
+
+The web interface is bundled with the Python package, so Node.js is not needed
+to install or run PQViewer.
 
 ## View a trajectory
 
@@ -47,6 +46,16 @@ remote or scripted use.
 
 ## Develop
 
+Frontend development requires Node.js 20.19 or newer:
+
+```bash
+python -m pip install -e ".[dev]"
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
 Run the API and Vite development server in separate terminals:
 
 ```bash
@@ -58,5 +67,7 @@ Run the checks with:
 
 ```bash
 python -m pytest
-cd frontend && npm run build
+cd frontend
+npm test
+npm run build
 ```

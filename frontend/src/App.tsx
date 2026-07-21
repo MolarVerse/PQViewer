@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameArray, FrameCache, getManifest, normalizeSeries } from "./api";
 import { centeredFramePositions, framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
-import type { CellOffset, DisplaySeries, FrameData, LayerState, Manifest } from "./types";
+import type { ViewPreset } from "./MoleculeScene";
+import type { Appearance, CellOffset, DisplaySeries, FrameData, LayerState, Manifest } from "./types";
 
 type LoadState = "loading" | "ready" | "error";
-type IconName = "atoms" | "bonds" | "cell" | "forces" | "home" | "info" | "play" | "pause" | "back" | "next" | "close" | "retry";
+type IconName = "atoms" | "bonds" | "cell" | "forces" | "home" | "info" | "play" | "pause" | "back" | "next" | "close" | "retry" | "sun" | "moon";
 
 const initialLayers: LayerState = { atoms: true, bonds: true, cell: true, forces: true };
 
@@ -21,12 +22,26 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
   const [layers, setLayers] = useState<LayerState>(initialLayers);
   const [selectedAtom, setSelectedAtom] = useState<number | null>(null);
-  const [showInspector, setShowInspector] = useState(() => window.innerWidth > 760);
+  const [showInspector, setShowInspector] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
+  const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
+  const [viewSignal, setViewSignal] = useState(0);
   const [seriesName, setSeriesName] = useState("");
   const [cellOffset, setCellOffset] = useState<CellOffset>([0, 0, 0]);
   const [forceScale, setForceScale] = useState(1);
+  const [appearance, setAppearance] = useState<Appearance>(initialAppearance);
+  const [displayOpen, setDisplayOpen] = useState(false);
   const cache = useRef(new FrameCache());
+  const displayMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.appearance = appearance;
+    document.documentElement.style.colorScheme = appearance;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", appearance === "light" ? "#f6f8f8" : "#101719");
+    try {
+      window.localStorage.setItem("pqviewer-appearance", appearance);
+    } catch {}
+  }, [appearance]);
 
   useEffect(() => {
     let active = true;
@@ -92,6 +107,30 @@ export default function App() {
     [manifest?.frame_count],
   );
 
+  const selectView = useCallback((preset: ViewPreset) => {
+    setViewPreset(preset);
+    setViewSignal((value) => value + 1);
+  }, []);
+
+  const selectAtom = useCallback((index: number | null) => {
+    setSelectedAtom(index);
+    if (index !== null) setShowInspector(true);
+  }, []);
+
+  const moveCell = useCallback((offset: CellOffset) => {
+    setCellOffset(offset);
+    setResetSignal((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    if (!displayOpen) return;
+    const closeDisplayMenu = (event: PointerEvent) => {
+      if (!displayMenuRef.current?.contains(event.target as Node)) setDisplayOpen(false);
+    };
+    window.addEventListener("pointerdown", closeDisplayMenu);
+    return () => window.removeEventListener("pointerdown", closeDisplayMenu);
+  }, [displayOpen]);
+
   useEffect(() => {
     if (!playing || !manifest || manifest.frame_count < 2) return;
     let animation = 0;
@@ -115,6 +154,12 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      if (event.key === "Escape") {
+        if (displayOpen) setDisplayOpen(false);
+        else if (selectedAtom !== null) setSelectedAtom(null);
+        else setShowInspector(false);
+        return;
+      }
       if (target?.matches("input, select, button, textarea")) return;
       if (event.code === "Space") {
         event.preventDefault();
@@ -127,11 +172,17 @@ export default function App() {
         event.preventDefault();
         setPlaying(false);
         setFrame(frameIndex + 1);
+      } else if (event.key === "Home" || event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        setResetSignal((value) => value + 1);
+      } else if (["Digit1", "Digit2", "Digit3", "Digit4"].includes(event.code)) {
+        event.preventDefault();
+        selectView(({ Digit1: "perspective", Digit2: "xy", Digit3: "xz", Digit4: "yz" } as const)[event.code as "Digit1" | "Digit2" | "Digit3" | "Digit4"]);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [frameIndex, manifest?.frame_count, setFrame]);
+  }, [displayOpen, frameIndex, manifest?.frame_count, selectView, selectedAtom, setFrame]);
 
   const frame = loadedFrame?.data ?? null;
   const cellAvailable = hasFrameCell(frame);
@@ -140,10 +191,15 @@ export default function App() {
   const pbc = framePbc(frame);
   const activeSeries = series.find((entry) => entry.name === seriesName) ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
+  const workspaceClass = [
+    "workspace",
+    showInspector ? "" : "inspector-hidden",
+    series.length === 0 ? "timeline-compact" : "",
+  ].filter(Boolean).join(" ");
 
   return (
     <main className="app-shell">
-      <div className={showInspector ? "workspace" : "workspace inspector-hidden"} aria-busy={loadState === "loading" || frameLoading}>
+      <div className={workspaceClass} aria-busy={loadState === "loading" || frameLoading}>
         {manifest && manifest.frame_count > 0 ? (
           <MoleculeScene
             manifest={manifest}
@@ -153,7 +209,10 @@ export default function App() {
             resetSignal={resetSignal}
             cellOffset={cellOffset}
             forceScale={forceScale}
-            onSelect={setSelectedAtom}
+            appearance={appearance}
+            viewPreset={viewPreset}
+            viewSignal={viewSignal}
+            onSelect={selectAtom}
           />
         ) : (
           <div className="canvas-field" />
@@ -167,26 +226,42 @@ export default function App() {
               <span>{manifest?.name || "Molecular trajectory"}</span>
             </div>
           </div>
-          {manifest && (
-            <div className="scene-status">
-              <span className={frameLoading ? "status-dot is-busy" : "status-dot"} />
-              {manifest.topology.atom_count.toLocaleString()} atoms
-              <span aria-hidden="true">·</span>
-              {cellAvailable && <><span>PBC {pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</span><span aria-hidden="true">·</span></>}
-              Å
-            </div>
-          )}
+          <div className="topbar-tools">
+            {manifest && (
+              <div className="scene-status">
+                <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> atoms</span>
+                {cellAvailable && <span>PBC <strong>{pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</strong></span>}
+              </div>
+            )}
+            <button
+              className="appearance-toggle"
+              type="button"
+              aria-label={`Use ${appearance === "light" ? "dark" : "light"} appearance`}
+              title={`Use ${appearance === "light" ? "dark" : "light"} appearance`}
+              onClick={() => setAppearance((value) => value === "light" ? "dark" : "light")}
+            >
+              <Icon name={appearance === "light" ? "sun" : "moon"} />
+              <span>{appearance === "light" ? "Light" : "Dark"}</span>
+            </button>
+          </div>
         </header>
 
-        <LayerRail
-          layers={layers}
-          cellAvailable={cellAvailable}
-          forceAvailable={forceAvailable}
-          showInspector={showInspector}
-          onLayer={(name) => setLayers((current) => ({ ...current, [name]: !current[name] }))}
-          onReset={() => setResetSignal((value) => value + 1)}
-          onInspector={() => setShowInspector((value) => !value)}
-        />
+        {manifest && manifest.frame_count > 0 && (
+          <CanvasToolbar
+            preset={viewPreset}
+            layers={layers}
+            cellAvailable={cellAvailable}
+            forceAvailable={forceAvailable}
+            displayOpen={displayOpen}
+            displayMenuRef={displayMenuRef}
+            showInspector={showInspector}
+            onView={selectView}
+            onDisplay={() => setDisplayOpen((value) => !value)}
+            onLayer={(name) => setLayers((current) => ({ ...current, [name]: !current[name] }))}
+            onFit={() => setResetSignal((value) => value + 1)}
+            onInspector={() => setShowInspector((value) => !value)}
+          />
+        )}
 
         {manifest && (
           <Inspector
@@ -201,7 +276,7 @@ export default function App() {
             pbc={pbc}
             forceAvailable={forceAvailable}
             forceScale={forceScale}
-            onCellOffset={setCellOffset}
+            onCellOffset={moveCell}
             onForceScale={setForceScale}
             onClose={() => setShowInspector(false)}
           />
@@ -244,62 +319,105 @@ export default function App() {
   );
 }
 
-function LayerRail({
+function CanvasToolbar({
+  preset,
   layers,
   cellAvailable,
   forceAvailable,
+  displayOpen,
+  displayMenuRef,
   showInspector,
+  onView,
+  onDisplay,
   onLayer,
-  onReset,
+  onFit,
   onInspector,
 }: {
+  preset: ViewPreset;
   layers: LayerState;
   cellAvailable: boolean;
   forceAvailable: boolean;
+  displayOpen: boolean;
+  displayMenuRef: React.RefObject<HTMLDivElement | null>;
   showInspector: boolean;
+  onView: (preset: ViewPreset) => void;
+  onDisplay: () => void;
   onLayer: (name: keyof LayerState) => void;
-  onReset: () => void;
+  onFit: () => void;
   onInspector: () => void;
 }) {
-  const items: Array<[keyof LayerState, string, IconName, boolean, string?]> = [
-    ["atoms", "Atoms", "atoms", true],
-    ["bonds", "Bonds", "bonds", true],
-    ["cell", "Cell", "cell", cellAvailable, "No cell data"],
-    ["forces", "Forces", "forces", forceAvailable, "No force data"],
+  const views: Array<[ViewPreset, string, string]> = [
+    ["perspective", "3D", "Perspective view (1)"],
+    ["xy", "XY", "View along z (2)"],
+    ["xz", "XZ", "View along y (3)"],
+    ["yz", "YZ", "View along x (4)"],
   ];
+  const layerItems: Array<[keyof LayerState, string, boolean, string?]> = [
+    ["atoms", "Atoms", true],
+    ["bonds", "Bonds", true],
+    ["cell", "Cell", cellAvailable, "No cell data"],
+    ["forces", "Forces", forceAvailable, "No force data"],
+  ];
+
   return (
-    <nav className="layer-rail" aria-label="Scene layers">
-      {items.map(([name, label, icon, available, reason]) => (
+    <nav className="canvas-toolbar" aria-label="Scene controls">
+      <div className="view-options" aria-label="Camera orientation">
+        <span className="toolbar-label">View</span>
+        {views.map(([value, label, title], index) => (
+          <button
+            key={value}
+            className={preset === value ? "view-option is-active" : "view-option"}
+            type="button"
+            title={title}
+            aria-label={title}
+            aria-keyshortcuts={String(index + 1)}
+            aria-pressed={preset === value}
+            onClick={() => onView(value)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="display-control" ref={displayMenuRef}>
         <button
-          key={name}
-          className={`${layers[name] && available ? "rail-button is-active" : "rail-button"}${available ? "" : " is-unavailable"}`}
+          className={displayOpen ? "toolbar-action is-active" : "toolbar-action"}
           type="button"
-          title={available ? label : reason}
-          aria-label={available ? label : `${label}: ${reason}`}
-          aria-pressed={available ? layers[name] : false}
-          disabled={!available}
-          onClick={() => onLayer(name)}
+          aria-expanded={displayOpen}
+          aria-haspopup="true"
+          aria-controls="display-options"
+          onClick={onDisplay}
         >
-          <Icon name={icon} />
-          <span>{label}</span>
-          {!available && <small>{reason}</small>}
+          Display
         </button>
-      ))}
-      <div className="rail-spacer" />
-      <button className="rail-button" type="button" title="Reset view" aria-label="Reset view" onClick={onReset}>
-        <Icon name="home" />
-        <span>View</span>
-      </button>
+        {displayOpen && (
+          <div className="display-popover" id="display-options" role="group" aria-label="Visible layers">
+            {layerItems.map(([name, label, available, reason]) => (
+              <button
+                key={name}
+                className={`${layers[name] && available ? "display-option" : "display-option is-off"}${available ? "" : " is-unavailable"}`}
+                type="button"
+                title={available ? undefined : reason}
+                aria-label={available ? label : `${label}: ${reason}`}
+                aria-pressed={available ? layers[name] : false}
+                disabled={!available}
+                onClick={() => onLayer(name)}
+              >
+                <span aria-hidden="true">✓</span>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <button className="toolbar-action" type="button" title="Fit structure (R)" aria-keyshortcuts="R" onClick={onFit}>Fit</button>
       <button
-        className={showInspector ? "rail-button is-active" : "rail-button"}
+        className={showInspector ? "toolbar-action is-active" : "toolbar-action"}
         type="button"
-        title="Inspector"
-        aria-label="Inspector"
+        aria-label="Toggle data inspector"
         aria-pressed={showInspector}
         onClick={onInspector}
       >
-        <Icon name="info" />
-        <span>Info</span>
+        Data
       </button>
     </nav>
   );
@@ -338,89 +456,102 @@ function Inspector({
 }) {
   const positions = centeredFramePositions(frame, manifest.topology.atom_count);
   const forces = frameArray(frame, ["forces", "force"]);
+  const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
   const charges = frameArray(frame, ["charges", "charge"]);
   const atom = selectedAtom !== null && selectedAtom < manifest.topology.atom_count ? selectedAtom : null;
   const symbol = atom !== null ? atomSymbol(manifest, atom) : null;
-  const frameProperties = scalarProperties(frame, series?.name);
+  const frameProperties = scalarProperties(frame, manifest, series?.name);
   const seriesValue = series?.values[frameIndex] ?? null;
   const step = scalarValue(frame, "step");
   const time = scalarValue(frame, "time");
+  const metrics = cellMetrics(frame);
+  const forceUnit = arrayUnit(frame, manifest, "forces");
+  const velocityUnit = arrayUnit(frame, manifest, "velocities");
+  const chargeUnit = arrayUnit(frame, manifest, "charges");
+  const selectionSection = atom === null ? null : (
+    <section className="readout-section atom-section">
+      <h3>Selection</h3>
+      <Readout label="Element" value={symbol ?? "—"} />
+      {manifest.topology.atom_names?.[atom] && <Readout label="Name" value={manifest.topology.atom_names[atom]} />}
+      {manifest.topology.residue_ids?.[atom] !== undefined && (
+        <Readout label="Residue" value={String(manifest.topology.residue_ids[atom])} />
+      )}
+      {positions && <VectorReadout label="Wrapped position" values={positions} offset={atom * 3} unit="Å" />}
+      {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} unit={forceUnit} />}
+      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3} unit={velocityUnit} />}
+      {charges && charges[atom] !== undefined && <Readout label="Charge" value={withUnit(formatNumber(charges[atom]), chargeUnit)} />}
+    </section>
+  );
 
   return (
     <aside className={open ? "inspector is-open" : "inspector"} aria-label="Inspector">
       <div className="panel-heading">
-        <div>
-          <span className="eyebrow">Inspector</span>
-          <h2>{atom === null ? "Frame" : `${symbol} · Atom ${atom + 1}`}</h2>
-        </div>
+        <h2>{atom === null ? "Data" : `${symbol} · Atom ${atom + 1}`}</h2>
         <button className="icon-button close-inspector" type="button" onClick={onClose} aria-label="Close inspector">
           <Icon name="close" />
         </button>
       </div>
 
+      {selectionSection}
+
       <section className="readout-section">
         <h3>Frame</h3>
         <Readout label="Index" value={`${frameIndex + 1} / ${manifest.frame_count}`} />
         {step !== null && <Readout label="Step" value={formatNumber(step)} />}
-        {time !== null && <Readout label="Time" value={formatNumber(time)} />}
+        {time !== null && <Readout label="Time" value={withUnit(formatNumber(time), scalarUnit(frame, manifest, "time"))} />}
         {series && seriesValue !== null && (
           <Readout label={series.label} value={`${formatNumber(seriesValue)}${series.unit ? ` ${series.unit}` : ""}`} accent />
         )}
         {frameProperties.slice(0, 5).map(([label, value]) => (
           <Readout key={label} label={label} value={value} />
         ))}
+        <Readout label="Bonds" value={manifest.topology.bonds?.length ? "Topology" : "Distance inferred"} />
       </section>
 
-      <PeriodicControls
-        available={cellAvailable}
-        offset={cellOffset}
-        pbc={pbc}
-        onOffset={onCellOffset}
-      />
+      {metrics && (
+        <section className="readout-section cell-metrics-section">
+          <h3>Cell</h3>
+          <Readout label="a · b · c" value={`${metrics.lengths.map(formatNumber).join(" · ")} Å`} />
+          <Readout label="α · β · γ" value={`${metrics.angles.map(formatNumber).join(" · ")}°`} />
+        </section>
+      )}
 
-      <section className="readout-section force-section">
+      {cellAvailable && (
+        <PeriodicControls
+          available
+          offset={cellOffset}
+          pbc={pbc}
+          onOffset={onCellOffset}
+        />
+      )}
+
+      {forceAvailable && <section className="readout-section force-section">
         <div className="section-heading-row">
-          <h3>Force vectors</h3>
-          {forceAvailable && <output>{formatNumber(forceScale)}×</output>}
+          <h3>Forces</h3>
+          <output title="Normalized independently for each frame">Auto · {formatNumber(forceScale)}×</output>
         </div>
-        {forceAvailable ? (
-          <label className="force-scale">
-            <span className="sr-only">Force vector scale</span>
-            <span>0.25×</span>
-            <input
-              type="range"
-              min={0.25}
-              max={4}
-              step={0.25}
-              value={forceScale}
-              onChange={(event) => onForceScale(Number(event.target.value))}
-            />
-            <span>4×</span>
-          </label>
-        ) : (
-          <p className="quiet-copy">No force data</p>
-        )}
-      </section>
+        <label className="force-scale">
+          <span className="sr-only">Force vector scale</span>
+          <span>0.25×</span>
+          <input
+            type="range"
+            min={0.25}
+            max={4}
+            step={0.25}
+            value={forceScale}
+            onChange={(event) => onForceScale(Number(event.target.value))}
+          />
+          <span>4×</span>
+        </label>
+      </section>}
 
-      <section className="readout-section atom-section">
-        <h3>Selection</h3>
-        {atom === null ? (
-          <p className="quiet-copy">Select an atom in the scene.</p>
-        ) : (
-          <>
-            <Readout label="Element" value={symbol ?? "—"} />
-            {manifest.topology.atom_names?.[atom] && <Readout label="Name" value={manifest.topology.atom_names[atom]} />}
-            {manifest.topology.residue_ids?.[atom] !== undefined && (
-              <Readout label="Residue" value={String(manifest.topology.residue_ids[atom])} />
-            )}
-            {positions && <VectorReadout label="Position" values={positions} offset={atom * 3} unit="Å" />}
-            {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} />}
-            {charges && charges[atom] !== undefined && <Readout label="Charge" value={formatNumber(charges[atom])} />}
-          </>
-        )}
-      </section>
+      {atom === null && (
+        <section className="readout-section atom-section">
+          <h3>Selection</h3>
+          <p className="quiet-copy">Select an atom.</p>
+        </section>
+      )}
 
-      <div className="inspector-hint">Drag to rotate · Scroll to zoom</div>
     </aside>
   );
 }
@@ -501,7 +632,7 @@ function Timeline({
   onSeries: (name: string) => void;
 }) {
   return (
-    <section className="timeline" aria-label="Trajectory controls">
+    <section className={series.length > 0 ? "timeline" : "timeline is-compact"} aria-label="Trajectory controls">
       <div className="transport-row">
         <div className="transport-buttons">
           <button type="button" className="transport-button" onClick={() => onFrame(frameIndex - 1)} disabled={frameIndex === 0} aria-label="Previous frame">
@@ -536,20 +667,16 @@ function Timeline({
         </label>
       </div>
 
-      <div className="plot-row">
+      {series.length > 0 && <div className="plot-row">
         <div className="plot-label">
-          {series.length > 0 ? (
-            <select value={activeSeries?.name ?? ""} onChange={(event) => onSeries(event.target.value)} aria-label="Timeline property">
-              {series.map((entry) => <option key={entry.name} value={entry.name}>{entry.label}</option>)}
-            </select>
-          ) : (
-            <span>Trajectory</span>
-          )}
-          <small>{activeSeries?.unit ?? "frames"}</small>
+          <select value={activeSeries?.name ?? ""} onChange={(event) => onSeries(event.target.value)} aria-label="Timeline property">
+            {series.map((entry) => <option key={entry.name} value={entry.name}>{entry.label}</option>)}
+          </select>
+          <small>{activeSeries?.unit ?? ""}</small>
         </div>
         <SeriesPlot series={activeSeries} frameCount={frameCount} frameIndex={frameIndex} onFrame={onFrame} />
         {frameError && <div className="frame-error" title={frameError}>Frame unavailable</div>}
-      </div>
+      </div>}
     </section>
   );
 }
@@ -678,11 +805,13 @@ function Icon({ name }: { name: IconName }) {
       {name === "next" && <><path d="m9.5 8 5 4-5 4" {...common} /><path d="M17 7v10" {...common} /></>}
       {name === "close" && <path d="m8 8 8 8m0-8-8 8" {...common} />}
       {name === "retry" && <><path d="M18 9a7 7 0 1 0 .5 5" {...common} /><path d="M18 5v4h-4" {...common} /></>}
+      {name === "sun" && <><circle cx="12" cy="12" r="3.3" {...common} /><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" {...common} /></>}
+      {name === "moon" && <path d="M18.3 15.8A7.4 7.4 0 0 1 8.2 5.7 7.4 7.4 0 1 0 18.3 15.8Z" {...common} />}
     </svg>
   );
 }
 
-function scalarProperties(frame: FrameData | null, excludedName?: string): Array<[string, string]> {
+function scalarProperties(frame: FrameData | null, manifest: Manifest, excludedName?: string): Array<[string, string]> {
   if (!frame) return [];
   const seen = new Set(["step", "time", "frame_index", "index", "arrays", "scalars", "properties"]);
   const excluded = normalizeName(excludedName ?? "");
@@ -691,12 +820,54 @@ function scalarProperties(frame: FrameData | null, excludedName?: string): Array
     const normalized = normalizeName(name);
     if (seen.has(normalized) || normalized === excluded || typeof value !== "number" || !Number.isFinite(value)) return;
     seen.add(normalized);
-    values.push([displayLabel(name), formatNumber(value)]);
+    values.push([displayLabel(name), withUnit(formatNumber(value), scalarUnit(frame, manifest, name))]);
   };
   Object.entries(frame.header.scalars ?? {}).forEach(([name, value]) => add(name, value));
   Object.entries(frame.header.properties ?? {}).forEach(([name, value]) => add(name, value));
   add("energy", frame.header.energy);
   return values;
+}
+
+function arrayUnit(frame: FrameData | null, manifest: Manifest, name: string): string | undefined {
+  const normalized = normalizeName(name);
+  const descriptor = frame?.header.arrays.find((entry) => normalizeName(entry.name) === normalized);
+  const property = Object.entries(manifest.properties ?? {}).find(([key]) => normalizeName(key) === normalized)?.[1];
+  return displayUnit(descriptor?.unit ?? property?.unit);
+}
+
+function scalarUnit(frame: FrameData | null, manifest: Manifest, name: string): string | undefined {
+  const normalized = normalizeName(name);
+  const headerUnit = Object.entries(frame?.header.scalar_units ?? {}).find(([key]) => normalizeName(key) === normalized)?.[1];
+  const propertyUnit = Object.entries(manifest.properties ?? {}).find(([key]) => normalizeName(key) === normalized)?.[1]?.unit;
+  return displayUnit(headerUnit ?? propertyUnit);
+}
+
+function displayUnit(unit: string | null | undefined): string | undefined {
+  if (!unit) return undefined;
+  return unit.replace(/angstrom/gi, "Å").replace(/Angstrom/g, "Å");
+}
+
+function withUnit(value: string, unit: string | undefined): string {
+  return unit ? `${value} ${unit}` : value;
+}
+
+function cellMetrics(frame: FrameData | null): { lengths: [number, number, number]; angles: [number, number, number] } | null {
+  const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+  if (!cell || cell.length < 9) return null;
+  const vectors = [0, 3, 6].map((offset) => [cell[offset], cell[offset + 1], cell[offset + 2]] as const);
+  const length = ([x, y, z]: readonly number[]) => Math.hypot(x, y, z);
+  const angle = (left: readonly number[], right: readonly number[]) => {
+    const denominator = length(left) * length(right);
+    if (!denominator) return 0;
+    const cosine = left.reduce((sum, value, index) => sum + value * right[index], 0) / denominator;
+    return Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI;
+  };
+  const lengths = vectors.map(length) as [number, number, number];
+  if (!lengths.every((value) => Number.isFinite(value) && value > 0)) return null;
+  return {
+    lengths,
+    angles: [angle(vectors[1], vectors[2]), angle(vectors[0], vectors[2]), angle(vectors[0], vectors[1])],
+  };
 }
 
 function scalarValue(frame: FrameData | null, name: string): number | null {
@@ -732,6 +903,14 @@ function seriesValueY(value: number | null | undefined, min: number, span: numbe
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected error";
+}
+
+function initialAppearance(): Appearance {
+  try {
+    return window.localStorage.getItem("pqviewer-appearance") === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
 }
 
 const elementSymbols = [

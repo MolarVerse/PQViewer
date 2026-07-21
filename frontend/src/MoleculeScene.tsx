@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { frameArray } from "./api";
-import type { CellOffset, FrameData, LayerState, Manifest } from "./types";
+import type { Appearance, CellOffset, FrameData, LayerState, Manifest } from "./types";
 
 interface MoleculeSceneProps {
   manifest: Manifest;
@@ -12,8 +12,13 @@ interface MoleculeSceneProps {
   resetSignal: number;
   cellOffset: CellOffset;
   forceScale: number;
+  appearance: Appearance;
+  viewPreset?: ViewPreset;
+  viewSignal?: number;
   onSelect: (index: number | null) => void;
 }
+
+export type ViewPreset = "perspective" | "xy" | "xz" | "yz";
 
 type Pbc = [boolean, boolean, boolean];
 
@@ -22,9 +27,21 @@ interface CellBasis {
   reciprocal: [THREE.Vector3, THREE.Vector3, THREE.Vector3];
 }
 
+interface FitContext {
+  positions: Float32Array;
+  count: number;
+  basis: CellBasis | null;
+  cellOffset: CellOffset;
+  includeCell: boolean;
+  preset: ViewPreset;
+}
+
 interface SceneState {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
+  hemisphere: THREE.HemisphereLight;
+  key: THREE.DirectionalLight;
+  rim: THREE.DirectionalLight;
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
   root: THREE.Group;
@@ -41,6 +58,9 @@ interface SceneState {
   positions: Float32Array | null;
   fittedForCount: number;
   lastResetSignal: number;
+  lastViewSignal: number;
+  lastFittedAspect: number;
+  fitContext: FitContext | null;
 }
 
 interface Segment {
@@ -48,8 +68,67 @@ interface Segment {
   to: THREE.Vector3;
 }
 
-const accent = new THREE.Color("#55ddff");
-const forceColor = new THREE.Color("#ffba55");
+interface ScenePalette {
+  background: string;
+  bond: string;
+  bondOpacity: number;
+  cell: string;
+  cellOpacity: number;
+  cellGhostOpacity: number;
+  selection: string;
+  selectionOpacity: number;
+  force: string;
+  hemisphereSky: string;
+  hemisphereGround: string;
+  hemisphereIntensity: number;
+  key: string;
+  keyIntensity: number;
+  rim: string;
+  rimIntensity: number;
+  exposure: number;
+}
+
+const scenePalettes: Record<Appearance, ScenePalette> = {
+  light: {
+    background: "#F6F8F8",
+    bond: "#375159",
+    bondOpacity: 0.92,
+    cell: "#2D7DA4",
+    cellOpacity: 0.66,
+    cellGhostOpacity: 0.14,
+    selection: "#3DACCB",
+    selectionOpacity: 0.34,
+    force: "#B8522D",
+    hemisphereSky: "#ffffff",
+    hemisphereGround: "#c6d2d5",
+    hemisphereIntensity: 1.55,
+    key: "#ffffff",
+    keyIntensity: 2.25,
+    rim: "#8fcbd3",
+    rimIntensity: 0.22,
+    exposure: 0.95,
+  },
+  dark: {
+    background: "#101719",
+    bond: "#91a0a4",
+    bondOpacity: 0.84,
+    cell: "#4aa7c7",
+    cellOpacity: 0.72,
+    cellGhostOpacity: 0.16,
+    selection: "#59c8d8",
+    selectionOpacity: 0.42,
+    force: "#e59b4c",
+    hemisphereSky: "#f5f6f2",
+    hemisphereGround: "#27363b",
+    hemisphereIntensity: 1.3,
+    key: "#eef2ef",
+    keyIntensity: 1.85,
+    rim: "#4aa7c7",
+    rimIntensity: 0.3,
+    exposure: 0.9,
+  },
+};
+
 const yAxis = new THREE.Vector3(0, 1, 0);
 
 export function centeredFramePositions(frame: FrameData | null, count: number): Float32Array | null {
@@ -76,6 +155,9 @@ export function MoleculeScene({
   resetSignal,
   cellOffset,
   forceScale,
+  appearance,
+  viewPreset = "perspective",
+  viewSignal = 0,
   onSelect,
 }: MoleculeSceneProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -99,8 +181,8 @@ export function MoleculeScene({
     renderer.toneMappingExposure = 1.2;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#090c0e");
-    scene.fog = new THREE.FogExp2("#090c0e", 0.014);
+    const initialPalette = scenePalettes.light;
+    scene.background = new THREE.Color(initialPalette.background);
 
     const camera = new THREE.PerspectiveCamera(34, 1, 0.02, 5000);
     camera.position.set(7, 5, 9);
@@ -113,29 +195,39 @@ export function MoleculeScene({
 
     const root = new THREE.Group();
     scene.add(root);
-    scene.add(new THREE.HemisphereLight("#fffaf0", "#12181c", 3.1));
-    const key = new THREE.DirectionalLight("#ffffff", 3.8);
+    const hemisphere = new THREE.HemisphereLight(
+      initialPalette.hemisphereSky,
+      initialPalette.hemisphereGround,
+      initialPalette.hemisphereIntensity,
+    );
+    scene.add(hemisphere);
+    const key = new THREE.DirectionalLight(initialPalette.key, initialPalette.keyIntensity);
     key.position.set(7, 10, 8);
     scene.add(key);
-    const rim = new THREE.DirectionalLight("#70e1ff", 1.25);
+    const rim = new THREE.DirectionalLight(initialPalette.rim, initialPalette.rimIntensity);
     rim.position.set(-8, -2, -5);
     scene.add(rim);
 
     const selection = new THREE.Mesh(
-      new THREE.SphereGeometry(1, 22, 14),
+      new THREE.RingGeometry(0.94, 1, 64),
       new THREE.MeshBasicMaterial({
-        color: accent,
-        wireframe: true,
+        color: initialPalette.selection,
         transparent: true,
-        opacity: 0.8,
+        opacity: initialPalette.selectionOpacity,
+        side: THREE.DoubleSide,
+        depthTest: false,
       }),
     );
+    selection.renderOrder = 10;
     selection.visible = false;
     root.add(selection);
 
     const state: SceneState = {
       renderer,
       scene,
+      hemisphere,
+      key,
+      rim,
       camera,
       controls,
       root,
@@ -152,6 +244,9 @@ export function MoleculeScene({
       positions: null,
       fittedForCount: -1,
       lastResetSignal: resetSignal,
+      lastViewSignal: viewSignal,
+      lastFittedAspect: 1,
+      fitContext: null,
     };
     stateRef.current = state;
 
@@ -161,6 +256,12 @@ export function MoleculeScene({
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
+      if (
+        state.fitContext
+        && Math.abs(Math.log(camera.aspect / state.lastFittedAspect)) > 0.06
+      ) {
+        fitCamera(state, state.fitContext);
+      }
     };
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
@@ -188,12 +289,9 @@ export function MoleculeScene({
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointerup", onPointerUp);
 
-    const clock = new THREE.Clock();
     renderer.setAnimationLoop(() => {
       controls.update();
-      if (selection.visible && selection.material instanceof THREE.MeshBasicMaterial) {
-        selection.material.opacity = 0.72 + Math.sin(clock.getElapsedTime() * 4.2) * 0.14;
-      }
+      if (selection.visible) selection.quaternion.copy(camera.quaternion);
       renderer.render(scene, camera);
     });
 
@@ -208,6 +306,12 @@ export function MoleculeScene({
       stateRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const state = stateRef.current;
+    if (!state) return;
+    applyScenePalette(state, scenePalettes[appearance]);
+  }, [appearance]);
 
   useEffect(() => {
     const state = stateRef.current;
@@ -229,7 +333,8 @@ export function MoleculeScene({
       state.fittedForCount = -1;
     }
     state.positions = positions;
-    updateAtoms(state, positions, atomicNumbers);
+    const palette = scenePalettes[appearance];
+    updateAtoms(state, positions, atomicNumbers, appearance);
 
     const declared = normalizeBonds(manifest.topology.bonds, count);
     if (declared.length > 0 && state.bondsForCount !== count) {
@@ -241,10 +346,20 @@ export function MoleculeScene({
       state.bondsForCount = -1;
       state.inferredForFrame = frame;
     }
-    updateBonds(state, positions, basis, pbc);
-    updateCell(state, basis, cellOffset);
+    updateBonds(state, positions, basis, pbc, palette);
+    updateCell(state, basis, cellOffset, palette);
     const forces = frameArray(frame, ["forces", "force"]);
-    updateForces(state, positions, forces, count, forceScale);
+    updateForces(state, positions, forces, count, forceScale, palette);
+
+    const fitContext: FitContext = {
+      positions,
+      count,
+      basis,
+      cellOffset: [...cellOffset],
+      includeCell: layers.cell && Boolean(basis),
+      preset: viewPreset,
+    };
+    state.fitContext = fitContext;
 
     if (state.atoms) state.atoms.visible = layers.atoms;
     if (state.bonds) state.bonds.visible = layers.bonds;
@@ -255,20 +370,52 @@ export function MoleculeScene({
     if (selected !== null && layers.atoms) {
       const radius = state.radii[selected] ?? 0.35;
       state.selection.position.fromArray(positions, selected * 3);
-      state.selection.scale.setScalar(radius * 1.5);
+      state.selection.scale.setScalar(radius * 1.35);
       state.selection.visible = true;
     } else {
       state.selection.visible = false;
     }
 
-    if (state.fittedForCount !== count || state.lastResetSignal !== resetSignal) {
-      fitCamera(state, positions, count);
+    if (
+      state.fittedForCount !== count
+      || state.lastResetSignal !== resetSignal
+      || state.lastViewSignal !== viewSignal
+    ) {
+      fitCamera(state, fitContext);
       state.fittedForCount = count;
       state.lastResetSignal = resetSignal;
+      state.lastViewSignal = viewSignal;
     }
-  }, [cellOffset, forceScale, frame, layers, manifest, resetSignal, selectedAtom]);
+  }, [
+    appearance,
+    cellOffset,
+    forceScale,
+    frame,
+    layers,
+    manifest,
+    resetSignal,
+    selectedAtom,
+    viewPreset,
+    viewSignal,
+  ]);
 
   return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" />;
+}
+
+function applyScenePalette(state: SceneState, palette: ScenePalette): void {
+  if (state.scene.background instanceof THREE.Color) state.scene.background.set(palette.background);
+  state.renderer.toneMappingExposure = palette.exposure;
+  state.hemisphere.color.set(palette.hemisphereSky);
+  state.hemisphere.groundColor.set(palette.hemisphereGround);
+  state.hemisphere.intensity = palette.hemisphereIntensity;
+  state.key.color.set(palette.key);
+  state.key.intensity = palette.keyIntensity;
+  state.rim.color.set(palette.rim);
+  state.rim.intensity = palette.rimIntensity;
+  if (state.selection.material instanceof THREE.MeshBasicMaterial) {
+    state.selection.material.color.set(palette.selection);
+    state.selection.material.opacity = palette.selectionOpacity;
+  }
 }
 
 function replaceAtoms(state: SceneState, count: number, atomicNumbers: number[]): void {
@@ -286,7 +433,12 @@ function replaceAtoms(state: SceneState, count: number, atomicNumbers: number[])
   state.root.add(atoms);
 }
 
-function updateAtoms(state: SceneState, positions: Float32Array, atomicNumbers: number[]): void {
+function updateAtoms(
+  state: SceneState,
+  positions: Float32Array,
+  atomicNumbers: number[],
+  appearance: Appearance,
+): void {
   const atoms = state.atoms;
   if (!atoms) return;
   const dummy = new THREE.Object3D();
@@ -295,14 +447,20 @@ function updateAtoms(state: SceneState, positions: Float32Array, atomicNumbers: 
     dummy.scale.setScalar(state.radii[index]);
     dummy.updateMatrix();
     atoms.setMatrixAt(index, dummy.matrix);
-    atoms.setColorAt(index, elementColor(atomicNumbers[index]));
+    atoms.setColorAt(index, elementColor(atomicNumbers[index], appearance));
   }
   atoms.instanceMatrix.needsUpdate = true;
   if (atoms.instanceColor) atoms.instanceColor.needsUpdate = true;
   atoms.computeBoundingSphere();
 }
 
-function updateBonds(state: SceneState, positions: Float32Array, basis: CellBasis | null, pbc: Pbc): void {
+function updateBonds(
+  state: SceneState,
+  positions: Float32Array,
+  basis: CellBasis | null,
+  pbc: Pbc,
+  palette: ScenePalette,
+): void {
   if (state.bonds) {
     state.root.remove(state.bonds);
     disposeObject(state.bonds);
@@ -314,11 +472,11 @@ function updateBonds(state: SceneState, positions: Float32Array, basis: CellBasi
 
   const geometry = new THREE.CylinderGeometry(0.038, 0.038, 1, 9, 1, false);
   const material = new THREE.MeshStandardMaterial({
-    color: "#b8c2c7",
+    color: palette.bond,
     roughness: 0.56,
     metalness: 0.01,
     transparent: true,
-    opacity: 0.82,
+    opacity: palette.bondOpacity,
   });
   const mesh = new THREE.InstancedMesh(geometry, material, segments.length);
   const dummy = new THREE.Object3D();
@@ -338,7 +496,12 @@ function updateBonds(state: SceneState, positions: Float32Array, basis: CellBasi
   state.root.add(mesh);
 }
 
-function updateCell(state: SceneState, basis: CellBasis | null, offset: CellOffset): void {
+function updateCell(
+  state: SceneState,
+  basis: CellBasis | null,
+  offset: CellOffset,
+  palette: ScenePalette,
+): void {
   if (state.cell) {
     state.root.remove(state.cell);
     disposeObject(state.cell);
@@ -353,13 +516,13 @@ function updateCell(state: SceneState, basis: CellBasis | null, offset: CellOffs
     group.add(cellLines(
       basis,
       [0, 0, 0],
-      new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.2 }),
+      new THREE.LineBasicMaterial({ color: palette.cell, transparent: true, opacity: palette.cellGhostOpacity }),
     ));
   }
   group.add(cellLines(
     basis,
     offset,
-    new THREE.LineBasicMaterial({ color: accent, transparent: true, opacity: 0.78 }),
+    new THREE.LineBasicMaterial({ color: palette.cell, transparent: true, opacity: palette.cellOpacity }),
   ));
   state.cell = group;
   state.root.add(group);
@@ -407,6 +570,7 @@ function updateForces(
   forces: Float32Array | null,
   count: number,
   forceScale: number,
+  palette: ScenePalette,
 ): void {
   if (state.forces) {
     state.root.remove(state.forces);
@@ -452,7 +616,7 @@ function updateForces(
   const shaftGeometry = new THREE.CylinderGeometry(0.018, 0.018, 1, 8, 1, false);
   const shafts = new THREE.InstancedMesh(
     shaftGeometry,
-    new THREE.MeshBasicMaterial({ color: forceColor }),
+    new THREE.MeshBasicMaterial({ color: palette.force }),
     arrows.length,
   );
   const dummy = new THREE.Object3D();
@@ -472,7 +636,7 @@ function updateForces(
   const headGeometry = new THREE.ConeGeometry(1, 1, 9);
   const heads = new THREE.InstancedMesh(
     headGeometry,
-    new THREE.MeshBasicMaterial({ color: forceColor }),
+    new THREE.MeshBasicMaterial({ color: palette.force }),
     arrows.length,
   );
   arrows.forEach((arrow, index) => {
@@ -566,7 +730,7 @@ function minimumImageFraction(delta: THREE.Vector3, basis: CellBasis, pbc: Pbc):
   return best;
 }
 
-function periodicBondSegments(
+export function periodicBondSegments(
   positions: Float32Array,
   aIndex: number,
   bIndex: number,
@@ -705,22 +869,91 @@ function periodicShifts(basis: CellBasis | null, pbc: Pbc): THREE.Vector3[] {
   return shifts;
 }
 
-function fitCamera(state: SceneState, positions: Float32Array, count: number): void {
-  if (count === 0) return;
+function fitCamera(
+  state: SceneState,
+  context: FitContext,
+): void {
+  const { basis, cellOffset, count, includeCell, positions, preset } = context;
   const bounds = new THREE.Box3();
   const point = new THREE.Vector3();
-  for (let index = 0; index < count; index += 1) bounds.expandByPoint(point.fromArray(positions, index * 3));
+  for (let index = 0; index < count; index += 1) {
+    point.fromArray(positions, index * 3);
+    const radius = state.radii[index] ?? 0.25;
+    bounds.expandByPoint(new THREE.Vector3(point.x - radius, point.y - radius, point.z - radius));
+    bounds.expandByPoint(new THREE.Vector3(point.x + radius, point.y + radius, point.z + radius));
+  }
+  if (includeCell && basis) {
+    const cellBounds = new THREE.Box3();
+    expandByCell(cellBounds, basis, cellOffset);
+    const atomSpan = bounds.getSize(new THREE.Vector3()).length();
+    const cellSpan = cellBounds.getSize(new THREE.Vector3()).length();
+    const movedImage = cellOffset.some((value) => value !== 0);
+    if (movedImage || atomSpan === 0 || cellSpan <= atomSpan * 3.2) bounds.union(cellBounds);
+  }
+  if (bounds.isEmpty()) return;
   const center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const radius = Math.max(size.length() * 0.5, 1.6);
-  const distance = radius / Math.tan(THREE.MathUtils.degToRad(state.camera.fov * 0.5)) * 1.2;
-  const direction = new THREE.Vector3(1, 0.68, 1.15).normalize();
+  const verticalHalfFov = THREE.MathUtils.degToRad(state.camera.fov * 0.5);
+  const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * state.camera.aspect);
+  const limitingHalfFov = Math.min(verticalHalfFov, horizontalHalfFov);
+  const { direction, up } = cameraOrientation(preset);
+  const right = new THREE.Vector3().crossVectors(up, direction).normalize();
+  const cameraUp = new THREE.Vector3().crossVectors(direction, right).normalize();
+  const fill = 0.78;
+  let distance = 1.6 / Math.tan(limitingHalfFov) * 1.08;
+  for (const corner of boxCorners(bounds)) {
+    const relative = corner.sub(center);
+    const depth = relative.dot(direction);
+    const horizontalDistance = depth + Math.abs(relative.dot(right)) / (Math.tan(horizontalHalfFov) * fill);
+    const verticalDistance = depth + Math.abs(relative.dot(cameraUp)) / (Math.tan(verticalHalfFov) * fill);
+    distance = Math.max(distance, horizontalDistance, verticalDistance);
+  }
+  state.camera.up.copy(up);
   state.camera.position.copy(center).addScaledVector(direction, distance);
   state.camera.near = Math.max(distance / 500, 0.01);
   state.camera.far = Math.max(distance * 30, 100);
   state.camera.updateProjectionMatrix();
   state.controls.target.copy(center);
   state.controls.update();
+  state.lastFittedAspect = state.camera.aspect;
+}
+
+function boxCorners(bounds: THREE.Box3): THREE.Vector3[] {
+  const result: THREE.Vector3[] = [];
+  for (const x of [bounds.min.x, bounds.max.x]) {
+    for (const y of [bounds.min.y, bounds.max.y]) {
+      for (const z of [bounds.min.z, bounds.max.z]) result.push(new THREE.Vector3(x, y, z));
+    }
+  }
+  return result;
+}
+
+function expandByCell(bounds: THREE.Box3, basis: CellBasis, offset: CellOffset): void {
+  for (let i = 0; i <= 1; i += 1) {
+    for (let j = 0; j <= 1; j += 1) {
+      for (let k = 0; k <= 1; k += 1) {
+        bounds.expandByPoint(toCartesian(
+          new THREE.Vector3(offset[0] + i - 0.5, offset[1] + j - 0.5, offset[2] + k - 0.5),
+          basis,
+        ));
+      }
+    }
+  }
+}
+
+function cameraOrientation(preset: ViewPreset): { direction: THREE.Vector3; up: THREE.Vector3 } {
+  if (preset === "xy") {
+    return { direction: new THREE.Vector3(0, 0, 1), up: new THREE.Vector3(0, 1, 0) };
+  }
+  if (preset === "xz") {
+    return { direction: new THREE.Vector3(0, 1, 0), up: new THREE.Vector3(0, 0, 1) };
+  }
+  if (preset === "yz") {
+    return { direction: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 0, 1) };
+  }
+  return {
+    direction: new THREE.Vector3(1, 0.68, 1.15).normalize(),
+    up: new THREE.Vector3(0, 1, 0),
+  };
 }
 
 function resolveAtomicNumbers(manifest: Manifest, count: number): number[] {
@@ -732,8 +965,9 @@ function displayRadius(atomicNumber: number): number {
   return Math.max(0.22, (covalentRadii[atomicNumber] ?? 0.78) * 0.43);
 }
 
-function elementColor(atomicNumber: number): THREE.Color {
-  return new THREE.Color(elementColors[atomicNumber] ?? "#c7ced1");
+function elementColor(atomicNumber: number, appearance: Appearance): THREE.Color {
+  const colors = appearance === "light" ? lightElementColors : darkElementColors;
+  return new THREE.Color(colors[atomicNumber] ?? (appearance === "light" ? "#65757a" : "#c7ced1"));
 }
 
 function disposeObject(root: THREE.Object3D): void {
@@ -763,9 +997,21 @@ const covalentRadii: Record<number, number> = {
   17: 1.02, 18: 1.06, 19: 2.03, 20: 1.76, 26: 1.32, 29: 1.32, 30: 1.22, 35: 1.20, 53: 1.39,
 };
 
-const elementColors: Record<number, string> = {
-  1: "#fffdf7", 2: "#e4ffff", 3: "#c69bea", 4: "#d3e795", 5: "#e4ab82", 6: "#9da9af",
-  7: "#7399ef", 8: "#f2766d", 9: "#89d394", 10: "#9aebed", 11: "#b18ce4", 12: "#a0bf82",
+const darkElementColors: Record<number, string> = {
+  1: "#ebe9e2", 2: "#d8f2f2", 3: "#b889df", 4: "#bed17f", 5: "#d4956d", 6: "#718188",
+  7: "#5680dd", 8: "#df6259", 9: "#6cba79", 10: "#7bcdd0", 11: "#9874ce", 12: "#89a86d",
   13: "#c7b8ae", 14: "#d5aa82", 15: "#ed9e54", 16: "#ead462", 17: "#74ca88", 18: "#8bdce2",
   19: "#aa7bdd", 20: "#99ba7b", 26: "#cf8964", 29: "#d19a71", 30: "#adb3b7", 35: "#b65a4c", 53: "#8d61b5",
+};
+
+const lightElementColors: Record<number, string> = {
+  ...darkElementColors,
+  1: "#aab5b3",
+  6: "#273a3f",
+  7: "#315bb8",
+  8: "#c94138",
+  9: "#318448",
+  15: "#d87924",
+  16: "#c5a51c",
+  17: "#348b4c",
 };
