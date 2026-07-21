@@ -77,6 +77,9 @@ export interface ImageLayoutShape {
 
 export const MAX_PERIODIC_IMAGES = 125;
 export const MAX_ATOM_INSTANCES = 250_000;
+export const MAX_SPHERE_INSTANCES = 80_000;
+export const MAX_BOND_INSTANCES = MAX_SPHERE_INSTANCES;
+export const MAX_HIGH_DETAIL_INSTANCES = 50_000;
 export const MAX_INFERRED_BOND_CANDIDATES = 2_000_000;
 export const MAX_FORCE_VECTORS = 12_000;
 
@@ -299,7 +302,9 @@ export function prepareFrameGeometry(
   const bondSegments = sceneBondSegments(model, presentation);
   const bondKind = bondSegments.length === 0
     ? "none"
-    : presentation.mode === "lines" ? "lines" : "instances";
+    : presentation.mode === "lines" || pointAtoms || bondSegments.length > MAX_BOND_INSTANCES
+      ? "lines"
+      : "instances";
   const forceVectors = presentation.forces
     ? activeVectorInstances(model, forces)
     : { instances: [], total: 0 };
@@ -317,7 +322,11 @@ export function prepareFrameGeometry(
 export function usesPointAtoms(presentation: ScenePresentation, atomCount: number): boolean {
   return presentation.mode === "lines"
     || atomCount > MAX_ATOM_INSTANCES
-    || (presentation.quality === "auto" && atomCount > 80_000);
+    || atomCount > MAX_SPHERE_INSTANCES;
+}
+
+export function usesHighDetailGeometry(presentation: ScenePresentation, instanceCount: number): boolean {
+  return presentation.quality === "high" && instanceCount <= MAX_HIGH_DETAIL_INSTANCES;
 }
 
 export function frameGeometryLayout(plan: FrameGeometryPlan): FrameGeometryLayout {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { centeredFramePositions, periodicBondSegments, sceneCapabilities } from "./MoleculeScene";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { centeredFramePositions, clearOrbitMotion, periodicBondSegments, sceneCapabilities } from "./MoleculeScene";
 import {
   activeVectorInstances,
   backboneResidues,
@@ -11,13 +12,17 @@ import {
   imageLayoutShape,
   includeCellInFit,
   MAX_ATOM_INSTANCES,
+  MAX_BOND_INSTANCES,
   MAX_FORCE_VECTORS,
+  MAX_HIGH_DETAIL_INSTANCES,
   MAX_INFERRED_BOND_CANDIDATES,
+  MAX_SPHERE_INSTANCES,
   periodicImageOffsets,
   prepareFrameGeometry,
   prepareScene,
   representationRadius,
   sameFrameGeometryLayout,
+  usesHighDetailGeometry,
   usesPointAtoms,
 } from "./scene/model";
 import type { PreparedScene } from "./scene/model";
@@ -414,7 +419,7 @@ describe("scientific representations", () => {
     expect(representationRadius(92, "spacefill")).toBeGreaterThan(2.5);
   });
 
-  it("uses points above the base atom instance budget at high quality", () => {
+  it("uses adaptive mesh budgets and a hard point fallback", () => {
     const atomCount = MAX_ATOM_INSTANCES + 1;
     const presentation = { ...basePresentation, quality: "high" as const };
     const model: PreparedScene = {
@@ -433,10 +438,117 @@ describe("scientific representations", () => {
       backbone: [],
     };
 
-    expect(usesPointAtoms(presentation, MAX_ATOM_INSTANCES)).toBe(false);
+    expect(usesHighDetailGeometry(presentation, MAX_HIGH_DETAIL_INSTANCES)).toBe(true);
+    expect(usesHighDetailGeometry(presentation, MAX_HIGH_DETAIL_INSTANCES + 1)).toBe(false);
+    expect(usesHighDetailGeometry(basePresentation, MAX_HIGH_DETAIL_INSTANCES)).toBe(false);
+    expect(usesPointAtoms(presentation, 60_000)).toBe(false);
+    expect(usesPointAtoms(basePresentation, 60_000)).toBe(false);
+    expect(usesPointAtoms(presentation, MAX_SPHERE_INSTANCES)).toBe(false);
+    expect(usesPointAtoms(presentation, MAX_SPHERE_INSTANCES + 1)).toBe(true);
+    expect(usesPointAtoms(basePresentation, MAX_SPHERE_INSTANCES)).toBe(false);
+    expect(usesPointAtoms(basePresentation, MAX_SPHERE_INSTANCES + 1)).toBe(true);
+    expect(usesPointAtoms(presentation, 50_000 * 5)).toBe(true);
     expect(usesPointAtoms(presentation, atomCount)).toBe(true);
     expect(prepareFrameGeometry(model, presentation, null).atomKind).toBe("points");
     expect(periodicImageOffsets([0, 0, 0], [0, 0, 0], [true, true, true], atomCount)).toEqual([[0, 0, 0]]);
+
+    const bondedReplicas: PreparedScene = {
+      ...model,
+      count: 2,
+      atomicNumbers: [6, 6],
+      positions: new Float32Array([0, 0, 0, 1.4, 0, 0]),
+      bonds: [[0, 1]],
+      visibleAtoms: [0, 1],
+      images: [[-2, 0, 0], [-1, 0, 0], [0, 0, 0], [1, 0, 0], [2, 0, 0]],
+      instanceToAtom: new Uint32Array(50_000 * 5),
+      instanceImages: new Int8Array(50_000 * 5 * 3),
+      radii: [0.3, 0.3],
+    };
+    const replicatedGeometry = prepareFrameGeometry(bondedReplicas, presentation, null);
+    expect(replicatedGeometry.atomKind).toBe("points");
+    expect(replicatedGeometry.bondKind).toBe("lines");
+    expect(replicatedGeometry.bondSegments).toHaveLength(5);
+  });
+
+  it("switches dense replicated bonds to lines independently of atoms", () => {
+    const images: PreparedScene["images"] = [];
+    for (let a = -2; a <= 2; a += 1) {
+      for (let b = -2; b <= 2; b += 1) {
+        for (let c = -2; c <= 2; c += 1) images.push([a, b, c]);
+      }
+    }
+    const denseBonds: Array<[number, number]> = [];
+    for (let a = 0; a < 100 && denseBonds.length <= 640; a += 1) {
+      for (let b = a + 1; b < 100 && denseBonds.length <= 640; b += 1) denseBonds.push([a, b]);
+    }
+    const denseBondModel: PreparedScene = {
+      count: 100,
+      atomicNumbers: Array(100).fill(6),
+      positions: new Float32Array(300),
+      basis: null,
+      pbc: [false, false, false],
+      bonds: denseBonds,
+      waterAtoms: new Set(),
+      visibleAtoms: Array.from({ length: 100 }, (_, atom) => atom),
+      images,
+      instanceToAtom: new Uint32Array(12_500),
+      instanceImages: new Int8Array(37_500),
+      radii: Array(100).fill(0.3),
+      backbone: [],
+    };
+    const presentation = { ...basePresentation, quality: "high" as const };
+    const atLimit = prepareFrameGeometry(
+      { ...denseBondModel, bonds: denseBonds.slice(0, MAX_BOND_INSTANCES / images.length) },
+      presentation,
+      null,
+    );
+    const aboveLimit = prepareFrameGeometry(denseBondModel, presentation, null);
+    expect(atLimit.atomKind).toBe("instances");
+    expect(atLimit.bondSegments).toHaveLength(MAX_BOND_INSTANCES);
+    expect(atLimit.bondKind).toBe("instances");
+    expect(aboveLimit.atomKind).toBe("instances");
+    expect(aboveLimit.bondSegments).toHaveLength(MAX_BOND_INSTANCES + 125);
+    expect(aboveLimit.bondKind).toBe("lines");
+  });
+
+  it("clears damped orbit motion before every camera reset view", () => {
+    const camera = new THREE.PerspectiveCamera(34, 1, 0.02, 5000);
+    camera.position.set(4, 3, 6);
+    const element = {
+      addEventListener() {},
+      removeEventListener() {},
+      getRootNode: () => ({ addEventListener() {}, removeEventListener() {} }),
+      style: {},
+      clientHeight: 800,
+    } as unknown as HTMLElement;
+    const controls = new OrbitControls(camera, element);
+    controls.enableDamping = true;
+    const internals = controls as OrbitControls & {
+      _sphericalDelta: THREE.Spherical;
+      _panOffset: THREE.Vector3;
+    };
+    const views = [
+      { position: new THREE.Vector3(8, 5, 9), up: new THREE.Vector3(0, 1, 0) },
+      { position: new THREE.Vector3(1, 2, 11), up: new THREE.Vector3(0, 1, 0) },
+      { position: new THREE.Vector3(1, 10, 3), up: new THREE.Vector3(0, 0, 1) },
+      { position: new THREE.Vector3(10, 2, 3), up: new THREE.Vector3(0, 0, 1) },
+    ];
+    for (const view of views) {
+      internals._sphericalDelta.theta = 0.8;
+      internals._sphericalDelta.phi = -0.4;
+      internals._panOffset.set(2, 1, -1);
+      clearOrbitMotion(controls);
+      camera.up.copy(view.up);
+      camera.position.copy(view.position);
+      controls.target.set(1, 2, 3);
+      controls.update();
+      const position = camera.position.clone();
+      const target = controls.target.clone();
+      for (let index = 0; index < 20; index += 1) controls.update();
+      expectVectorClose(camera.position, position);
+      expectVectorClose(controls.target, target);
+    }
+    controls.dispose();
   });
 
   it("offers ribbon only for complete ordered protein backbones", () => {

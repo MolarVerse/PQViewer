@@ -28,6 +28,7 @@ import {
   prepareTopology,
   sameFrameGeometryLayout,
   unwrapPointNear,
+  usesHighDetailGeometry,
   usesPointAtoms,
 } from "./scene/model";
 import type {
@@ -400,7 +401,9 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   useEffect(() => {
     const state = stateRef.current;
     if (!state) return;
-    applyScenePalette(state, scenePalettes[appearance]);
+    const palette = scenePalettes[appearance];
+    applyScenePalette(state, palette);
+    if (state.model) applyRenderablePalette(state, manifest, state.model, presentation, appearance, palette);
   }, [appearance]);
 
   useEffect(() => {
@@ -429,7 +432,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       sceneInfoRef.current?.(info);
     }
     const frameLayout = frameGeometryLayout(frameGeometry);
-    const configKey = renderConfigKey(presentation, appearance);
+    const configKey = renderConfigKey(presentation);
     const reuse = presentation.mode !== "ribbon"
       && state.preparedTopology?.count === model.count
       && state.renderTopology === state.preparedTopology
@@ -462,7 +465,6 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       state.lastViewSignal = viewSignal;
     }
   }, [
-    appearance,
     forceScale,
     frame,
     manifest,
@@ -635,6 +637,62 @@ function applyScenePalette(state: SceneState, palette: ScenePalette): void {
   }
 }
 
+function applyRenderablePalette(
+  state: SceneState,
+  manifest: Manifest,
+  model: PreparedScene,
+  presentation: ScenePresentation,
+  appearance: Appearance,
+  palette: ScenePalette,
+): void {
+  if (state.atomObject instanceof THREE.Points) {
+    const colors = state.atomObject.geometry.getAttribute("color") as THREE.BufferAttribute;
+    for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
+      const atom = model.instanceToAtom[instance];
+      const color = atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance);
+      colors.setXYZ(instance, color.r, color.g, color.b);
+    }
+    colors.needsUpdate = true;
+  } else if (state.atomObject instanceof THREE.InstancedMesh) {
+    for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
+      const atom = model.instanceToAtom[instance];
+      state.atomObject.setColorAt(
+        instance,
+        atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance),
+      );
+    }
+    if (state.atomObject.instanceColor) state.atomObject.instanceColor.needsUpdate = true;
+  }
+
+  setMaterialPalette(state.bonds, palette.bond, palette.bondOpacity);
+  setMaterialPalette(state.cell, palette.cell, palette.cellOpacity);
+  state.forces?.children.forEach((object) => setMaterialPalette(object, palette.force));
+  if (state.ribbon) {
+    const colors = state.ribbon.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const atoms = state.ribbon.geometry.getAttribute("atomIndex") as THREE.BufferAttribute;
+    for (let vertex = 0; vertex < atoms.count; vertex += 1) {
+      const atom = Math.round(atoms.getX(vertex));
+      const color = presentation.color === "element"
+        ? atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance)
+        : new THREE.Color(palette.ribbon);
+      colors.setXYZ(vertex, color.r, color.g, color.b);
+    }
+    colors.needsUpdate = true;
+  }
+}
+
+function setMaterialPalette(object: THREE.Object3D | null, color: string, opacity?: number): void {
+  if (!object) return;
+  object.traverse((child) => {
+    const material = (child as THREE.Object3D & { material?: THREE.Material | THREE.Material[] }).material;
+    const materials = Array.isArray(material) ? material : material ? [material] : [];
+    materials.forEach((entry) => {
+      if ("color" in entry && entry.color instanceof THREE.Color) entry.color.set(color);
+      if (opacity !== undefined && "opacity" in entry) entry.opacity = opacity;
+    });
+  });
+}
+
 function clearRenderables(state: SceneState): void {
   for (const object of [state.atomObject, state.bonds, state.cell, state.forces, state.ribbon]) {
     if (!object) continue;
@@ -672,7 +730,7 @@ function buildFrameRenderables(
       state.root.add(state.atomObject);
       state.pickables.push(state.atomObject);
     }
-    state.bonds = buildBonds(presentation, palette, frameGeometry.bondSegments);
+    state.bonds = buildBonds(presentation, palette, frameGeometry.bondKind, frameGeometry.bondSegments);
     if (state.bonds) state.root.add(state.bonds);
   }
   state.cell = presentation.cell ? buildCells(model, palette) : null;
@@ -785,9 +843,8 @@ function updateCells(cell: THREE.LineSegments, model: PreparedScene): void {
   cell.geometry.computeBoundingSphere();
 }
 
-function renderConfigKey(presentation: ScenePresentation, appearance: Appearance): string {
+function renderConfigKey(presentation: ScenePresentation): string {
   return JSON.stringify([
-    appearance,
     presentation.mode,
     presentation.water,
     presentation.hydrogens,
@@ -836,7 +893,7 @@ function buildAtoms(
     );
   }
 
-  const segments = presentation.quality === "high" ? [30, 20] : [18, 12];
+  const segments = usesHighDetailGeometry(presentation, count) ? [30, 20] : [18, 12];
   const geometry = new THREE.SphereGeometry(1, segments[0], segments[1]);
   const material = new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.02 });
   const mesh = new THREE.InstancedMesh(geometry, material, count);
@@ -859,10 +916,11 @@ function buildAtoms(
 function buildBonds(
   presentation: ScenePresentation,
   palette: ScenePalette,
+  kind: FrameGeometryPlan["bondKind"],
   segments: Segment[],
 ): THREE.Object3D | null {
   if (segments.length === 0) return null;
-  if (presentation.mode === "lines") {
+  if (kind === "lines") {
     const values = new Float32Array(segments.length * 6);
     segments.forEach(({ from, to }, index) => {
       from.toArray(values, index * 6);
@@ -876,7 +934,8 @@ function buildBonds(
     );
   }
   const radius = (presentation.mode === "licorice" ? 0.14 : 0.045) * Math.max(0.1, presentation.bondScale);
-  const geometry = new THREE.CylinderGeometry(radius, radius, 1, presentation.quality === "high" ? 12 : 8, 1, false);
+  const radialSegments = usesHighDetailGeometry(presentation, segments.length) ? 12 : 8;
+  const geometry = new THREE.CylinderGeometry(radius, radius, 1, radialSegments, 1, false);
   const material = new THREE.MeshStandardMaterial({
     color: palette.bond,
     roughness: 0.56,
@@ -1188,6 +1247,7 @@ function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | nu
 function fitCamera(state: SceneState, context: FitContext): void {
   const bounds = sceneFitBounds(state, context);
   if (!bounds) return;
+  clearOrbitMotion(state.controls);
   const center = bounds.getCenter(new THREE.Vector3());
   const verticalHalfFov = THREE.MathUtils.degToRad(state.camera.fov * 0.5);
   const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * state.camera.aspect);
@@ -1214,6 +1274,16 @@ function fitCamera(state: SceneState, context: FitContext): void {
   state.controls.target.copy(center);
   state.controls.update();
   state.lastFittedAspect = state.camera.aspect;
+}
+
+export function clearOrbitMotion(controls: OrbitControls): void {
+  const damping = controls.enableDamping;
+  controls.enableDamping = false;
+  try {
+    controls.update();
+  } finally {
+    controls.enableDamping = damping;
+  }
 }
 
 function layoutKey(model: PreparedScene, presentation: ScenePresentation): string {

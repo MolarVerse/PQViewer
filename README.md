@@ -59,6 +59,9 @@ evenly sampled, with displayed and total vector counts reported under Data.
 
 Playback defaults to every frame. Realtime playback, wrapping, geometry scale,
 quality, and appearance are available under Customize.
+Dense or replicated scenes stay responsive by switching atom instances above
+80,000 to points and bond segments above 80,000 to lines, including when High
+quality is selected.
 
 For publication images, choose More → Render image or press `Cmd/Ctrl+Shift+S`.
 Export a preset or custom PNG with the canvas or a transparent background. Fit

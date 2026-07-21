@@ -17,6 +17,7 @@ import type {
 type LoadState = "loading" | "ready" | "error";
 type PlaybackMode = "every-frame" | "realtime";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
+type WorkspacePresentationDefaults = Partial<Pick<ScenePresentation, "wrap" | "color">>;
 type ForceVectorStats = { rendered: number; total: number };
 type IconName = "back" | "check" | "chevron" | "close" | "command" | "cube" | "folder" | "more" | "next" | "pause" | "play" | "retry" | "search";
 
@@ -47,6 +48,7 @@ export default function App() {
   const [speed, setSpeed] = useState(1);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>(initialPlaybackMode);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
+  const [workspacePresentationDefaults, setWorkspacePresentationDefaults] = useState<WorkspacePresentationDefaults>(initialWorkspacePresentationDefaults);
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtom, setSelectedAtom] = useState<number | null>(null);
   const [showInspector, setShowInspector] = useState(false);
@@ -112,6 +114,16 @@ export default function App() {
       window.localStorage.setItem("pqviewer-playback", playbackMode);
     } catch {}
   }, [playbackMode, presentation]);
+
+  useEffect(() => {
+    try {
+      if (Object.keys(workspacePresentationDefaults).length === 0) {
+        window.localStorage.removeItem("pqviewer-workspace-presentation");
+      } else {
+        window.localStorage.setItem("pqviewer-workspace-presentation", JSON.stringify(workspacePresentationDefaults));
+      }
+    } catch {}
+  }, [workspacePresentationDefaults]);
 
   useEffect(() => {
     let active = true;
@@ -265,24 +277,47 @@ export default function App() {
     setProfile("custom");
   }, []);
 
+  const updateWorkspacePresentation = useCallback((change: Partial<ScenePresentation>) => {
+    if (change.wrap !== undefined || change.color !== undefined) {
+      setWorkspacePresentationDefaults((current) => ({
+        ...current,
+        ...(change.wrap !== undefined ? { wrap: change.wrap } : {}),
+        ...(change.color !== undefined ? { color: change.color } : {}),
+      }));
+    }
+    updatePresentation(change);
+  }, [updatePresentation]);
+
   const chooseProfile = useCallback((nextProfile: Exclude<SceneProfile, "custom">) => {
     if (!capabilities) return;
-    const resolved = nextProfile === "auto"
-      ? autoProfile(capabilities, forceAvailable, series.length > 0)
-      : nextProfile;
-    setPresentation((current) => profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities));
+    setPresentation((current) => selectedProfilePresentation(
+      nextProfile,
+      current,
+      cellAvailable,
+      forceAvailable,
+      series.length > 0,
+      capabilities,
+      workspacePresentationDefaults,
+    ));
     setProfile(nextProfile);
     setResetSignal((value) => value + 1);
-  }, [capabilities, cellAvailable, forceAvailable, series.length]);
+  }, [capabilities, cellAvailable, forceAvailable, series.length, workspacePresentationDefaults]);
 
   useEffect(() => {
     if (!manifest || !frame || !capabilities || profile !== "auto") return;
     const key = `${manifest.name}:${manifest.topology.atom_count}`;
     if (autoProfileKey.current === key) return;
     autoProfileKey.current = key;
-    const resolved = autoProfile(capabilities, forceAvailable, series.length > 0);
-    setPresentation((current) => profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities));
-  }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile, series.length]);
+    setPresentation((current) => selectedProfilePresentation(
+      "auto",
+      current,
+      cellAvailable,
+      forceAvailable,
+      series.length > 0,
+      capabilities,
+      workspacePresentationDefaults,
+    ));
+  }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile, series.length, workspacePresentationDefaults]);
 
   useEffect(() => {
     if (!sceneOpen && !moreOpen) return;
@@ -659,8 +694,9 @@ export default function App() {
           presentation={presentation}
           onAppearance={setAppearance}
           onPlaybackMode={setPlaybackMode}
-          onPresentation={updatePresentation}
+          onPresentation={updateWorkspacePresentation}
           onReset={() => {
+            setWorkspacePresentationDefaults({});
             if (capabilities) {
               const resolved = autoProfile(capabilities, forceAvailable, series.length > 0);
               setPresentation(profilePresentation(resolved, defaultPresentation, cellAvailable, forceAvailable, capabilities));
@@ -1172,13 +1208,8 @@ function RenderSheet({
     { label: "Portrait", detail: "3:4", width: 1800, height: 2400 },
   ];
   const pixels = width * height;
-  const invalid = !Number.isFinite(width)
-    || !Number.isFinite(height)
-    || width < 512
-    || height < 512
-    || width > 6000
-    || height > 6000
-    || pixels > MAX_PNG_EXPORT_PIXELS;
+  const validationMessage = renderSizeValidationMessage(width, height);
+  const invalid = validationMessage !== null;
 
   return <div className="customize-backdrop render-backdrop" onPointerDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
     <aside ref={panelRef} className="customize-sheet render-sheet" role="dialog" aria-modal="true" aria-label="Render image" tabIndex={-1}>
@@ -1208,7 +1239,7 @@ function RenderSheet({
           <i>×</i>
           <label><span>Height</span><input type="number" min={512} max={6000} step={1} value={height} disabled={busy} onChange={(event) => setHeight(Number(event.target.value))} onBlur={() => setHeight(clamp(Math.round(height || 512), 512, 6000))} /></label>
         </div>
-        <small>{invalid ? "Maximum output is 24 megapixels." : `${(pixels / 1_000_000).toFixed(1)} MP · sRGB PNG`}</small>
+        <small>{validationMessage ?? `${(pixels / 1_000_000).toFixed(1)} MP · sRGB PNG`}</small>
       </section>
 
       <section className="settings-section">
@@ -1702,6 +1733,22 @@ export function autoProfile(
   return "molecule";
 }
 
+export function selectedProfilePresentation(
+  selectedProfile: Exclude<SceneProfile, "custom">,
+  current: ScenePresentation,
+  cellAvailable: boolean,
+  forceAvailable: boolean,
+  hasSeries: boolean,
+  capabilities: SceneCapabilities,
+  workspaceDefaults: WorkspacePresentationDefaults = {},
+): ScenePresentation {
+  const resolved = selectedProfile === "auto"
+    ? autoProfile(capabilities, forceAvailable, hasSeries)
+    : selectedProfile;
+  const next = profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  return selectedProfile === "auto" ? { ...next, ...workspaceDefaults } : next;
+}
+
 export function profilePresentation(
   profile: Exclude<SceneProfile, "auto" | "custom">,
   current: ScenePresentation,
@@ -1807,6 +1854,27 @@ function renderFileName(name: string | undefined, width: number, height: number)
   return `${base}-${width}x${height}.png`;
 }
 
+export function renderSizeValidationMessage(width: number, height: number): string | null {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return "Enter a valid width and height.";
+  const fractional = dimensionSubject(!Number.isInteger(width), !Number.isInteger(height));
+  if (fractional) return fractional === "Width and height"
+    ? "Width and height must be whole numbers of pixels."
+    : `${fractional} must be a whole number of pixels.`;
+  const belowMinimum = dimensionSubject(width < 512, height < 512);
+  if (belowMinimum) return `${belowMinimum} must be at least 512 px.`;
+  const aboveMaximum = dimensionSubject(width > 6000, height > 6000);
+  if (aboveMaximum) return `${aboveMaximum} cannot exceed 6,000 px.`;
+  if (width * height > MAX_PNG_EXPORT_PIXELS) return "Maximum output is 24 megapixels.";
+  return null;
+}
+
+function dimensionSubject(width: boolean, height: boolean): string {
+  if (width && height) return "Width and height";
+  if (width) return "Width";
+  if (height) return "Height";
+  return "";
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -1858,6 +1926,29 @@ function initialPresentation(): ScenePresentation {
     };
   } catch {
     return defaultPresentation;
+  }
+}
+
+function initialWorkspacePresentationDefaults(): WorkspacePresentationDefaults {
+  try {
+    return parseWorkspacePresentationDefaults(window.localStorage.getItem("pqviewer-workspace-presentation"));
+  } catch {
+    return {};
+  }
+}
+
+export function parseWorkspacePresentationDefaults(value: string | null): WorkspacePresentationDefaults {
+  try {
+    const parsed = JSON.parse(value ?? "null") as WorkspacePresentationDefaults | null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const wraps: ScenePresentation["wrap"][] = ["atom", "molecule", "none"];
+    const colors: ScenePresentation["color"][] = ["element", "residue", "chain"];
+    return {
+      ...(wraps.includes(parsed.wrap as ScenePresentation["wrap"]) ? { wrap: parsed.wrap } : {}),
+      ...(colors.includes(parsed.color as ScenePresentation["color"]) ? { color: parsed.color } : {}),
+    };
+  } catch {
+    return {};
   }
 }
 
