@@ -20,6 +20,21 @@ export interface Segment {
   to: THREE.Vector3;
 }
 
+export interface PublicationContextAtom {
+  atomIndex: number;
+  image: CellOffset;
+  position: THREE.Vector3;
+}
+
+export interface PublicationBondSegment extends Segment {
+  context: boolean;
+}
+
+export interface PublicationBondGeometry {
+  segments: PublicationBondSegment[];
+  contextAtoms: PublicationContextAtom[];
+}
+
 export interface BackboneResidue {
   residueIndex: number;
   n: number;
@@ -367,6 +382,90 @@ export function sceneBondSegments(
     }
   }
   return segments;
+}
+
+export function publicationBondGeometry(
+  model: PreparedScene,
+  presentation: ScenePresentation,
+  periodicContext: boolean,
+): PublicationBondGeometry {
+  if (!periodicContext) {
+    return {
+      segments: sceneBondSegments(model, presentation).map((segment) => ({ ...segment, context: false })),
+      contextAtoms: [],
+    };
+  }
+  if (presentation.mode === "spacefill" || presentation.mode === "ribbon") {
+    return { segments: [], contextAtoms: [] };
+  }
+
+  const visible = new Set(model.visibleAtoms);
+  const includedImages = new Set(model.images.map(cellOffsetKey));
+  const contextAtoms = new Map<string, PublicationContextAtom>();
+  const segments = new Map<string, PublicationBondSegment>();
+  const bonds = model.bonds
+    .filter(([a, b]) => visible.has(a) && visible.has(b))
+    .map(([a, b]) => ({
+      a,
+      b,
+      shift: presentation.wrap === "atom"
+        ? minimumImageBondShift(model.positions, a, b, model.basis, model.pbc)
+        : [0, 0, 0] as CellOffset,
+    }));
+  const appendBond = (
+    fromAtom: number,
+    fromImage: CellOffset,
+    toAtom: number,
+    toImage: CellOffset,
+  ) => {
+    const fromKey = `${fromAtom}:${cellOffsetKey(fromImage)}`;
+    const toKey = `${toAtom}:${cellOffsetKey(toImage)}`;
+    const segmentKey = fromKey < toKey ? `${fromKey}|${toKey}` : `${toKey}|${fromKey}`;
+    if (segments.has(segmentKey)) return;
+    const from = new THREE.Vector3().fromArray(model.positions, fromAtom * 3)
+      .add(imageTranslation(fromImage, model.basis));
+    const to = new THREE.Vector3().fromArray(model.positions, toAtom * 3)
+      .add(imageTranslation(toImage, model.basis));
+    const context = !includedImages.has(cellOffsetKey(toImage));
+    segments.set(segmentKey, { from, to, context });
+    if (context && !contextAtoms.has(toKey)) {
+      contextAtoms.set(toKey, { atomIndex: toAtom, image: toImage, position: to.clone() });
+    }
+  };
+  for (const image of model.images) {
+    for (const { a, b, shift: bondShift } of bonds) {
+      const bImage: CellOffset = [
+        image[0] + bondShift[0],
+        image[1] + bondShift[1],
+        image[2] + bondShift[2],
+      ];
+      const aImage: CellOffset = [
+        image[0] - bondShift[0],
+        image[1] - bondShift[1],
+        image[2] - bondShift[2],
+      ];
+      appendBond(a, image, b, bImage);
+      appendBond(b, image, a, aImage);
+    }
+  }
+  return { segments: [...segments.values()], contextAtoms: [...contextAtoms.values()] };
+}
+
+export function minimumImageBondShift(
+  positions: Float32Array,
+  aIndex: number,
+  bIndex: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): CellOffset {
+  if (!basis || !pbc.some(Boolean)) return [0, 0, 0];
+  const a = new THREE.Vector3().fromArray(positions, aIndex * 3);
+  const b = new THREE.Vector3().fromArray(positions, bIndex * 3);
+  const direct = toFractional(b, basis).sub(toFractional(a, basis));
+  const minimum = minimumImageFraction(direct, basis, pbc);
+  return [0, 1, 2].map((axis) => (
+    pbc[axis] ? Math.round(minimum.getComponent(axis) - direct.getComponent(axis)) : 0
+  )) as CellOffset;
 }
 
 export function includeCellInFit(atomSpan: number, cellSpan: number, images: CellOffset[]): boolean {
@@ -1028,6 +1127,10 @@ function clampImage(value: number): number {
 
 function imageDistance(value: CellOffset): number {
   return Math.abs(value[0]) + Math.abs(value[1]) + Math.abs(value[2]);
+}
+
+function cellOffsetKey(value: CellOffset): string {
+  return `${value[0]}:${value[1]}:${value[2]}`;
 }
 
 const symbolToNumber: Record<string, number> = {

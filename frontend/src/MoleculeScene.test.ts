@@ -17,9 +17,11 @@ import {
   MAX_HIGH_DETAIL_INSTANCES,
   MAX_INFERRED_BOND_CANDIDATES,
   MAX_SPHERE_INSTANCES,
+  minimumImageBondShift,
   periodicImageOffsets,
   prepareFrameGeometry,
   prepareScene,
+  publicationBondGeometry,
   representationRadius,
   sameFrameGeometryLayout,
   usesHighDetailGeometry,
@@ -175,6 +177,86 @@ describe("periodic geometry", () => {
     });
   });
 
+  it("completes publication bonds with neighbor-image context", () => {
+    const positions = [
+      ...toCartesian([0.45, 0.2, 0.1]).toArray(),
+      ...toCartesian([-0.45, 0.22, 0.08]).toArray(),
+    ];
+    const scene = prepareScene(
+      manifest([6, 6], [[0, 1]]),
+      frame(positions, [...triclinicCell], [true, true, true]),
+      basePresentation,
+    )!;
+
+    expect(minimumImageBondShift(scene.positions, 0, 1, scene.basis, scene.pbc)).toEqual([1, 0, 0]);
+
+    const interactive = publicationBondGeometry(scene, basePresentation, false);
+    expect(interactive.segments).toHaveLength(2);
+    expect(interactive.segments.every((segment) => !segment.context)).toBe(true);
+    expect(interactive.contextAtoms).toEqual([]);
+
+    const publication = publicationBondGeometry(scene, basePresentation, true);
+    expect(publication.segments).toHaveLength(2);
+    expect(publication.segments.every((segment) => segment.context)).toBe(true);
+    publication.segments.forEach((segment) => {
+      expect(segment.from.distanceTo(segment.to)).toBeCloseTo(toCartesian([0.1, 0.02, -0.02]).length(), 6);
+    });
+    expect(publication.contextAtoms).toHaveLength(2);
+    expect(publication.contextAtoms.map(({ atomIndex, image }) => ({ atomIndex, image }))).toEqual([
+      { atomIndex: 1, image: [1, 0, 0] },
+      { atomIndex: 0, image: [-1, 0, 0] },
+    ]);
+    expect(toFractional(publication.contextAtoms[0].position).x).toBeCloseTo(0.55, 6);
+    expect(toFractional(publication.contextAtoms[1].position).x).toBeCloseTo(-0.55, 6);
+  });
+
+  it("deduplicates periodic context atoms across bonds and included images", () => {
+    const presentation: ScenePresentation = {
+      ...basePresentation,
+      images: { min: [0, 0, 0], max: [1, 0, 0] },
+    };
+    const positions = [
+      ...toCartesian([0.44, 0.18, 0.1]).toArray(),
+      ...toCartesian([0.46, 0.26, 0.08]).toArray(),
+      ...toCartesian([-0.45, 0.22, 0.09]).toArray(),
+    ];
+    const scene = prepareScene(
+      manifest([6, 6, 6], [[0, 2], [1, 2]]),
+      frame(positions, [...triclinicCell], [true, true, true]),
+      presentation,
+    )!;
+
+    const geometry = publicationBondGeometry(scene, presentation, true);
+    expect(scene.images).toEqual([[0, 0, 0], [1, 0, 0]]);
+    expect(geometry.segments).toHaveLength(6);
+    expect(geometry.segments.filter((segment) => segment.context)).toHaveLength(4);
+    expect(geometry.segments.every((segment) => segment.from.distanceTo(segment.to) < 1)).toBe(true);
+    expect(geometry.contextAtoms).toHaveLength(3);
+    expect(geometry.contextAtoms.map(({ atomIndex, image }) => ({ atomIndex, image }))).toEqual([
+      { atomIndex: 0, image: [-1, 0, 0] },
+      { atomIndex: 1, image: [-1, 0, 0] },
+      { atomIndex: 2, image: [2, 0, 0] },
+    ]);
+  });
+
+  it("omits publication bonds for representations without bonds", () => {
+    const scene = prepareScene(
+      manifest([6, 6], [[0, 1]]),
+      frame([0, 0, 0, 1.4, 0, 0]),
+      basePresentation,
+    )!;
+    expect(publicationBondGeometry(scene, basePresentation, true)).toMatchObject({
+      segments: [{ context: false }],
+      contextAtoms: [],
+    });
+    for (const mode of ["spacefill", "ribbon"] as const) {
+      expect(publicationBondGeometry(scene, { ...basePresentation, mode }, true)).toEqual({
+        segments: [],
+        contextAtoms: [],
+      });
+    }
+  });
+
   it("finds the exact minimum image in an unreduced triclinic cell", () => {
     const cell = new Float32Array([
       1, 0, 0,
@@ -190,11 +272,17 @@ describe("periodic geometry", () => {
 
     expect(totalLength).toBeCloseTo(Math.hypot(0.1, 0.49), 6);
     expect(segments.length).toBeGreaterThan(2);
+    expect(minimumImageBondShift(positions, 0, 1, cellBasis(cell), [true, true, false])).toEqual([-5, 0, 0]);
 
     const topology = manifest([6, 6]);
     topology.topology.bond_source = "inferred";
     const scene = prepareScene(topology, frame([...positions], [...cell], [true, true, false]), basePresentation);
     expect(scene?.bonds).toEqual([[0, 1]]);
+    const publication = publicationBondGeometry(scene!, basePresentation, true);
+    expect(publication.segments).toHaveLength(2);
+    publication.segments.forEach((segment) => {
+      expect(segment.from.distanceTo(segment.to)).toBeCloseTo(Math.hypot(0.1, 0.49), 6);
+    });
   });
 
   it("places the primary triclinic cell at centered fractional limits", () => {
@@ -227,6 +315,10 @@ describe("periodic geometry", () => {
     const centroidX = (scene!.positions[0] + scene!.positions[3] + scene!.positions[6]) / 3;
     expect(centroidX).toBeGreaterThanOrEqual(-5);
     expect(centroidX).toBeLessThan(5);
+    const publication = publicationBondGeometry(scene!, { ...basePresentation, wrap: "molecule" }, true);
+    expect(publication.contextAtoms).toEqual([]);
+    expect(publication.segments).toHaveLength(2);
+    expect(publication.segments[0].from.distanceTo(publication.segments[0].to)).toBeCloseTo(0.8, 5);
   });
 
   it("keeps inferred plain-XYZ molecules whole across the boundary", () => {

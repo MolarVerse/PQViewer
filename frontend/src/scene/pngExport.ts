@@ -3,6 +3,8 @@ export interface PngExportOptions {
   height: number;
   transparent?: boolean;
   fit?: boolean;
+  projection?: "orthographic" | "perspective";
+  periodicContext?: boolean;
   /** Fraction of the frame reserved on each edge when fitting. */
   padding?: number;
 }
@@ -12,6 +14,8 @@ export interface ResolvedPngExportOptions {
   height: number;
   transparent: boolean;
   fit: boolean;
+  projection: "orthographic" | "perspective";
+  periodicContext: boolean;
   padding: number;
 }
 
@@ -48,15 +52,28 @@ export function resolvePngExportOptions(
     width,
     height,
     transparent: options.transparent ?? false,
-    fit: options.fit ?? false,
+    fit: options.fit ?? true,
+    projection: options.projection ?? "orthographic",
+    periodicContext: options.periodicContext ?? true,
     padding,
   };
 }
 
-export function pngExportSampleCount(pixelCount: number, maxSamples: number): number {
-  if (!Number.isFinite(pixelCount) || pixelCount <= 0 || !Number.isFinite(maxSamples) || maxSamples < 2) return 0;
-  const requested = pixelCount <= 4_000_000 ? 4 : pixelCount <= 12_000_000 ? 2 : 0;
-  return Math.min(requested, Math.floor(maxSamples));
+/** Number of jittered samples expressed as 2^level. */
+export function pngExportSampleLevel(pixelCount: number): number {
+  if (!Number.isFinite(pixelCount) || pixelCount <= 0) return 0;
+  if (pixelCount <= 5_000_000) return 3;
+  if (pixelCount <= 8_000_000) return 2;
+  if (pixelCount <= 12_000_000) return 1;
+  return 0;
+}
+
+/** Fractional AO buffer size. Large renders skip AO to protect GPU memory. */
+export function pngExportAoScale(pixelCount: number): number {
+  if (!Number.isFinite(pixelCount) || pixelCount <= 0) return 0;
+  if (pixelCount <= 8_000_000) return 0.5;
+  if (pixelCount <= 12_000_000) return 0.35;
+  return 0;
 }
 
 export function hasVisiblePngContent(pixels: Uint8Array, transparent: boolean): boolean {
@@ -95,23 +112,6 @@ export function flipRgbaRowsInPlace(pixels: Uint8Array, width: number, height: n
     row.set(pixels.subarray(topOffset, topOffset + rowLength));
     pixels.copyWithin(topOffset, bottomOffset, bottomOffset + rowLength);
     pixels.set(row, bottomOffset);
-  }
-}
-
-export function unpremultiplyRgbaInPlace(pixels: Uint8Array): void {
-  if (pixels.length % 4 !== 0) throw new Error("PNG pixel buffer has an unexpected size");
-  for (let offset = 0; offset < pixels.length; offset += 4) {
-    const alpha = pixels[offset + 3];
-    if (alpha === 0) {
-      pixels[offset] = 0;
-      pixels[offset + 1] = 0;
-      pixels[offset + 2] = 0;
-    } else if (alpha < 255) {
-      const scale = 255 / alpha;
-      pixels[offset] = Math.min(255, Math.round(pixels[offset] * scale));
-      pixels[offset + 1] = Math.min(255, Math.round(pixels[offset + 1] * scale));
-      pixels[offset + 2] = Math.min(255, Math.round(pixels[offset + 2] * scale));
-    }
   }
 }
 

@@ -714,6 +714,10 @@ export default function App() {
         />}
         {renderOpen && <RenderSheet
           busy={rendering}
+          periodicAvailable={pbc.some(Boolean)
+            && presentation.wrap === "atom"
+            && presentation.mode !== "spacefill"
+            && presentation.mode !== "ribbon"}
           onRender={exportPng}
           onClose={() => !rendering && setRenderOpen(false)}
         />}
@@ -1188,10 +1192,12 @@ function CustomizeSheet({
 
 function RenderSheet({
   busy,
+  periodicAvailable,
   onRender,
   onClose,
 }: {
   busy: boolean;
+  periodicAvailable: boolean;
   onRender: (options: PngExportOptions) => Promise<void>;
   onClose: () => void;
 }) {
@@ -1199,6 +1205,8 @@ function RenderSheet({
   const [height, setHeight] = useState(1800);
   const [transparent, setTransparent] = useState(false);
   const [fit, setFit] = useState(true);
+  const [projection, setProjection] = useState<"orthographic" | "perspective">("orthographic");
+  const [periodicContext, setPeriodicContext] = useState(true);
   const panelRef = useRef<HTMLElement>(null);
   useModalFocus(panelRef);
   const presets = [
@@ -1213,7 +1221,7 @@ function RenderSheet({
 
   return <div className="customize-backdrop render-backdrop" onPointerDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
     <aside ref={panelRef} className="customize-sheet render-sheet" role="dialog" aria-modal="true" aria-label="Render image" tabIndex={-1}>
-      <div className="sheet-heading"><div><strong>Render image</strong><span>Publication-ready PNG</span></div><button className="icon-button" type="button" disabled={busy} onClick={onClose} aria-label="Close render image"><Icon name="close" /></button></div>
+      <div className="sheet-heading"><div><strong>Render image</strong><span>High-resolution PNG</span></div><button className="icon-button" type="button" disabled={busy} onClick={onClose} aria-label="Close render image"><Icon name="close" /></button></div>
 
       <section className="settings-section">
         <h3>Format</h3>
@@ -1242,24 +1250,44 @@ function RenderSheet({
         <small>{validationMessage ?? `${(pixels / 1_000_000).toFixed(1)} MP · sRGB PNG`}</small>
       </section>
 
-      <section className="settings-section">
-        <h3>Background</h3>
-        <div className="settings-segmented">
-          <button type="button" className={!transparent ? "is-active" : ""} aria-pressed={!transparent} disabled={busy} onClick={() => setTransparent(false)}>Canvas</button>
-          <button type="button" className={transparent ? "is-active" : ""} aria-pressed={transparent} disabled={busy} onClick={() => setTransparent(true)}>Transparent</button>
-        </div>
-      </section>
+      <div className="render-options-grid">
+        <section className="settings-section">
+          <h3>Background</h3>
+          <div className="settings-segmented">
+            <button type="button" className={!transparent ? "is-active" : ""} aria-pressed={!transparent} disabled={busy} onClick={() => setTransparent(false)}>White</button>
+            <button type="button" className={transparent ? "is-active" : ""} aria-pressed={transparent} disabled={busy} onClick={() => setTransparent(true)}>Transparent</button>
+          </div>
+        </section>
 
-      <section className="settings-section">
-        <h3>Composition</h3>
-        <div className="settings-segmented">
-          <button type="button" className={fit ? "is-active" : ""} aria-pressed={fit} disabled={busy} onClick={() => setFit(true)}>Fit</button>
-          <button type="button" className={!fit ? "is-active" : ""} aria-pressed={!fit} disabled={busy} onClick={() => setFit(false)}>Current</button>
-        </div>
-        <small>Fit keeps the current orientation and adds balanced space.</small>
-      </section>
+        <section className="settings-section">
+          <h3>Projection</h3>
+          <div className="settings-segmented">
+            <button type="button" className={projection === "orthographic" ? "is-active" : ""} aria-pressed={projection === "orthographic"} disabled={busy} onClick={() => setProjection("orthographic")}>Orthographic</button>
+            <button type="button" className={projection === "perspective" ? "is-active" : ""} aria-pressed={projection === "perspective"} disabled={busy} onClick={() => setProjection("perspective")}>Perspective</button>
+          </div>
+          <small>Orthographic preserves scale.</small>
+        </section>
 
-      <div className="sheet-actions"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="primary" type="button" disabled={invalid || busy} onClick={() => void onRender({ width, height, transparent, fit, padding: 0.08 })}>{busy ? "Rendering…" : "Render PNG"}</button></div>
+        <section className="settings-section">
+          <h3>Composition</h3>
+          <div className="settings-segmented">
+            <button type="button" className={fit ? "is-active" : ""} aria-pressed={fit} disabled={busy} onClick={() => setFit(true)}>Fit</button>
+            <button type="button" className={!fit ? "is-active" : ""} aria-pressed={!fit} disabled={busy} onClick={() => setFit(false)}>Keep framing</button>
+          </div>
+          <small>Fit adds even margins.</small>
+        </section>
+
+        {periodicAvailable && <section className="settings-section">
+          <h3>Boundary bonds</h3>
+          <div className="settings-segmented">
+            <button type="button" className={periodicContext ? "is-active" : ""} aria-pressed={periodicContext} disabled={busy} onClick={() => setPeriodicContext(true)}>Complete</button>
+            <button type="button" className={!periodicContext ? "is-active" : ""} aria-pressed={!periodicContext} disabled={busy} onClick={() => setPeriodicContext(false)}>Clipped</button>
+          </div>
+          <small>Complete adds periodic neighbors.</small>
+        </section>}
+      </div>
+
+      <div className="sheet-actions"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="primary" type="button" disabled={invalid || busy} onClick={() => void onRender({ width, height, transparent, fit, projection, periodicContext, padding: 0.08 })}>{busy ? "Rendering…" : "Render PNG"}</button></div>
     </aside>
   </div>;
 }

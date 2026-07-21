@@ -6,11 +6,12 @@ import {
   encodeRgbaPng,
   hasVisiblePngContent,
   MAX_PNG_EXPORT_PIXELS,
-  pngExportSampleCount,
+  pngExportAoScale,
+  pngExportSampleLevel,
   resolvePngExportOptions,
-  unpremultiplyRgbaInPlace,
 } from "./scene/pngExport";
 import type { PngExportLimits, PngExportOptions, ResolvedPngExportOptions } from "./scene/pngExport";
+import { publicationCamera, publicationContextUsesPoints } from "./scene/publication";
 import {
   backboneResidues,
   cellImageCorners,
@@ -22,10 +23,13 @@ import {
   imageTranslation,
   imageLayoutShape,
   includeCellInFit,
+  MAX_BOND_INSTANCES,
+  MAX_SPHERE_INSTANCES,
   periodicBondSegments,
   prepareFrameGeometry,
   prepareScene,
   prepareTopology,
+  publicationBondGeometry,
   sameFrameGeometryLayout,
   unwrapPointNear,
   usesHighDetailGeometry,
@@ -47,6 +51,11 @@ import type {
   SceneCapabilities,
   ScenePresentation,
 } from "./types";
+
+type GtaoPassConstructor = typeof import("three/examples/jsm/postprocessing/GTAOPass.js").GTAOPass;
+type LineMaterialConstructor = typeof import("three/examples/jsm/lines/LineMaterial.js").LineMaterial;
+type LineSegments2Constructor = typeof import("three/examples/jsm/lines/LineSegments2.js").LineSegments2;
+type LineSegmentsGeometryConstructor = typeof import("three/examples/jsm/lines/LineSegmentsGeometry.js").LineSegmentsGeometry;
 
 export {
   centeredFramePositions,
@@ -487,19 +496,83 @@ async function exportScenePng(state: SceneState, options: PngExportOptions): Pro
   const renderer = state.renderer;
   const gl = renderer.getContext();
   if (gl.isContextLost()) throw new Error("PNG export is unavailable because the WebGL context was lost");
+  const [
+    { GTAOPass },
+    { OutputPass },
+    { SSAARenderPass },
+    { LineMaterial },
+    { LineSegments2 },
+    { LineSegmentsGeometry },
+  ] = await Promise.all([
+    import("three/examples/jsm/postprocessing/GTAOPass.js"),
+    import("three/examples/jsm/postprocessing/OutputPass.js"),
+    import("three/examples/jsm/postprocessing/SSAARenderPass.js"),
+    import("three/examples/jsm/lines/LineMaterial.js"),
+    import("three/examples/jsm/lines/LineSegments2.js"),
+    import("three/examples/jsm/lines/LineSegmentsGeometry.js"),
+  ]);
   const resolved = resolvePngExportOptions(options, rendererPngLimits(renderer, gl));
-  const camera = exportCamera(state, resolved);
-  const maxSamples = renderer.capabilities.isWebGL2
-    ? Number((gl as WebGL2RenderingContext).getParameter((gl as WebGL2RenderingContext).MAX_SAMPLES))
-    : 0;
-  const target = new THREE.WebGLRenderTarget(resolved.width, resolved.height, {
+  const publication = buildPublicationScene(state, resolved, { LineMaterial, LineSegments2, LineSegmentsGeometry });
+  const camera = publicationCamera(
+    publication.root,
+    state.camera,
+    state.controls.target,
+    resolved.width,
+    resolved.height,
+    resolved.projection,
+    resolved.fit,
+    resolved.padding,
+  );
+  addPublicationLights(publication.scene, publication.root, camera);
+
+  const supportsHdrTargets = renderer.capabilities.isWebGL2
+    ? renderer.extensions.has("EXT_color_buffer_float")
+    : renderer.extensions.has("EXT_color_buffer_half_float");
+  const hdrType = supportsHdrTargets
+    ? THREE.HalfFloatType
+    : THREE.UnsignedByteType;
+  const beautyTarget = new THREE.WebGLRenderTarget(resolved.width, resolved.height, {
     depthBuffer: true,
+    format: THREE.RGBAFormat,
+    stencilBuffer: false,
+    type: hdrType,
+  });
+  beautyTarget.texture.name = "Publication beauty";
+  const outputTarget = new THREE.WebGLRenderTarget(resolved.width, resolved.height, {
+    depthBuffer: false,
     format: THREE.RGBAFormat,
     stencilBuffer: false,
     type: THREE.UnsignedByteType,
   });
-  target.samples = pngExportSampleCount(resolved.width * resolved.height, maxSamples);
-  target.texture.colorSpace = renderer.outputColorSpace;
+  outputTarget.texture.name = "Publication sRGB";
+
+  const pixelsCount = resolved.width * resolved.height;
+  const sampleLevel = supportsHdrTargets ? pngExportSampleLevel(pixelsCount) : 0;
+  const aoScale = supportsHdrTargets && renderer.capabilities.isWebGL2 && publication.hasAoGeometry
+    ? pngExportAoScale(pixelsCount)
+    : 0;
+  const aoTarget = aoScale > 0
+    ? new THREE.WebGLRenderTarget(resolved.width, resolved.height, {
+      depthBuffer: false,
+      format: THREE.RGBAFormat,
+      stencilBuffer: false,
+      type: hdrType,
+    })
+    : null;
+  if (aoTarget) aoTarget.texture.name = "Publication ambient occlusion";
+  const ssaaPass = sampleLevel > 0
+    ? new SSAARenderPass(publication.scene, camera, 0x000000, 0)
+    : null;
+  if (ssaaPass) {
+    ssaaPass.sampleLevel = sampleLevel;
+    ssaaPass.unbiased = true;
+  }
+  const gtaoPass = aoTarget
+    ? publicationGtaoPass(GTAOPass, publication.scene, publication.root, camera, resolved, aoScale)
+    : null;
+  const outputPass = new OutputPass();
+  outputPass.renderToScreen = false;
+  configurePublicationOutput(outputPass, resolved.transparent);
 
   const previousTarget = renderer.getRenderTarget();
   const previousCubeFace = renderer.getActiveCubeFace();
@@ -509,41 +582,69 @@ async function exportScenePng(state: SceneState, options: PngExportOptions): Pro
   const previousScissorTest = renderer.getScissorTest();
   const previousClearColor = renderer.getClearColor(new THREE.Color()).clone();
   const previousClearAlpha = renderer.getClearAlpha();
-  const previousBackground = state.scene.background;
-  const previousSelectionVisible = state.selection.visible;
   const previousXrEnabled = renderer.xr.enabled;
+  const previousToneMapping = renderer.toneMapping;
+  const previousExposure = renderer.toneMappingExposure;
+  const previousOutputColorSpace = renderer.outputColorSpace;
+  const previousAutoClear = renderer.autoClear;
   const pixels = new Uint8Array(resolved.width * resolved.height * 4);
   let renderError: unknown = null;
 
   try {
     drainWebGlErrors(gl);
-    renderer.initRenderTarget(target);
-    if (resolved.transparent) {
-      state.scene.background = null;
-      renderer.setClearColor(0x000000, 0);
-    }
-    state.selection.visible = false;
+    renderer.initRenderTarget(beautyTarget);
+    renderer.initRenderTarget(outputTarget);
+    if (aoTarget) renderer.initRenderTarget(aoTarget);
     renderer.xr.enabled = false;
-    renderer.setRenderTarget(target);
-    renderer.setViewport(0, 0, resolved.width, resolved.height);
+    renderer.toneMapping = THREE.NeutralToneMapping;
+    renderer.toneMappingExposure = publicationPalette.exposure;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.autoClear = true;
     renderer.setScissorTest(false);
-    renderer.clear(true, true, true);
-    renderer.render(state.scene, camera);
-    renderer.readRenderTargetPixels(target, 0, 0, resolved.width, resolved.height, pixels);
+
+    if (ssaaPass) {
+      ssaaPass.render(renderer, beautyTarget, beautyTarget, 0, false);
+    } else {
+      renderer.setRenderTarget(beautyTarget);
+      renderer.setViewport(0, 0, resolved.width, resolved.height);
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, true, true);
+      renderer.render(publication.scene, camera);
+    }
+
+    let colorTarget = beautyTarget;
+    if (gtaoPass && aoTarget) {
+      gtaoPass.render(renderer, aoTarget, beautyTarget, 0, false);
+      colorTarget = aoTarget;
+    }
+    outputPass.render(renderer, outputTarget, colorTarget, 0, false);
+    renderer.readRenderTargetPixels(outputTarget, 0, 0, resolved.width, resolved.height, pixels);
     const error = gl.getError();
     if (error !== gl.NO_ERROR) throw new Error(webGlExportError(error, gl));
   } catch (error) {
     renderError = error;
   } finally {
-    state.scene.background = previousBackground;
-    state.selection.visible = previousSelectionVisible;
     renderer.xr.enabled = previousXrEnabled;
+    renderer.toneMapping = previousToneMapping;
+    renderer.toneMappingExposure = previousExposure;
+    renderer.outputColorSpace = previousOutputColorSpace;
+    renderer.autoClear = previousAutoClear;
     renderer.setClearColor(previousClearColor, previousClearAlpha);
     renderer.setRenderTarget(previousTarget, previousCubeFace, previousMipmapLevel);
     renderer.setViewport(previousViewport);
     renderer.setScissor(previousScissor);
     renderer.setScissorTest(previousScissorTest);
-    target.dispose();
+    ssaaPass?.dispose();
+    if (gtaoPass) {
+      gtaoPass.gtaoMaterial.dispose();
+      gtaoPass.blendMaterial.dispose();
+      gtaoPass.dispose();
+    }
+    outputPass.dispose();
+    beautyTarget.dispose();
+    aoTarget?.dispose();
+    outputTarget.dispose();
+    disposePublicationScene(publication);
   }
 
   if (renderError) {
@@ -553,7 +654,6 @@ async function exportScenePng(state: SceneState, options: PngExportOptions): Pro
   if (!hasVisiblePngContent(pixels, resolved.transparent)) {
     throw new Error("PNG export failed because the rendered image was blank");
   }
-  if (resolved.transparent) unpremultiplyRgbaInPlace(pixels);
   return encodeRgbaPng(pixels, resolved.width, resolved.height);
 }
 
@@ -571,41 +671,419 @@ function rendererPngLimits(
   };
 }
 
-function exportCamera(state: SceneState, options: ResolvedPngExportOptions): THREE.PerspectiveCamera {
-  const camera = state.camera.clone();
-  camera.aspect = options.width / options.height;
-  if (options.fit) fitExportCamera(state, camera, options.padding);
-  else camera.updateProjectionMatrix();
-  camera.updateMatrixWorld(true);
-  return camera;
+interface PublicationResources {
+  geometries: Set<THREE.BufferGeometry>;
+  materials: Set<THREE.Material>;
+  textures: Set<THREE.Texture>;
 }
 
-function fitExportCamera(state: SceneState, camera: THREE.PerspectiveCamera, padding: number): void {
-  if (!state.fitContext) throw new Error("The molecular scene has no fitted geometry");
-  const bounds = sceneFitBounds(state, state.fitContext);
-  if (!bounds) throw new Error("The molecular scene has no visible geometry");
-  const center = bounds.getCenter(new THREE.Vector3());
-  const verticalHalfFov = THREE.MathUtils.degToRad(camera.getEffectiveFOV() * 0.5);
-  const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * camera.aspect);
-  const fill = 1 - padding * 2;
-  const backward = new THREE.Vector3(0, 0, 1).applyQuaternion(state.camera.quaternion).normalize();
-  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(state.camera.quaternion).normalize();
-  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(state.camera.quaternion).normalize();
-  let distance = Math.max(bounds.getSize(new THREE.Vector3()).length() * 0.01, 0.01);
-  for (const corner of boxCorners(bounds)) {
-    const relative = corner.sub(center);
-    const depth = relative.dot(backward);
-    distance = Math.max(
-      distance,
-      depth + Math.abs(relative.dot(right)) / (Math.tan(horizontalHalfFov) * fill),
-      depth + Math.abs(relative.dot(up)) / (Math.tan(verticalHalfFov) * fill),
+interface PublicationScene {
+  scene: THREE.Scene;
+  root: THREE.Group;
+  resources: PublicationResources;
+  hasAoGeometry: boolean;
+}
+
+interface PublicationLineConstructors {
+  LineMaterial: LineMaterialConstructor;
+  LineSegments2: LineSegments2Constructor;
+  LineSegmentsGeometry: LineSegmentsGeometryConstructor;
+}
+
+const publicationPalette: ScenePalette = {
+  background: "#ffffff",
+  bond: "#48575a",
+  bondOpacity: 1,
+  cell: "#4f7882",
+  cellOpacity: 0.46,
+  selection: "#3DACCB",
+  selectionOpacity: 0,
+  force: "#b34c2b",
+  ribbon: "#347f96",
+  hemisphereSky: "#ffffff",
+  hemisphereGround: "#d8e0df",
+  hemisphereIntensity: 1.18,
+  key: "#ffffff",
+  keyIntensity: 2.1,
+  rim: "#c9e0e4",
+  rimIntensity: 0.2,
+  exposure: 0.98,
+};
+
+const publicationContextPalette: ScenePalette = {
+  ...publicationPalette,
+  bond: "#9aa7a9",
+  cellOpacity: 0.45,
+};
+
+function buildPublicationScene(
+  state: SceneState,
+  options: ResolvedPngExportOptions,
+  lineConstructors: PublicationLineConstructors,
+): PublicationScene {
+  const model = state.model;
+  const manifest = state.topologyManifest;
+  const presentation = state.fitContext?.presentation;
+  if (!model || !manifest || !presentation) throw new Error("The molecular scene is not ready to export");
+  const scene = new THREE.Scene();
+  scene.background = null;
+  const root = new THREE.Group();
+  scene.add(root);
+  const resources: PublicationResources = {
+    geometries: new Set(),
+    materials: new Set(),
+    textures: new Set(),
+  };
+  const publicationPresentation: ScenePresentation = model.instanceToAtom.length <= 12_000
+    ? { ...presentation, quality: "high" }
+    : presentation;
+
+  if (presentation.mode === "ribbon") {
+    const ribbon = buildRibbon(model, manifest, publicationPresentation, "light", publicationPalette);
+    if (ribbon) {
+      stylePublicationMaterials(ribbon, resources);
+      ownPublicationObject(ribbon, resources);
+      root.add(ribbon);
+    }
+  } else {
+    const atoms = buildAtoms(model, manifest, publicationPresentation, "light", true);
+    if (atoms) {
+      stylePublicationMaterials(atoms, resources);
+      ownPublicationObject(atoms, resources);
+      root.add(atoms);
+    }
+
+    const geometry = publicationBondGeometry(model, presentation, options.periodicContext);
+    const primarySegments = geometry.segments.filter((segment) => !segment.context);
+    const contextSegments = geometry.segments.filter((segment) => segment.context);
+    const pointAtoms = atoms instanceof THREE.Points;
+    const bondKind = presentation.mode === "lines" || pointAtoms || geometry.segments.length > MAX_BOND_INSTANCES
+      ? "lines"
+      : "instances";
+    const primaryBonds = buildBonds(publicationPresentation, publicationPalette, bondKind, primarySegments, true);
+    if (primaryBonds) {
+      stylePublicationMaterials(primaryBonds, resources);
+      ownPublicationObject(primaryBonds, resources);
+      root.add(primaryBonds);
+    }
+    const contextBonds = buildBonds(publicationPresentation, publicationContextPalette, bondKind, contextSegments, true);
+    if (contextBonds) {
+      stylePublicationMaterials(contextBonds, resources);
+      ownPublicationObject(contextBonds, resources);
+      root.add(contextBonds);
+    }
+    const contextAtoms = buildPublicationContextAtoms(
+      model,
+      manifest,
+      presentation,
+      geometry.contextAtoms,
+      publicationContextUsesPoints(
+        pointAtoms,
+        model.instanceToAtom.length + geometry.contextAtoms.length,
+        MAX_SPHERE_INSTANCES,
+      ),
+    );
+    if (contextAtoms) {
+      stylePublicationMaterials(contextAtoms, resources);
+      ownPublicationObject(contextAtoms, resources);
+      root.add(contextAtoms);
+    }
+  }
+
+  if (presentation.cell) {
+    const cell = buildPublicationCells(model, options.width, options.height, lineConstructors);
+    if (cell) {
+      ownPublicationObject(cell, resources);
+      root.add(cell);
+    }
+  }
+  if (state.forces) root.add(clonePublicationForces(state.forces, resources));
+
+  let hasAoGeometry = false;
+  root.traverse((object) => {
+    if (object instanceof THREE.Mesh && object.userData.publicationExcludeFromAo !== true) hasAoGeometry = true;
+  });
+  return { scene, root, resources, hasAoGeometry };
+}
+
+function buildPublicationContextAtoms(
+  model: PreparedScene,
+  manifest: Manifest,
+  presentation: ScenePresentation,
+  atoms: Array<{ atomIndex: number; position: THREE.Vector3 }>,
+  usePoints: boolean,
+): THREE.Object3D | null {
+  if (atoms.length === 0) return null;
+  if (usePoints) {
+    const positions = new Float32Array(atoms.length * 3);
+    const colors = new Float32Array(atoms.length * 3);
+    atoms.forEach(({ atomIndex, position }, instance) => {
+      position.toArray(positions, instance * 3);
+      atomColor(manifest, atomIndex, model.atomicNumbers[atomIndex], presentation.color, "light")
+        .toArray(colors, instance * 3);
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geometry.computeBoundingSphere();
+    return new THREE.Points(
+      geometry,
+      new THREE.PointsMaterial({
+        vertexColors: true,
+        size: presentation.mode === "lines" ? 0.14 : 0.22,
+        sizeAttenuation: true,
+      }),
     );
   }
-  camera.position.copy(center).addScaledVector(backward, distance);
-  camera.quaternion.copy(state.camera.quaternion);
-  camera.near = Math.max(distance / 500, 0.01);
-  camera.far = Math.max(distance * 30, 100);
-  camera.updateProjectionMatrix();
+
+  const contextCount = model.instanceToAtom.length + atoms.length;
+  const sphereSegments = contextCount <= 5_000 ? [40, 28] : [24, 16];
+  const geometry = new THREE.SphereGeometry(1, sphereSegments[0], sphereSegments[1]);
+  const material = new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0 });
+  const mesh = new THREE.InstancedMesh(geometry, material, atoms.length);
+  const dummy = new THREE.Object3D();
+  atoms.forEach(({ atomIndex, position }, instance) => {
+    dummy.position.copy(position);
+    dummy.scale.setScalar((model.radii[atomIndex] ?? 0.25) * 0.9);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(instance, dummy.matrix);
+    mesh.setColorAt(
+      instance,
+      atomColor(manifest, atomIndex, model.atomicNumbers[atomIndex], presentation.color, "light"),
+    );
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.computeBoundingSphere();
+  return mesh;
+}
+
+function buildPublicationCells(
+  model: PreparedScene,
+  width: number,
+  height: number,
+  { LineMaterial, LineSegments2, LineSegmentsGeometry }: PublicationLineConstructors,
+): THREE.Object3D | null {
+  if (!model.basis || model.images.length === 0) return null;
+  const positions: number[] = [];
+  const seen = new Set<string>();
+  for (const image of model.images) {
+    const values: number[] = [];
+    appendCellLines(values, model.basis, image);
+    for (let offset = 0; offset < values.length; offset += 6) {
+      const from = values.slice(offset, offset + 3);
+      const to = values.slice(offset + 3, offset + 6);
+      const fromKey = from.map(coordinateKey).join(",");
+      const toKey = to.map(coordinateKey).join(",");
+      const key = fromKey < toKey ? `${fromKey}|${toKey}` : `${toKey}|${fromKey}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      positions.push(...from, ...to);
+    }
+  }
+  const geometry = new LineSegmentsGeometry();
+  geometry.setPositions(positions);
+  const material = new LineMaterial({
+    color: publicationPalette.cell,
+    linewidth: THREE.MathUtils.clamp(1.4 * Math.min(width / 2400, height / 1800), 1.1, 3.2),
+    transparent: true,
+    opacity: publicationPalette.cellOpacity,
+    depthWrite: false,
+    alphaToCoverage: true,
+  });
+  const lines = new LineSegments2(geometry, material);
+  (lines as unknown as { isLine2: boolean }).isLine2 = true;
+  lines.userData.publicationExcludeFromAo = true;
+  lines.userData.publicationFitPositions = positions;
+  lines.frustumCulled = false;
+  return lines;
+}
+
+function coordinateKey(value: number): string {
+  return Math.abs(value) < 5e-7 ? "0" : value.toFixed(6);
+}
+
+function clonePublicationForces(source: THREE.Group, resources: PublicationResources): THREE.Group {
+  const clone = source.clone(true);
+  clone.traverse((object) => {
+    const renderable = object as THREE.Object3D & { material?: THREE.Material | THREE.Material[] };
+    if (!renderable.material) return;
+    const materials = Array.isArray(renderable.material) ? renderable.material : [renderable.material];
+    const copies = materials.map((material) => {
+      const copy = material.clone();
+      if ("color" in copy && copy.color instanceof THREE.Color) copy.color.set(publicationPalette.force);
+      resources.materials.add(copy);
+      return copy;
+    });
+    renderable.material = Array.isArray(renderable.material) ? copies : copies[0];
+  });
+  return clone;
+}
+
+function stylePublicationMaterials(object: THREE.Object3D, resources: PublicationResources): void {
+  object.traverse((child) => {
+    const renderable = child as THREE.Object3D & { material?: THREE.Material | THREE.Material[] };
+    const materials = Array.isArray(renderable.material)
+      ? renderable.material
+      : renderable.material ? [renderable.material] : [];
+    for (const material of materials) {
+      material.opacity = 1;
+      material.transparent = false;
+      if (material instanceof THREE.MeshStandardMaterial) {
+        material.roughness = 0.64;
+        material.metalness = 0;
+      }
+      if (material instanceof THREE.PointsMaterial) {
+        const texture = publicationPointTexture();
+        material.map = texture;
+        material.alphaTest = 0.04;
+        material.transparent = true;
+        material.depthWrite = true;
+        material.size *= 1.08;
+        resources.textures.add(texture);
+      }
+      material.needsUpdate = true;
+    }
+  });
+}
+
+function publicationPointTexture(): THREE.DataTexture {
+  const size = 48;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx = (x + 0.5) / size * 2 - 1;
+      const dy = (y + 0.5) / size * 2 - 1;
+      const radius = Math.sqrt(dx * dx + dy * dy);
+      const alpha = THREE.MathUtils.clamp((1 - radius) * 12, 0, 1);
+      const offset = (y * size + x) * 4;
+      data[offset] = 255;
+      data[offset + 1] = 255;
+      data[offset + 2] = 255;
+      data[offset + 3] = Math.round(alpha * 255);
+    }
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function ownPublicationObject(object: THREE.Object3D, resources: PublicationResources): void {
+  object.traverse((child) => {
+    const renderable = child as THREE.Object3D & {
+      geometry?: THREE.BufferGeometry;
+      material?: THREE.Material | THREE.Material[];
+    };
+    if (renderable.geometry) resources.geometries.add(renderable.geometry);
+    const materials = Array.isArray(renderable.material)
+      ? renderable.material
+      : renderable.material ? [renderable.material] : [];
+    materials.forEach((material) => resources.materials.add(material));
+  });
+}
+
+function addPublicationLights(
+  scene: THREE.Scene,
+  root: THREE.Object3D,
+  camera: THREE.Camera,
+): void {
+  const bounds = new THREE.Box3().setFromObject(root);
+  const center = bounds.getCenter(new THREE.Vector3());
+  const span = Math.max(bounds.getSize(new THREE.Vector3()).length(), 1);
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+  const back = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion);
+  scene.add(new THREE.HemisphereLight(
+    publicationPalette.hemisphereSky,
+    publicationPalette.hemisphereGround,
+    publicationPalette.hemisphereIntensity,
+  ));
+  const key = new THREE.DirectionalLight(publicationPalette.key, publicationPalette.keyIntensity);
+  key.position.copy(center)
+    .addScaledVector(right, -span * 0.75)
+    .addScaledVector(up, span)
+    .addScaledVector(back, span * 1.1);
+  key.target.position.copy(center);
+  scene.add(key, key.target);
+  const fill = new THREE.DirectionalLight("#dce9eb", 0.48);
+  fill.position.copy(center)
+    .addScaledVector(right, span)
+    .addScaledVector(up, span * 0.2)
+    .addScaledVector(back, span * 0.45);
+  fill.target.position.copy(center);
+  scene.add(fill, fill.target);
+  const rim = new THREE.DirectionalLight(publicationPalette.rim, publicationPalette.rimIntensity);
+  rim.position.copy(center)
+    .addScaledVector(right, -span * 0.4)
+    .addScaledVector(up, -span * 0.3)
+    .addScaledVector(back, -span);
+  rim.target.position.copy(center);
+  scene.add(rim, rim.target);
+}
+
+function publicationGtaoPass(
+  GtaoPass: GtaoPassConstructor,
+  scene: THREE.Scene,
+  root: THREE.Object3D,
+  camera: THREE.Camera,
+  options: ResolvedPngExportOptions,
+  scale: number,
+): InstanceType<GtaoPassConstructor> {
+  const width = Math.max(1, Math.round(options.width * scale));
+  const height = Math.max(1, Math.round(options.height * scale));
+  const bounds = new THREE.Box3().setFromObject(root);
+  const radius = THREE.MathUtils.clamp(bounds.getSize(new THREE.Vector3()).length() * 0.018, 0.18, 0.55);
+  const pass = new GtaoPass(scene, camera, width, height);
+  pass.renderToScreen = false;
+  pass.blendIntensity = 0.38;
+  pass.setSceneClipBox(bounds);
+  pass.updateGtaoMaterial({
+    radius,
+    thickness: radius * 2.5,
+    distanceExponent: 1,
+    distanceFallOff: 1,
+    scale: 1,
+    samples: 16,
+    screenSpaceRadius: false,
+  });
+  pass.updatePdMaterial({ samples: 8, rings: 2, radius: 4, radiusExponent: 2 });
+  return pass;
+}
+
+function configurePublicationOutput(
+  pass: InstanceType<typeof import("three/examples/jsm/postprocessing/OutputPass.js").OutputPass>,
+  transparent: boolean,
+): void {
+  const sample = "gl_FragColor = texture2D( tDiffuse, vUv );";
+  const source = pass.material.fragmentShader;
+  const fragmentShader = source
+    .replace("uniform sampler2D tDiffuse;", "uniform sampler2D tDiffuse;\nuniform float publicationTransparent;")
+    .replace(sample, `${sample}
+      float publicationCoverage = gl_FragColor.a;
+      gl_FragColor.rgb = publicationCoverage > 0.000001
+        ? gl_FragColor.rgb / publicationCoverage
+        : vec3( 0.0 );`)
+    .replace("// color space", `if ( publicationTransparent < 0.5 ) {
+        gl_FragColor.rgb = gl_FragColor.rgb * publicationCoverage + vec3( 1.0 ) * ( 1.0 - publicationCoverage );
+        gl_FragColor.a = 1.0;
+      }
+
+      // color space`);
+  if (fragmentShader === source || !fragmentShader.includes("publicationCoverage")) {
+    throw new Error("Publication output shader is incompatible");
+  }
+  pass.material.fragmentShader = fragmentShader;
+  pass.material.uniforms.publicationTransparent = { value: transparent ? 1 : 0 };
+  pass.material.needsUpdate = true;
+}
+
+function disposePublicationScene(publication: PublicationScene): void {
+  publication.root.traverse((object) => {
+    if (object instanceof THREE.InstancedMesh) object.dispose();
+  });
+  publication.resources.geometries.forEach((geometry) => geometry.dispose());
+  publication.resources.materials.forEach((material) => material.dispose());
+  publication.resources.textures.forEach((texture) => texture.dispose());
 }
 
 function drainWebGlErrors(gl: WebGLRenderingContext | WebGL2RenderingContext): void {
@@ -865,6 +1343,7 @@ function buildAtoms(
   manifest: Manifest,
   presentation: ScenePresentation,
   appearance: Appearance,
+  publication = false,
 ): THREE.InstancedMesh | THREE.Points | null {
   const count = model.instanceToAtom.length;
   if (count === 0) return null;
@@ -893,7 +1372,11 @@ function buildAtoms(
     );
   }
 
-  const segments = usesHighDetailGeometry(presentation, count) ? [30, 20] : [18, 12];
+  const segments = publication && count <= 5_000
+    ? [48, 32]
+    : publication && count <= 12_000
+      ? [32, 24]
+      : usesHighDetailGeometry(presentation, count) ? [30, 20] : [18, 12];
   const geometry = new THREE.SphereGeometry(1, segments[0], segments[1]);
   const material = new THREE.MeshStandardMaterial({ roughness: 0.34, metalness: 0.02 });
   const mesh = new THREE.InstancedMesh(geometry, material, count);
@@ -918,6 +1401,7 @@ function buildBonds(
   palette: ScenePalette,
   kind: FrameGeometryPlan["bondKind"],
   segments: Segment[],
+  publication = false,
 ): THREE.Object3D | null {
   if (segments.length === 0) return null;
   if (kind === "lines") {
@@ -934,7 +1418,9 @@ function buildBonds(
     );
   }
   const radius = (presentation.mode === "licorice" ? 0.14 : 0.045) * Math.max(0.1, presentation.bondScale);
-  const radialSegments = usesHighDetailGeometry(presentation, segments.length) ? 12 : 8;
+  const radialSegments = publication && segments.length <= 12_000
+    ? 16
+    : usesHighDetailGeometry(presentation, segments.length) ? 12 : 8;
   const geometry = new THREE.CylinderGeometry(radius, radius, 1, radialSegments, 1, false);
   const material = new THREE.MeshStandardMaterial({
     color: palette.bond,
@@ -1315,6 +1801,7 @@ function cameraOrientation(preset: ViewPreset): { direction: THREE.Vector3; up: 
 function disposeObject(root: THREE.Object3D): void {
   root.traverse((child) => {
     const renderable = child as THREE.Object3D & { geometry?: THREE.BufferGeometry; material?: THREE.Material | THREE.Material[] };
+    if (child instanceof THREE.InstancedMesh) child.dispose();
     renderable.geometry?.dispose();
     if (renderable.material) disposeMaterial(renderable.material);
   });

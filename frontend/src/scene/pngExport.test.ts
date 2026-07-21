@@ -3,9 +3,9 @@ import {
   flipRgbaRowsInPlace,
   hasVisiblePngContent,
   MAX_PNG_EXPORT_PIXELS,
-  pngExportSampleCount,
+  pngExportAoScale,
+  pngExportSampleLevel,
   resolvePngExportOptions,
-  unpremultiplyRgbaInPlace,
 } from "./pngExport";
 
 const limits = { maxWidth: 8192, maxHeight: 8192, maxPixels: MAX_PNG_EXPORT_PIXELS };
@@ -16,7 +16,9 @@ describe("PNG export options", () => {
       width: 6000,
       height: 4000,
       transparent: false,
-      fit: false,
+      fit: true,
+      projection: "orthographic",
+      periodicContext: true,
       padding: 0.08,
     });
   });
@@ -30,9 +32,23 @@ describe("PNG export options", () => {
   it("validates fit padding and scales multisampling by image size", () => {
     expect(resolvePngExportOptions({ width: 2000, height: 1000, fit: true, padding: 0.15 }, limits).padding).toBe(0.15);
     expect(() => resolvePngExportOptions({ width: 2000, height: 1000, padding: 0.5 }, limits)).toThrow(/padding/);
-    expect(pngExportSampleCount(3_000_000, 8)).toBe(4);
-    expect(pngExportSampleCount(10_000_000, 8)).toBe(2);
-    expect(pngExportSampleCount(24_000_000, 8)).toBe(0);
+    expect(pngExportSampleLevel(4_320_000)).toBe(3);
+    expect(pngExportSampleLevel(5_760_000)).toBe(2);
+    expect(pngExportSampleLevel(10_000_000)).toBe(1);
+    expect(pngExportSampleLevel(24_000_000)).toBe(0);
+    expect(pngExportAoScale(4_320_000)).toBe(0.5);
+    expect(pngExportAoScale(10_000_000)).toBe(0.35);
+    expect(pngExportAoScale(24_000_000)).toBe(0);
+  });
+
+  it("keeps explicit projection and periodic choices", () => {
+    expect(resolvePngExportOptions({
+      width: 2400,
+      height: 1800,
+      fit: false,
+      projection: "perspective",
+      periodicContext: false,
+    }, limits)).toMatchObject({ fit: false, projection: "perspective", periodicContext: false });
   });
 });
 
@@ -55,17 +71,4 @@ describe("PNG pixel validation", () => {
     ]);
   });
 
-  it("restores straight RGB values for transparent PNG pixels", () => {
-    const pixels = new Uint8Array([
-      32, 64, 96, 128,
-      20, 30, 40, 255,
-      8, 9, 10, 0,
-    ]);
-    unpremultiplyRgbaInPlace(pixels);
-    expect([...pixels]).toEqual([
-      64, 128, 191, 128,
-      20, 30, 40, 255,
-      0, 0, 0, 0,
-    ]);
-  });
 });

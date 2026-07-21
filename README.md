@@ -64,9 +64,12 @@ Dense or replicated scenes stay responsive by switching atom instances above
 quality is selected.
 
 For publication images, choose More → Render image or press `Cmd/Ctrl+Shift+S`.
-Export a preset or custom PNG with the canvas or a transparent background. Fit
-keeps the current orientation and adds balanced spacing. Exports are limited to
-24 megapixels for reliable browser rendering.
+Export a preset or custom PNG on white or with true transparency. Orthographic
+projection is the default; perspective remains available. Fit keeps the current
+orientation, measures the rendered geometry, and adds balanced spacing. Periodic
+neighbors complete bonds through cell boundaries; Clipped preserves the strict
+wrapped view. Export uses adaptive supersampling, restrained ambient
+occlusion, and explicit sRGB output up to 24 megapixels.
 
 The viewer runs locally and opens in the default browser. Use `--no-open` for
 remote or scripted use.
