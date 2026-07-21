@@ -26,7 +26,20 @@ jobs:
       - name: Check wheel
         run: |
           wheel=$(find dist -name '*.whl' -print -quit)
-          python -m zipfile -l "$wheel" | grep -q 'pqviewer/static/index.html'
+          python - "$wheel" <<'PY'
+          import re
+          import sys
+          from zipfile import ZipFile
+
+          with ZipFile(sys.argv[1]) as archive:
+              files = set(archive.namelist())
+              index = "pqviewer/static/index.html"
+              assert index in files, f"missing {index}"
+              html = archive.read(index).decode()
+              for asset in re.findall(r'(?:src|href)="(/assets/[^"?]+)', html):
+                  bundled = f"pqviewer/static{asset}"
+                  assert bundled in files, f"missing {bundled}"
+          PY
           python -m venv /tmp/pqviewer-smoke
           /tmp/pqviewer-smoke/bin/pip install "$wheel"
           cd /tmp

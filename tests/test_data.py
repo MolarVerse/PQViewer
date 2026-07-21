@@ -7,7 +7,7 @@ import struct
 import numpy as np
 import pytest
 
-from PQAnalysis.core import Atom
+from PQAnalysis.core import Atom, Residue
 from PQAnalysis.topology import Bond, BondedTopology, Topology
 
 from pqviewer.data import PQTrajectoryDataset
@@ -34,6 +34,31 @@ H 7.0 8.0 9.0
 O 10.0 11.0 12.0
 """
 
+WATER_DIMER = """6 10 10 10
+water dimer
+O 0.0 0.0 0.0
+H 1.0 0.0 0.0
+H 0.0 1.0 0.0
+O 3.0 0.0 0.0
+H 4.0 0.0 0.0
+H 3.0 1.0 0.0
+"""
+
+MOLDESCRIPTOR = """WATER_TYPE 1
+H2O 3 0.0
+O 0 -0.65966
+H 1 0.32983
+H 1 0.32983
+"""
+
+SHAKE_TOPOLOGY = """SHAKE
+1 2 1
+1 3 1
+4 5 1
+4 6 1
+END
+"""
+
 
 def test_indexes_manifest_and_random_access(tmp_path: Path) -> None:
     path = tmp_path / "water.xyz"
@@ -51,7 +76,10 @@ def test_indexes_manifest_and_random_access(tmp_path: Path) -> None:
         "symbols": ["H", "O"],
         "atom_names": ["H", "O"],
         "residue_ids": [0, 0],
+        "atom_residue_index": [-1, -1],
+        "residues": [],
         "bonds": [],
+        "bond_source": "inferred",
     }
     assert manifest["properties"]["positions"]["unit"] == "angstrom"
     assert next(item for item in manifest["series"] if item["name"] == "energy") == {
@@ -300,6 +328,24 @@ H 1 2 3
     assert dataset.get_frame(1).pbc == (True, True, True)
 
 
+def test_frame_inherits_partial_pbc_with_the_declared_cell(tmp_path: Path) -> None:
+    path = tmp_path / "cell.extxyz"
+    path.write_text(
+        """1
+Properties=species:S:1:pos:R:3 Lattice="5 0 0 1 4 0 0 0 8" pbc="T F T"
+H 0 0 0
+1
+Properties=species:S:1:pos:R:3
+H 1 2 3
+""",
+        encoding="utf-8",
+    )
+    dataset = PQTrajectoryDataset(path)
+
+    np.testing.assert_allclose(dataset.get_frame(1).cell, dataset.get_frame(0).cell)
+    assert dataset.get_frame(1).pbc == (True, False, True)
+
+
 def test_energy_sidecar_preserves_labels_and_units(tmp_path: Path) -> None:
     trajectory = tmp_path / "water.xyz"
     trajectory.write_text(XYZ, encoding="utf-8")
@@ -418,3 +464,180 @@ def test_provided_topology_is_normalized_for_browser_indices(tmp_path: Path) -> 
     manifest = PQTrajectoryDataset(path, topology=topology).manifest()
 
     assert manifest["topology"]["bonds"] == [[0, 1]]
+    assert manifest["topology"]["bond_source"] == "topology"
+
+
+def test_moldescriptor_builds_repeated_semantic_residues(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    moldescriptor = tmp_path / "moldescriptor.dat"
+    topology = tmp_path / "topology.top"
+    trajectory.write_text(WATER_DIMER, encoding="utf-8")
+    moldescriptor.write_text(MOLDESCRIPTOR, encoding="utf-8")
+    topology.write_text(SHAKE_TOPOLOGY, encoding="utf-8")
+
+    manifest = PQTrajectoryDataset(
+        trajectory,
+        moldescriptor_path=moldescriptor,
+        topology_path=topology,
+    ).manifest()["topology"]
+
+    assert manifest["atom_residue_index"] == [0, 0, 0, 1, 1, 1]
+    assert manifest["residues"] == [
+        {"index": 0, "type_id": 1, "name": "H2O", "category": "water"},
+        {"index": 1, "type_id": 1, "name": "H2O", "category": "water"},
+    ]
+    assert manifest["bonds"] == [[0, 1], [0, 2], [3, 4], [3, 5]]
+    assert manifest["bond_source"] == "topology"
+
+
+def test_protein_moldescriptor_exposes_backbone_graph(tmp_path: Path) -> None:
+    trajectory = tmp_path / "protein.xyz"
+    moldescriptor = tmp_path / "moldescriptor.dat"
+    topology = tmp_path / "protein.top"
+    atoms = ["N", "C", "C", "O"] * 3
+    trajectory.write_text(
+        f"{len(atoms)}\n\n" + "".join(
+            f"{name} {index} 0 0\n" for index, name in enumerate(atoms)
+        ),
+        encoding="utf-8",
+    )
+    moldescriptor.write_text(
+        """ALA 4 0.0
+N 0 0.0
+C 0 0.0
+C 0 0.0
+O 0 0.0
+""",
+        encoding="utf-8",
+    )
+    topology.write_text(
+        """BONDS
+1 2 1
+2 3 1
+3 4 1
+3 5 1
+5 6 1
+6 7 1
+7 8 1
+7 9 1
+9 10 1
+10 11 1
+11 12 1
+END
+""",
+        encoding="utf-8",
+    )
+
+    manifest = PQTrajectoryDataset(
+        trajectory,
+        moldescriptor_path=moldescriptor,
+        topology_path=topology,
+    ).manifest()["topology"]
+
+    assert manifest["atom_names"] == atoms
+    assert manifest["atom_residue_index"] == [0] * 4 + [1] * 4 + [2] * 4
+    assert [residue["category"] for residue in manifest["residues"]] == [
+        "amino-acid",
+        "amino-acid",
+        "amino-acid",
+    ]
+    assert [2, 4] in manifest["bonds"]
+    assert [6, 8] in manifest["bonds"]
+
+
+def test_moldescriptor_requires_a_contiguous_element_match(tmp_path: Path) -> None:
+    trajectory = tmp_path / "water.xyz"
+    moldescriptor = tmp_path / "moldescriptor.dat"
+    trajectory.write_text("3\n\nO 0 0 0\nH 1 0 0\nO 0 1 0\n", encoding="utf-8")
+    moldescriptor.write_text(MOLDESCRIPTOR, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="atom index 0"):
+        PQTrajectoryDataset(
+            trajectory,
+            moldescriptor_path=moldescriptor,
+        ).manifest()
+
+
+def test_water_category_uses_exact_residue_composition(tmp_path: Path) -> None:
+    trajectory = tmp_path / "solvent.xyz"
+    trajectory.write_text(
+        "7\n\nO 0 0 0\nH 1 0 0\nH 0 1 0\nO 3 0 0\nH 4 0 0\nH 3 1 0\nH 3 0 1\n",
+        encoding="utf-8",
+    )
+    water = Residue("SOL", 4, 0, ["O", "H", "H"], np.array([0, 1, 1]), np.zeros(3))
+    other = Residue(
+        "SOL4",
+        5,
+        0,
+        ["O", "H", "H", "H"],
+        np.array([0, 1, 1, 1]),
+        np.zeros(4),
+    )
+    topology = Topology(
+        atoms=[Atom(name) for name in ["O", "H", "H", "O", "H", "H", "H"]],
+        residue_ids=np.array([4, 4, 4, 5, 5, 5, 5]),
+        reference_residues=[water, other],
+    )
+
+    residues = PQTrajectoryDataset(
+        trajectory,
+        topology=topology,
+    ).manifest()["topology"]["residues"]
+
+    assert [residue["category"] for residue in residues] == ["water", "other"]
+
+
+def test_manifest_classifies_common_biopolymer_residue_names(
+    tmp_path: Path,
+) -> None:
+    trajectory = tmp_path / "biopolymer.xyz"
+    amino_acids = [
+        "ALA",
+        "ARG",
+        "ASN",
+        "ASP",
+        "CYS",
+        "GLN",
+        "GLU",
+        "GLY",
+        "HIS",
+        "ILE",
+        "LEU",
+        "LYS",
+        "MET",
+        "PHE",
+        "PRO",
+        "SER",
+        "THR",
+        "TRP",
+        "TYR",
+        "VAL",
+        "HIE",
+        "NALA",
+    ]
+    nucleotides = ["DA5", "U", "URA"]
+    names = ["HOH", *amino_acids, *nucleotides, "LIG"]
+    trajectory.write_text(
+        f"{len(names)}\n\n" + "".join("C 0 0 0\n" for _ in names),
+        encoding="utf-8",
+    )
+    reference_residues = [
+        Residue(name, index, 0, ["C"], np.array([0]), np.zeros(1))
+        for index, name in enumerate(names, start=1)
+    ]
+    topology = Topology(
+        atoms=[Atom("C") for _ in names],
+        residue_ids=np.arange(1, len(names) + 1),
+        reference_residues=reference_residues,
+    )
+
+    residues = PQTrajectoryDataset(
+        trajectory,
+        topology=topology,
+    ).manifest()["topology"]["residues"]
+    categories = {residue["name"]: residue["category"] for residue in residues}
+
+    assert categories["HOH"] == "water"
+    assert all(categories[name] == "amino-acid" for name in amino_acids)
+    assert all(categories[name] == "nucleotide" for name in nucleotides)
+    assert categories["LIG"] == "other"

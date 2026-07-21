@@ -12,9 +12,29 @@ export async function getManifest(): Promise<Manifest> {
   return manifest;
 }
 
-export async function getFrame(index: number): Promise<FrameData> {
+export async function openFiles(files: File[], signal?: AbortSignal): Promise<Manifest> {
+  if (files.length === 0) throw new Error("Choose at least one trajectory file");
+  const body = new FormData();
+  files.forEach((file) => body.append("files", file, file.name));
+  const response = await fetch("/api/open", {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    body,
+    signal,
+  });
+  if (!response.ok) throw new Error(await responseMessage(response, "Could not open the files"));
+  const result = (await response.json()) as Manifest | { manifest?: Manifest };
+  const manifest = "manifest" in result && result.manifest ? result.manifest : result as Manifest;
+  if (!manifest.topology || !Number.isFinite(manifest.frame_count)) {
+    throw new Error("The opened trajectory is incomplete");
+  }
+  return manifest;
+}
+
+export async function getFrame(index: number, signal?: AbortSignal): Promise<FrameData> {
   const response = await fetch(`/api/frames/${index}`, {
     headers: { Accept: "application/octet-stream" },
+    signal,
   });
   if (!response.ok) throw new Error(await responseMessage(response, `Could not load frame ${index + 1}`));
   return decodeFrame(await response.arrayBuffer());
@@ -52,7 +72,7 @@ export function decodeFrame(buffer: ArrayBuffer): FrameData {
 }
 
 export class FrameCache {
-  private readonly values = new Map<number, Promise<FrameData>>();
+  private readonly values = new Map<number, { promise: Promise<FrameData>; controller: AbortController | null }>();
   private readonly limit = 96;
 
   get(index: number): Promise<FrameData> {
@@ -60,26 +80,43 @@ export class FrameCache {
     if (cached) {
       this.values.delete(index);
       this.values.set(index, cached);
-      return cached;
+      return cached.promise;
     }
-    const pending = getFrame(index).catch((error) => {
-      this.values.delete(index);
-      throw error;
-    });
-    this.values.set(index, pending);
+    const controller = new AbortController();
+    let entry!: { promise: Promise<FrameData>; controller: AbortController | null };
+    const promise = getFrame(index, controller.signal)
+      .then((frame) => {
+        entry.controller = null;
+        return frame;
+      })
+      .catch((error) => {
+        if (this.values.get(index) === entry) this.values.delete(index);
+        throw error;
+      });
+    entry = { promise, controller };
+    this.values.set(index, entry);
     while (this.values.size > this.limit) {
       const oldest = this.values.keys().next().value as number | undefined;
       if (oldest === undefined) break;
       this.values.delete(oldest);
     }
-    return pending;
+    return entry.promise;
   }
 
   prefetch(index: number, frameCount: number): void {
-    if (index >= 0 && index < frameCount && !this.values.has(index)) void this.get(index);
+    if (index >= 0 && index < frameCount && !this.values.has(index)) void this.get(index).catch(() => {});
+  }
+
+  cancelPendingExcept(index: number): void {
+    for (const [key, entry] of this.values) {
+      if (key === index || !entry.controller) continue;
+      entry.controller.abort();
+      this.values.delete(key);
+    }
   }
 
   clear(): void {
+    for (const entry of this.values.values()) entry.controller?.abort();
     this.values.clear();
   }
 }

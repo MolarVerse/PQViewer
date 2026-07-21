@@ -6,7 +6,17 @@ export interface Topology {
   symbols?: string[];
   atom_names?: string[];
   residue_ids?: Array<number | string>;
+  atom_residue_index?: number[];
+  residues?: ResidueSpec[];
+  bond_source?: "topology" | "inferred";
   bonds?: BondInput[] | number[];
+}
+
+export interface ResidueSpec {
+  index: number;
+  type_id: number | null;
+  name: string | null;
+  category: "water" | "amino-acid" | "nucleotide" | "other";
 }
 
 export interface SeriesSpec {
@@ -68,13 +78,32 @@ export interface DisplaySeries {
   values: Array<number | null>;
 }
 
-export interface LayerState {
-  atoms: boolean;
-  bonds: boolean;
-  cell: boolean;
-  forces: boolean;
-}
-
 export type Appearance = "light" | "dark";
 
 export type CellOffset = [number, number, number];
+
+export type RepresentationMode = "ball-stick" | "spacefill" | "licorice" | "lines" | "ribbon";
+
+export interface ScenePresentation {
+  mode: RepresentationMode;
+  water: "show" | "hide" | "only";
+  hydrogens: boolean;
+  wrap: "atom" | "molecule" | "none";
+  images: {
+    min: CellOffset;
+    max: CellOffset;
+  };
+  cell: boolean;
+  forces: boolean;
+  atomScale: number;
+  bondScale: number;
+  color: "element" | "residue" | "chain";
+  quality: "auto" | "high";
+}
+
+export interface SceneCapabilities {
+  water: boolean;
+  ribbon: boolean;
+  ribbonReason: string;
+  suggestedProfile: "molecule" | "protein" | "crystal";
+}

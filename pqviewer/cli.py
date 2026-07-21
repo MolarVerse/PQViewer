@@ -17,6 +17,8 @@ from .app import (
     ENERGY_ENV,
     FORCES_ENV,
     INFO_ENV,
+    MOLDESCRIPTOR_ENV,
+    TOPOLOGY_ENV,
     TRAJECTORY_ENV,
     VELOCITIES_ENV,
     create_app,
@@ -35,12 +37,23 @@ def build_parser() -> argparse.ArgumentParser:
         description="Open a molecular trajectory.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("path", type=Path, help="Trajectory file to open.")
+    parser.add_argument(
+        "path",
+        nargs="?",
+        type=Path,
+        help="Optional trajectory file to open.",
+    )
     parser.add_argument("--energy", type=Path, help="Optional PQ energy file.")
     parser.add_argument("--info", type=Path, help="Optional PQ info file.")
     parser.add_argument("--forces", type=Path, help="Optional PQ force file.")
     parser.add_argument("--velocities", type=Path, help="Optional PQ velocity file.")
     parser.add_argument("--charges", type=Path, help="Optional PQ charge file.")
+    parser.add_argument(
+        "--moldescriptor",
+        type=Path,
+        help="Optional PQ moldescriptor file.",
+    )
+    parser.add_argument("--topology", type=Path, help="Optional bonded topology file.")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Server host.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Server port.")
     parser.add_argument("--no-open", action="store_true", help="Do not open a browser.")
@@ -54,7 +67,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    _require_file(parser, args.path, "trajectory")
+    if args.path is not None:
+        _require_file(parser, args.path, "trajectory")
     if args.info is not None and args.energy is None:
         parser.error("--info requires --energy.")
     if args.energy is not None:
@@ -67,6 +81,10 @@ def main(argv: list[str] | None = None) -> None:
         _require_file(parser, args.velocities, "velocity")
     if args.charges is not None:
         _require_file(parser, args.charges, "charge")
+    if args.moldescriptor is not None:
+        _require_file(parser, args.moldescriptor, "moldescriptor")
+    if args.topology is not None:
+        _require_file(parser, args.topology, "topology")
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535.")
 
@@ -78,6 +96,8 @@ def main(argv: list[str] | None = None) -> None:
             forces_path=args.forces,
             velocities_path=args.velocities,
             charges_path=args.charges,
+            moldescriptor_path=args.moldescriptor,
+            topology_path=args.topology,
         )
         application.state.dataset.manifest()
     except Exception as error:  # pylint: disable=broad-exception-caught
@@ -94,6 +114,8 @@ def main(argv: list[str] | None = None) -> None:
             args.forces,
             args.velocities,
             args.charges,
+            args.moldescriptor,
+            args.topology,
         ):
             uvicorn.run(
                 "pqviewer.app:create_app_from_env",
@@ -118,29 +140,35 @@ def _require_file(parser: argparse.ArgumentParser, path: Path, label: str) -> No
 
 
 def _set_source_environment(
-    trajectory_path: Path,
+    trajectory_path: Path | None,
     energy_path: Path | None,
     info_path: Path | None,
     forces_path: Path | None,
     velocities_path: Path | None,
     charges_path: Path | None,
+    moldescriptor_path: Path | None = None,
+    topology_path: Path | None = None,
 ) -> None:
-    os.environ[TRAJECTORY_ENV] = str(trajectory_path.resolve())
+    _set_optional_environment(TRAJECTORY_ENV, trajectory_path)
     _set_optional_environment(ENERGY_ENV, energy_path)
     _set_optional_environment(INFO_ENV, info_path)
     _set_optional_environment(FORCES_ENV, forces_path)
     _set_optional_environment(VELOCITIES_ENV, velocities_path)
     _set_optional_environment(CHARGES_ENV, charges_path)
+    _set_optional_environment(MOLDESCRIPTOR_ENV, moldescriptor_path)
+    _set_optional_environment(TOPOLOGY_ENV, topology_path)
 
 
 @contextmanager
 def _source_environment(
-    trajectory_path: Path,
+    trajectory_path: Path | None,
     energy_path: Path | None,
     info_path: Path | None,
     forces_path: Path | None,
     velocities_path: Path | None,
     charges_path: Path | None,
+    moldescriptor_path: Path | None = None,
+    topology_path: Path | None = None,
 ) -> Iterator[None]:
     names = (
         TRAJECTORY_ENV,
@@ -149,6 +177,8 @@ def _source_environment(
         FORCES_ENV,
         VELOCITIES_ENV,
         CHARGES_ENV,
+        MOLDESCRIPTOR_ENV,
+        TOPOLOGY_ENV,
     )
     previous = {name: os.environ.get(name) for name in names}
     _set_source_environment(
@@ -158,6 +188,8 @@ def _source_environment(
         forces_path,
         velocities_path,
         charges_path,
+        moldescriptor_path,
+        topology_path,
     )
     try:
         yield

@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from PQAnalysis.io import EnergyFileReader
+from PQAnalysis.io import EnergyFileReader, MoldescriptorReader, TopologyFileReader
 from PQAnalysis.io.traj_file import get_frame_reader
 from PQAnalysis.topology import Topology
 from PQAnalysis.traj import MDEngineFormat, TrajectoryFormat
@@ -70,6 +70,106 @@ _COMPANION_SPECS = {
         2,
         "e",
     ),
+}
+
+_WATER_NAMES = {
+    "h2o",
+    "hoh",
+    "opc",
+    "opc3",
+    "spc",
+    "spce",
+    "tip3p",
+    "tip3pfb",
+    "tip4p",
+    "tip4pew",
+    "tip4pfb",
+    "tip5p",
+    "wat",
+    "water",
+}
+
+_STANDARD_AMINO_ACID_NAMES = {
+    "ala",
+    "arg",
+    "asn",
+    "asp",
+    "cys",
+    "gln",
+    "glu",
+    "gly",
+    "his",
+    "ile",
+    "leu",
+    "lys",
+    "met",
+    "phe",
+    "pro",
+    "ser",
+    "thr",
+    "trp",
+    "tyr",
+    "val",
+}
+
+_AMINO_ACID_NAMES = _STANDARD_AMINO_ACID_NAMES | {
+    "ash",
+    "cym",
+    "cyx",
+    "glh",
+    "hid",
+    "hie",
+    "hip",
+    "hsd",
+    "hse",
+    "hsp",
+    "lyn",
+    "mse",
+    "pyl",
+    "sec",
+}
+
+_NUCLEOTIDE_NAMES = {
+    "a",
+    "ade",
+    "adp",
+    "amp",
+    "atp",
+    "c",
+    "cdp",
+    "cmp",
+    "ctp",
+    "cyt",
+    "da",
+    "dc",
+    "dg",
+    "di",
+    "dt",
+    "du",
+    "g",
+    "gdp",
+    "gmp",
+    "gtp",
+    "gua",
+    "i",
+    "imp",
+    "ino",
+    "ra",
+    "rc",
+    "rg",
+    "ri",
+    "rt",
+    "ru",
+    "t",
+    "tdp",
+    "thy",
+    "tmp",
+    "ttp",
+    "u",
+    "udp",
+    "ump",
+    "ura",
+    "utp",
 }
 
 
@@ -229,6 +329,71 @@ class _CompanionFile:
         self._anchor = b""
 
 
+class EmptyTrajectoryDataset:
+    """Dataset shown before a trajectory is opened."""
+
+    frame_count = 0
+
+    def __init__(self, name: str = "No trajectory") -> None:
+        self.name = name
+
+    def manifest(self) -> dict[str, Any]:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "name": self.name,
+            "frame_count": 0,
+            "topology": {
+                "atom_count": 0,
+                "atomic_numbers": [],
+                "symbols": [],
+                "atom_names": [],
+                "residue_ids": [],
+                "atom_residue_index": [],
+                "residues": [],
+                "bonds": [],
+                "bond_source": "inferred",
+            },
+            "properties": {
+                "positions": {
+                    "scope": "atom",
+                    "dtype": "float32",
+                    "shape": [0, 3],
+                    "unit": "angstrom",
+                },
+                "cell": {
+                    "scope": "frame",
+                    "dtype": "float32",
+                    "shape": [3, 3],
+                    "unit": "angstrom",
+                },
+                "pbc": {
+                    "scope": "frame",
+                    "dtype": "bool",
+                    "shape": [3],
+                    "unit": None,
+                },
+            },
+            "series": [],
+            "companion_files": {
+                key: {
+                    "available": False,
+                    "frame_count": 0,
+                    "file": None,
+                    "alignment": "frame_index",
+                    "complete": False,
+                }
+                for key in _COMPANION_SPECS
+            },
+        }
+
+    def get_frame(self, index: int) -> FrameData:
+        raise IndexError(f"frame index {index} is outside an empty dataset")
+
+    @staticmethod
+    def refresh() -> int:
+        return 0
+
+
 class PQTrajectoryDataset:
     """Random-access XYZ and extxyz trajectory dataset."""
 
@@ -241,6 +406,8 @@ class PQTrajectoryDataset:
         forces_path: str | Path | None = None,
         velocities_path: str | Path | None = None,
         charges_path: str | Path | None = None,
+        moldescriptor_path: str | Path | None = None,
+        topology_path: str | Path | None = None,
         topology: Topology | None = None,
         md_format: MDEngineFormat | str = MDEngineFormat.PQ,
         name: str | None = None,
@@ -259,6 +426,18 @@ class PQTrajectoryDataset:
             if info_path is not None
             else None
         )
+        self.moldescriptor_path = self._optional_file(moldescriptor_path)
+        self.topology_path = self._optional_file(topology_path)
+        self._reference_residues = (
+            MoldescriptorReader(str(self.moldescriptor_path)).read()
+            if self.moldescriptor_path is not None
+            else None
+        )
+        self._bonded_topology = (
+            TopologyFileReader(str(self.topology_path)).read()
+            if self.topology_path is not None
+            else None
+        )
         requested_companions = {
             "forces": forces_path,
             "velocities": velocities_path,
@@ -267,8 +446,9 @@ class PQTrajectoryDataset:
         self.name = name or self.path.name
         self.md_format = MDEngineFormat(md_format)
         self.traj_format = self._detect_format()
-        self._initial_topology = topology
-        self._topology = topology
+        prepared_topology = self._prepare_topology(topology) if topology else None
+        self._initial_topology = prepared_topology
+        self._topology = prepared_topology
         self._spans: list[_FrameSpan] = []
         self._scan_offset = 0
         self._file_id: tuple[int, int] | None = None
@@ -347,7 +527,8 @@ class PQTrajectoryDataset:
 
         system = self._decode_frame(frame_text)
         if self._topology is None:
-            self._topology = system.topology
+            self._topology = self._prepare_topology(system.topology)
+            system.topology = self._topology
         elif system.n_atoms != self._topology.n_atoms:
             raise ValueError("trajectory topology changed")
 
@@ -357,7 +538,10 @@ class PQTrajectoryDataset:
                 system.cell = self._cell_for_source(source)
 
         metadata = span.metadata
-        pbc = self._pbc(system, metadata)
+        pbc_metadata = metadata
+        if "pbc" not in metadata and span.cell_source not in {None, index}:
+            pbc_metadata = self._spans[span.cell_source].metadata
+        pbc = self._pbc(system, pbc_metadata)
         cell = (
             np.zeros((3, 3), dtype=np.float64)
             if system.cell.is_vacuum
@@ -651,17 +835,47 @@ class PQTrajectoryDataset:
                 "symbols": [],
                 "atom_names": [],
                 "residue_ids": [],
+                "atom_residue_index": [],
+                "residues": [],
                 "bonds": [],
+                "bond_source": "inferred",
             }
 
         atoms = topology.atoms
         bonds: list[list[int]] = []
         bonded = topology.bonded_topology
         if bonded is not None:
-            bonds = [
-                [int(bond.index1) - 1, int(bond.index2) - 1]
-                for bond in bonded.bonds
+            seen: set[tuple[int, int]] = set()
+            for bond in [*bonded.bonds, *bonded.shake_bonds]:
+                index1 = int(bond.index1) - 1
+                index2 = int(bond.index2) - 1
+                if (
+                    not 0 <= index1 < topology.n_atoms
+                    or not 0 <= index2 < topology.n_atoms
+                ):
+                    raise ValueError("bonded topology contains an out-of-range atom index")
+                pair = tuple(sorted((index1, index2)))
+                if pair not in seen:
+                    seen.add(pair)
+                    bonds.append([index1, index2])
+
+        semantic_residues = list(topology.residues)
+        if semantic_residues:
+            atom_residue_index: list[int] = [
+                int(value) for value in topology.residue_numbers
             ]
+            residues = [
+                {
+                    "index": index,
+                    "type_id": int(residue.id),
+                    "name": residue.name,
+                    "category": self._residue_category(residue),
+                }
+                for index, residue in enumerate(semantic_residues)
+            ]
+        else:
+            atom_residue_index = [-1] * topology.n_atoms
+            residues = []
 
         return {
             "atom_count": topology.n_atoms,
@@ -669,8 +883,95 @@ class PQTrajectoryDataset:
             "symbols": [self._symbol(self._atom_symbol(atom)) for atom in atoms],
             "atom_names": [atom.name for atom in atoms],
             "residue_ids": [int(value) for value in topology.residue_ids],
+            "atom_residue_index": atom_residue_index,
+            "residues": residues,
             "bonds": bonds,
+            "bond_source": "topology" if bonded is not None else "inferred",
         }
+
+    def _prepare_topology(self, topology: Topology) -> Topology:
+        reference_residues = self._reference_residues
+        bonded_topology = self._bonded_topology
+        if reference_residues is None and bonded_topology is None:
+            return topology
+
+        if reference_residues is None:
+            reference_residues = topology.reference_residues or None
+            residue_ids = np.asarray(topology.residue_ids, dtype=int).copy()
+            check_residues = topology.check_residues
+        else:
+            residue_ids = self._infer_residue_ids(topology.atoms, reference_residues)
+            check_residues = True
+
+        return Topology(
+            atoms=list(topology.atoms),
+            residue_ids=residue_ids,
+            reference_residues=reference_residues,
+            check_residues=check_residues,
+            bonded_topology=bonded_topology or topology.bonded_topology,
+        )
+
+    @staticmethod
+    def _infer_residue_ids(
+        atoms: list[Any],
+        reference_residues: list[Any],
+    ) -> np.ndarray:
+        residue_ids: list[int] = []
+        atom_index = 0
+        while atom_index < len(atoms):
+            match = next(
+                (
+                    residue
+                    for residue in reference_residues
+                    if atom_index + residue.n_atoms <= len(atoms)
+                    and [
+                        atom.element
+                        for atom in atoms[atom_index:atom_index + residue.n_atoms]
+                    ] == residue.elements
+                ),
+                None,
+            )
+            if match is None:
+                raise ValueError(
+                    "could not infer a moldescriptor residue at "
+                    f"atom index {atom_index}"
+                )
+            residue_ids.extend([int(match.id)] * match.n_atoms)
+            atom_index += match.n_atoms
+        return np.asarray(residue_ids, dtype=int)
+
+    @staticmethod
+    def _residue_category(residue: Any) -> str:
+        name = re.sub(r"[^a-z0-9]+", "", residue.name.lower())
+        if name in _WATER_NAMES:
+            return "water"
+
+        numbers = [int(element.atomic_number or 0) for element in residue.elements]
+        known = [number for number in numbers if number]
+        virtual_sites = len(numbers) - len(known)
+        if sorted(known) == [1, 1, 8] and virtual_sites <= 1:
+            return "water"
+
+        if name in _AMINO_ACID_NAMES or (
+            len(name) == 4
+            and name[0] in {"c", "n"}
+            and name[1:] in _STANDARD_AMINO_ACID_NAMES
+        ):
+            return "amino-acid"
+
+        nucleotide_name = name[:-1] if name.endswith(("3", "5")) else name
+        if nucleotide_name in _NUCLEOTIDE_NAMES:
+            return "nucleotide"
+        return "other"
+
+    @staticmethod
+    def _optional_file(path: str | Path | None) -> Path | None:
+        if path is None:
+            return None
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_file():
+            raise FileNotFoundError(resolved)
+        return resolved
 
     def _load_energy_series(self) -> None:
         self._sidecar_series = []
