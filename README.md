@@ -58,8 +58,14 @@ convention and structures are wrapped automatically. Click an atom to see its
 identity, position, and available per-atom values.
 
 The compact timeline keeps every frame and provides previous, play/pause, next,
-scrubbing, and the current frame number. `Space` plays or pauses, arrow keys step
-frames, `R` fits the structure, and `Escape` closes the open card.
+scrubbing, and the current frame number. When trajectory properties are present,
+the trace below it stays synchronized with the structure; click or drag the trace
+to seek and choose another property from its label.
+
+Search every action with `Cmd/Ctrl+K` or `/`. Press `?` for the complete shortcut
+sheet. `Space` plays or pauses, arrow keys step frames, `Home` and `End` jump to
+the trajectory limits, `R` fits the structure, and `Escape` closes the open card.
+Optional Vim navigation can be enabled from the shortcut sheet.
 
 `Export` or `Cmd/Ctrl+Shift+S` immediately writes a publication PNG at
 2400 × 1800 px. The export uses the current orientation with a fitted

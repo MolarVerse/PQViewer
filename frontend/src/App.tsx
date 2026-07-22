@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameArray, FrameCache, getManifest, normalizeSeries, openFiles } from "./api";
 import { centeredFramePositions, framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
-import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo } from "./MoleculeScene";
-import { advanceFrameIndex } from "./keyboard";
+import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
+import {
+  advanceFrameIndex,
+  parseVimPreference,
+  resolveVimNavigation,
+  shortcutLabelsForPlatform,
+} from "./keyboard";
+import type { ViewerShortcutLabels, VimNavigationAction, VimPrefix } from "./keyboard";
+import { TrajectoryPropertyStrip } from "./TrajectoryPropertyStrip";
 import type {
   CellOffset,
+  DisplaySeries,
   FrameData,
   Manifest,
   RepresentationMode,
@@ -15,7 +23,7 @@ import type {
 type LoadState = "loading" | "ready" | "error";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
 type WorkbenchTab = "view" | "inspect";
-type IconName = "back" | "close" | "folder" | "image" | "next" | "pause" | "play" | "retry" | "sliders";
+type IconName = "back" | "close" | "folder" | "image" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -45,7 +53,12 @@ export default function App() {
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtom, setSelectedAtom] = useState<number | null>(null);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [vimMode, setVimMode] = useState(initialVimMode);
   const [resetSignal, setResetSignal] = useState(0);
+  const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
+  const [viewSignal, setViewSignal] = useState(0);
   const [rendering, setRendering] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
@@ -56,10 +69,12 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelButtonRef = useRef<HTMLButtonElement>(null);
   const workbenchRef = useRef<HTMLElement>(null);
+  const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
   const autoProfileKey = useRef("");
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
+  const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
     cache.current.clear();
@@ -86,6 +101,12 @@ export default function App() {
   }, [presentation]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem("pqviewer-vim-navigation", String(vimMode));
+    } catch {}
+  }, [vimMode]);
+
+  useEffect(() => {
     let active = true;
     setLoadState("loading");
     setLoadError("");
@@ -108,6 +129,7 @@ export default function App() {
     if (!manifest || manifest.frame_count === 0) return;
     if (rendering) return;
     let active = true;
+    cache.current.cancelPendingExcept(frameIndex);
     setFrameLoading(true);
     setFrameError("");
     cache.current
@@ -176,10 +198,30 @@ export default function App() {
     }
   }, []);
 
+  const selectView = useCallback((preset: ViewPreset) => {
+    setViewPreset(preset);
+    setViewSignal((value) => value + 1);
+  }, []);
+
   const showOpen = useCallback(() => {
     if (rendering) return;
+    setCommandOpen(false);
+    setShortcutsOpen(false);
     setWorkbenchTab(null);
     fileInputRef.current?.click();
+  }, [rendering]);
+
+  const showCommands = useCallback(() => {
+    if (rendering) return;
+    setPlaying(false);
+    setShortcutsOpen(false);
+    setCommandOpen(true);
+  }, [rendering]);
+
+  const showShortcuts = useCallback(() => {
+    if (rendering) return;
+    setCommandOpen(false);
+    setShortcutsOpen(true);
   }, [rendering]);
 
   const exportPng = useCallback(async (options: PngExportOptions) => {
@@ -215,6 +257,8 @@ export default function App() {
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
   const showRender = useCallback(() => {
     if (!canRender || rendering) return;
+    setCommandOpen(false);
+    setShortcutsOpen(false);
     setWorkbenchTab(null);
     void exportPng({
       width: 2400,
@@ -290,9 +334,39 @@ export default function App() {
   }, [notice, opening, rendering]);
 
   const dismissActive = useCallback(() => {
-    if (workbenchTab === "inspect") setSelectedAtom(null);
-    if (workbenchTab) closeWorkbench(true);
-  }, [closeWorkbench, workbenchTab]);
+    vimSequenceRef.current = { prefix: null, at: 0 };
+    if (commandOpen) setCommandOpen(false);
+    else if (shortcutsOpen) setShortcutsOpen(false);
+    else {
+      if (workbenchTab === "inspect") setSelectedAtom(null);
+      if (workbenchTab) closeWorkbench(true);
+    }
+  }, [closeWorkbench, commandOpen, shortcutsOpen, workbenchTab]);
+
+  const runVimNavigation = useCallback((action: VimNavigationAction) => {
+    if (action === "commands") {
+      showCommands();
+      return;
+    }
+    if (action === "first-frame") {
+      setPlaying(false);
+      setFrame(0);
+      return;
+    }
+    if (action === "last-frame") {
+      setPlaying(false);
+      setFrame((manifest?.frame_count ?? 1) - 1);
+      return;
+    }
+    const delta = {
+      "next-frame": 1,
+      "next-ten-frames": 10,
+      "previous-frame": -1,
+      "previous-ten-frames": -10,
+    }[action];
+    setPlaying(false);
+    stepFrame(delta);
+  }, [manifest?.frame_count, setFrame, showCommands, stepFrame]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -309,7 +383,17 @@ export default function App() {
         showOpen();
         return;
       }
+      if (primaryModifier && !event.shiftKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        showCommands();
+        return;
+      }
       if (rendering) return;
+      if (vimMode && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "[") {
+        event.preventDefault();
+        dismissActive();
+        return;
+      }
       if (event.key === "Escape") {
         dismissActive();
         return;
@@ -317,6 +401,38 @@ export default function App() {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       if (isTextEditingTarget(target)) return;
       if (isActivationTarget(target) && (event.key === "Enter" || event.code === "Space")) return;
+      if (event.key === "/") {
+        event.preventDefault();
+        if (!event.repeat) showCommands();
+        return;
+      }
+      if (event.key === "?") {
+        event.preventDefault();
+        if (!event.repeat) showShortcuts();
+        return;
+      }
+      if (commandOpen || shortcutsOpen) return;
+      if (vimMode) {
+        const now = performance.now();
+        const activePrefix = now - vimSequenceRef.current.at <= 750
+          ? vimSequenceRef.current.prefix
+          : null;
+        if (event.repeat && event.key === "g") {
+          event.preventDefault();
+          return;
+        }
+        const resolution = resolveVimNavigation(event.key, activePrefix);
+        vimSequenceRef.current = { prefix: resolution.prefix, at: resolution.prefix ? now : 0 };
+        if (resolution.prefix) {
+          if (!event.repeat) event.preventDefault();
+          return;
+        }
+        if (resolution.action) {
+          event.preventDefault();
+          runVimNavigation(resolution.action);
+          return;
+        }
+      }
       if (event.key.toLowerCase() === "v" && capabilities && !event.repeat) {
         if (workbenchVisible && workbenchTab === "view") closeWorkbench(true);
         else openWorkbench("view", true);
@@ -339,9 +455,20 @@ export default function App() {
         event.preventDefault();
         setPlaying(false);
         stepFrame(event.shiftKey ? 10 : 1);
-      } else if ((event.key === "Home" || event.key.toLowerCase() === "r") && !event.repeat) {
+      } else if (event.key === "Home" && !event.repeat) {
+        event.preventDefault();
+        setPlaying(false);
+        setFrame(0);
+      } else if (event.key === "End" && !event.repeat) {
+        event.preventDefault();
+        setPlaying(false);
+        setFrame((manifest?.frame_count ?? 1) - 1);
+      } else if (event.key.toLowerCase() === "r" && !event.repeat) {
         event.preventDefault();
         setResetSignal((value) => value + 1);
+      } else if (["1", "2", "3", "4"].includes(event.key) && !event.shiftKey && !event.repeat) {
+        event.preventDefault();
+        selectView(({ "1": "perspective", "2": "xy", "3": "xz", "4": "yz" } as const)[event.key as "1" | "2" | "3" | "4"]);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -350,16 +477,93 @@ export default function App() {
     capabilities?.water,
     cellAvailable,
     closeWorkbench,
+    commandOpen,
     dismissActive,
     forceAvailable,
     manifest?.frame_count,
     openWorkbench,
     presentation,
     rendering,
+    runVimNavigation,
+    selectView,
+    setFrame,
+    shortcutsOpen,
     stepFrame,
+    showCommands,
     showOpen,
     showRender,
+    showShortcuts,
     updatePresentation,
+    workbenchTab,
+    workbenchVisible,
+    vimMode,
+  ]);
+
+  const commands = useMemo<CommandAction[]>(() => {
+    const run = (action: () => void) => () => {
+      action();
+      setCommandOpen(false);
+    };
+    const actions: CommandAction[] = [
+      { id: "open", label: "Open trajectory", keywords: "file load", detail: shortcutLabels.open, run: run(showOpen) },
+      { id: "play", label: playing ? "Pause trajectory" : "Play trajectory", keywords: "movie animation", detail: "Space", disabled: !canPlay, run: run(() => setPlaying((value) => !value)) },
+      { id: "previous", label: "Previous frame", keywords: "back step", detail: "←", disabled: !canPlay || frameIndex === 0, run: run(() => { setPlaying(false); stepFrame(-1); }) },
+      { id: "next", label: "Next frame", keywords: "forward step", detail: "→", disabled: !canPlay || frameIndex >= (manifest?.frame_count ?? 1) - 1, run: run(() => { setPlaying(false); stepFrame(1); }) },
+      { id: "first", label: "First frame", keywords: "start beginning", detail: "Home", disabled: !canPlay || frameIndex === 0, run: run(() => { setPlaying(false); setFrame(0); }) },
+      { id: "last", label: "Last frame", keywords: "end final", detail: "End", disabled: !canPlay || frameIndex >= (manifest?.frame_count ?? 1) - 1, run: run(() => { setPlaying(false); setFrame((manifest?.frame_count ?? 1) - 1); }) },
+      { id: "fit", label: "Fit structure", keywords: "reset camera center", detail: "R", disabled: !manifest?.frame_count, run: run(() => setResetSignal((value) => value + 1)) },
+      ...(["perspective", "xy", "xz", "yz"] as ViewPreset[]).map((view, index) => ({
+        id: `view-${view}`,
+        label: view === "perspective" ? "Perspective view" : `${view.toUpperCase()} view`,
+        keywords: "camera orientation axis",
+        detail: view === viewPreset ? "Current" : String(index + 1),
+        run: run(() => selectView(view)),
+      })),
+      { id: "display", label: workbenchVisible && workbenchTab === "view" ? "Hide display controls" : "Show display controls", keywords: "view representation settings", detail: "V", disabled: !capabilities, run: run(() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view")) },
+      { id: "export", label: "Export figure", keywords: "render image png publication", detail: shortcutLabels.export, disabled: !canRender, run: run(showRender) },
+      ...(["ball-stick", "spacefill", "lines"] as RepresentationMode[]).map((mode) => ({
+        id: `mode-${mode}`,
+        label: `Representation · ${representationLabel(mode)}`,
+        keywords: "style atoms bonds",
+        detail: mode === presentation.mode ? "Current" : undefined,
+        run: run(() => updatePresentation({ mode })),
+      })),
+      ...(capabilities?.ribbon ? [{
+        id: "mode-ribbon",
+        label: "Representation · Ribbon",
+        keywords: "style protein backbone",
+        detail: presentation.mode === "ribbon" ? "Current" : undefined,
+        run: run(() => updatePresentation({ mode: "ribbon" })),
+      }] : []),
+      ...(capabilities?.water ? [{ id: "water", label: presentation.water === "hide" ? "Show water" : "Hide water", keywords: "solvent", detail: "W", run: run(() => updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" })) }] : []),
+      ...(cellAvailable ? [{ id: "cell", label: presentation.cell ? "Hide cell" : "Show cell", keywords: "box periodic pbc", detail: "C", run: run(() => updatePresentation({ cell: !presentation.cell })) }] : []),
+      ...(forceAvailable ? [{ id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", keywords: "vectors arrows", detail: "F", run: run(() => updatePresentation({ forces: !presentation.forces })) }] : []),
+      { id: "shortcuts", label: "Keyboard shortcuts", keywords: "help keys vim", detail: "?", run: run(showShortcuts) },
+      { id: "vim", label: vimMode ? "Disable Vim navigation" : "Enable Vim navigation", keywords: "keyboard linux hjkl", detail: vimMode ? "On" : "Off", run: run(() => setVimMode((value) => !value)) },
+    ];
+    return actions;
+  }, [
+    canPlay,
+    canRender,
+    capabilities,
+    cellAvailable,
+    closeWorkbench,
+    forceAvailable,
+    frameIndex,
+    manifest?.frame_count,
+    openWorkbench,
+    playing,
+    presentation,
+    selectView,
+    setFrame,
+    shortcutLabels,
+    showOpen,
+    showRender,
+    showShortcuts,
+    stepFrame,
+    updatePresentation,
+    viewPreset,
+    vimMode,
     workbenchTab,
     workbenchVisible,
   ]);
@@ -367,7 +571,7 @@ export default function App() {
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
     rendering ? "is-rendering" : "",
-    "timeline-compact",
+    series.length > 0 ? "timeline-data" : "timeline-compact",
   ].filter(Boolean).join(" ");
 
   return (
@@ -416,6 +620,8 @@ export default function App() {
             presentation={presentation}
             selectedAtom={selectedAtom}
             resetSignal={resetSignal}
+            viewPreset={viewPreset}
+            viewSignal={viewSignal}
             forceScale={1}
             appearance="light"
             onSelect={selectAtom}
@@ -442,6 +648,17 @@ export default function App() {
               </div>
             )}
             <button className="open-button" type="button" disabled={rendering} aria-keyshortcuts="Meta+O Control+O" onClick={showOpen}><Icon name="folder" />Open</button>
+            <button
+              className="command-button"
+              type="button"
+              aria-label="Search commands"
+              aria-keyshortcuts="Meta+K Control+K"
+              aria-haspopup="dialog"
+              aria-expanded={commandOpen}
+              disabled={rendering}
+              title={`Search commands · ${shortcutLabels.commands}`}
+              onClick={showCommands}
+            ><Icon name="search" /><span>Search</span><kbd>{shortcutLabels.commands}</kbd></button>
             <button
               ref={panelButtonRef}
               className="panel-button"
@@ -492,10 +709,12 @@ export default function App() {
           <Timeline
             busy={rendering}
             frameCount={manifest.frame_count}
-            frameIndex={displayedFrameIndex}
+            frameIndex={frameIndex}
+            displayedFrameIndex={displayedFrameIndex}
             playing={playing}
             canPlay={canPlay}
             frameError={frameError}
+            series={series}
             onFrame={(index) => {
               setPlaying(false);
               setFrame(index);
@@ -524,9 +743,245 @@ export default function App() {
         )}
         {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status">{notice}</div>}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
+        {commandOpen && <CommandPalette actions={commands} onClose={() => setCommandOpen(false)} />}
+        {shortcutsOpen && <ShortcutSheet
+          shortcutLabels={shortcutLabels}
+          vimMode={vimMode}
+          onVimMode={setVimMode}
+          onClose={() => setShortcutsOpen(false)}
+        />}
       </div>
     </main>
   );
+}
+
+interface CommandAction {
+  id: string;
+  label: string;
+  keywords?: string;
+  detail?: string;
+  disabled?: boolean;
+  run: () => void;
+}
+
+export function filterCommandActions<T extends { label: string; keywords?: string; detail?: string }>(
+  actions: readonly T[],
+  query: string,
+): T[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [...actions];
+  return actions.filter((action) => words.every((word) => (
+    `${action.label} ${action.keywords ?? ""} ${action.detail ?? ""}`.toLowerCase().includes(word)
+  )));
+}
+
+function useModalFocus<T extends HTMLElement>(
+  panelRef: Readonly<{ current: T | null }>,
+  initialRef?: Readonly<{ current: HTMLElement | null }>,
+) {
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const modalRoot = panel.parentElement;
+    const background = modalRoot?.parentElement
+      ? [...modalRoot.parentElement.children]
+        .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== modalRoot)
+        .map((element) => ({ element, inert: element.inert }))
+      : [];
+    background.forEach(({ element }) => { element.inert = true; });
+
+    const focusable = () => [...panel.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    )].filter((element) => element.offsetParent !== null);
+    const focusInitial = () => (initialRef?.current ?? focusable()[0] ?? panel).focus();
+    const animation = requestAnimationFrame(focusInitial);
+    const keepFocusInside = (event: FocusEvent) => {
+      if (!panel.contains(event.target as Node)) focusInitial();
+    };
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      if (elements.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = elements[0];
+      const last = elements[elements.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("focusin", keepFocusInside);
+    panel.addEventListener("keydown", trapTab);
+    return () => {
+      cancelAnimationFrame(animation);
+      document.removeEventListener("focusin", keepFocusInside);
+      panel.removeEventListener("keydown", trapTab);
+      background.forEach(({ element, inert }) => { element.inert = inert; });
+      restoreFocusWhenAvailable(restoreFocus);
+    };
+  }, []);
+}
+
+function restoreFocusWhenAvailable(element: HTMLElement | null) {
+  if (!element?.isConnected) return;
+  if (!element.matches(":disabled")) {
+    element.focus();
+    return;
+  }
+  const observer = new MutationObserver(() => {
+    if (!element.isConnected || element.matches(":disabled")) return;
+    window.clearTimeout(timeout);
+    observer.disconnect();
+    element.focus();
+  });
+  const timeout = window.setTimeout(() => observer.disconnect(), 30_000);
+  observer.observe(element, { attributes: true, attributeFilter: ["disabled"] });
+}
+
+function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClose: () => void }) {
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const visible = useMemo(() => filterCommandActions(actions, query), [actions, query]);
+
+  useModalFocus(panelRef, inputRef);
+  useEffect(() => setActive(Math.max(0, visible.findIndex((action) => !action.disabled))), [visible]);
+  useEffect(() => {
+    optionRefs.current[active]?.scrollIntoView({ block: "nearest" });
+  }, [active, visible]);
+
+  const move = (direction: number) => {
+    const enabled = visible.map((action, index) => action.disabled ? -1 : index).filter((index) => index >= 0);
+    if (enabled.length === 0) return;
+    const position = enabled.indexOf(active);
+    const next = position < 0 ? 0 : (position + direction + enabled.length) % enabled.length;
+    setActive(enabled[next]);
+  };
+
+  return <div className="command-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section ref={panelRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Commands" tabIndex={-1}>
+      <label className="command-search"><Icon name="search" /><input
+        ref={inputRef}
+        value={query}
+        placeholder="Search commands"
+        aria-label="Search commands"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls="command-results"
+        aria-expanded="true"
+        aria-activedescendant={visible[active] ? `command-${visible[active].id}` : undefined}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown") { event.preventDefault(); move(1); }
+          else if (event.key === "ArrowUp") { event.preventDefault(); move(-1); }
+          else if (event.key === "Enter") {
+            event.preventDefault();
+            if (!visible[active]?.disabled) visible[active]?.run();
+          }
+        }}
+      /><kbd>esc</kbd></label>
+      <div className="command-results" id="command-results" role="listbox">
+        {visible.map((action, index) => <button
+          ref={(element) => { optionRefs.current[index] = element; }}
+          key={action.id}
+          id={`command-${action.id}`}
+          type="button"
+          role="option"
+          aria-selected={index === active}
+          className={index === active ? "is-active" : ""}
+          disabled={action.disabled}
+          onPointerMove={() => !action.disabled && setActive(index)}
+          onClick={action.run}
+        ><span>{action.label}</span>{action.detail && <kbd>{action.detail}</kbd>}</button>)}
+        {visible.length === 0 && <p>No commands found</p>}
+      </div>
+    </section>
+  </div>;
+}
+
+function ShortcutSheet({
+  shortcutLabels,
+  vimMode,
+  onVimMode,
+  onClose,
+}: {
+  shortcutLabels: ViewerShortcutLabels;
+  vimMode: boolean;
+  onVimMode: (enabled: boolean) => void;
+  onClose: () => void;
+}) {
+  const panelRef = useRef<HTMLElement>(null);
+  useModalFocus(panelRef);
+  const groups: Array<{ title: string; items: Array<[string, string]> }> = [
+    {
+      title: "Trajectory",
+      items: [
+        ["← / →", "Previous / next frame"],
+        ["Shift ← / →", "Move ten frames"],
+        ["Home / End", "First / last frame"],
+        ["Space", "Play / pause"],
+      ],
+    },
+    {
+      title: "View",
+      items: [
+        ["R", "Fit structure"],
+        ["1 / 2 / 3 / 4", "3D / XY / XZ / YZ"],
+        ["V", "Display controls"],
+        ["B", "Bonds / lines"],
+        ["C / F / W", "Cell / forces / water"],
+      ],
+    },
+    {
+      title: "Workspace",
+      items: [
+        [shortcutLabels.commands, "Search commands"],
+        [shortcutLabels.open, "Open trajectory"],
+        [shortcutLabels.export, "Export figure"],
+        ["? / Esc", "Shortcuts / close"],
+      ],
+    },
+  ];
+  const vimItems: Array<[string, string]> = [
+    ["j/k or l/h", "Next / previous frame"],
+    ["J/K or L/H", "Forward / back ten"],
+    ["gg / G", "First / last frame"],
+    [":", "Search commands"],
+    ["Ctrl [", "Close surface"],
+  ];
+
+  return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section ref={panelRef} className="shortcut-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabIndex={-1}>
+      <div className="shortcut-heading">
+        <div><strong>Keyboard shortcuts</strong><span>Everything remains available with the mouse.</span></div>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="Close keyboard shortcuts"><Icon name="close" /></button>
+      </div>
+      <div className="shortcut-groups">
+        {groups.map((group) => <section key={group.title}>
+          <h3>{group.title}</h3>
+          {group.items.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
+        </section>)}
+      </div>
+      <section className={vimMode ? "vim-shortcuts is-active" : "vim-shortcuts"}>
+        <div className="vim-heading">
+          <div><strong>Vim navigation</strong><span>Optional; standard shortcuts stay active.</span></div>
+          <button type="button" role="switch" aria-label="Vim navigation" aria-checked={vimMode} onClick={() => onVimMode(!vimMode)}><i /></button>
+        </div>
+        {vimMode && <div className="vim-shortcut-grid">
+          {vimItems.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
+        </div>}
+      </section>
+    </section>
+  </div>;
 }
 
 function ScenePanel({
@@ -635,23 +1090,33 @@ function Timeline({
   busy,
   frameCount,
   frameIndex,
+  displayedFrameIndex,
   playing,
   canPlay,
   frameError,
+  series,
   onFrame,
   onPlay,
 }: {
   busy: boolean;
   frameCount: number;
   frameIndex: number;
+  displayedFrameIndex: number;
   playing: boolean;
   canPlay: boolean;
   frameError: string;
+  series: DisplaySeries[];
   onFrame: (index: number) => void;
   onPlay: () => void;
 }) {
+  const displayedFrame = String(displayedFrameIndex + 1).padStart(String(frameCount).length, "0");
+  const requestedFrame = String(frameIndex + 1).padStart(String(frameCount).length, "0");
+  const frameLabel = displayedFrameIndex === frameIndex
+    ? `${displayedFrame} / ${frameCount}`
+    : `${displayedFrame} → ${requestedFrame}`;
+
   return (
-    <section className={`timeline is-compact${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
+    <section className={`timeline${series.length > 0 ? " has-series" : " is-compact"}${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
       <div className="transport-row">
         <div className="transport-buttons">
           <button type="button" className="transport-button" onClick={() => onFrame(frameIndex - 1)} disabled={busy || frameIndex === 0} aria-label="Previous frame">
@@ -675,9 +1140,20 @@ function Timeline({
             onChange={(event) => onFrame(Number(event.target.value))}
           />
         </label>
-        <output className="frame-counter">{String(frameIndex + 1).padStart(String(frameCount).length, "0")} / {frameCount}</output>
+        <output
+          className="frame-counter"
+          aria-label={displayedFrameIndex === frameIndex
+            ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
+            : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
+        >{frameLabel}</output>
         {frameError && <span className="frame-error" title={frameError}>Frame unavailable</span>}
       </div>
+      {series.length > 0 && <TrajectoryPropertyStrip
+        series={series}
+        frameIndex={displayedFrameIndex}
+        frameCount={frameCount}
+        onFrame={onFrame}
+      />}
     </section>
   );
 }
@@ -737,6 +1213,7 @@ function Icon({ name }: { name: IconName }) {
       {name === "pause" && <><path d="M9 7v10M15 7v10" {...common} strokeWidth="2" /></>}
       {name === "back" && <path d="m14.5 8-5 4 5 4" {...common} />}
       {name === "next" && <path d="m9.5 8 5 4-5 4" {...common} />}
+      {name === "search" && <><circle cx="10.5" cy="10.5" r="5.5" {...common} /><path d="m14.6 14.6 4 4" {...common} /></>}
       {name === "close" && <path d="m8 8 8 8m0-8-8 8" {...common} />}
       {name === "retry" && <><path d="M18 9a7 7 0 1 0 .5 5" {...common} /><path d="M18 5v4h-4" {...common} /></>}
     </svg>
@@ -893,6 +1370,20 @@ function isTextEditingTarget(target: HTMLElement | null): boolean {
 
 function isActivationTarget(target: HTMLElement | null): boolean {
   return Boolean(target?.closest('button, a[href], [role="button"], [role="menuitem"]'));
+}
+
+function initialVimMode(): boolean {
+  try {
+    return parseVimPreference(window.localStorage.getItem("pqviewer-vim-navigation"));
+  } catch {
+    return false;
+  }
+}
+
+function browserPlatform(): string {
+  if (typeof navigator === "undefined") return "";
+  const navigatorWithHints = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return navigatorWithHints.userAgentData?.platform || navigator.platform || navigator.userAgent;
 }
 
 function initialPresentation(): ScenePresentation {

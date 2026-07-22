@@ -4117,3 +4117,100 @@ input[type="range"]::-moz-range-thumb {
     font-size: 10px;
   }
 }
+
+/* Search and shortcuts stay available without expanding the workspace. */
+
+.command-button {
+  display: inline-flex;
+  width: auto;
+  min-width: 58px;
+  padding-inline: 8px;
+}
+
+.command-button span {
+  display: none;
+}
+
+.command-button kbd {
+  white-space: nowrap;
+}
+
+.command-backdrop {
+  z-index: 70;
+}
+
+.workspace.timeline-data {
+  --timeline-height: 112px;
+}
+
+.timeline.has-series {
+  display: grid;
+  grid-template-rows: 51px minmax(0, 1fr);
+  padding: 0;
+}
+
+.timeline.has-series .transport-row {
+  height: 51px;
+  min-height: 51px;
+  padding-inline: 12px;
+}
+
+.timeline .trajectory-property-strip {
+  grid-template-columns: minmax(96px, 122px) minmax(120px, 1fr);
+  gap: 10px;
+  min-height: 0;
+  padding: 4px 12px 7px;
+}
+
+.timeline .trajectory-property-strip__plot {
+  height: 46px;
+}
+
+.timeline .trajectory-property-strip__frame {
+  display: none;
+}
+
+.timeline.is-busy .trajectory-property-strip {
+  opacity: 0.62;
+  pointer-events: none;
+}
+
+@media (max-width: 760px) {
+  .command-button {
+    display: inline-flex;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .command-button kbd {
+    display: none;
+  }
+
+  .command-button .icon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .workspace.timeline-data {
+    --timeline-height: 112px;
+  }
+
+  .timeline .trajectory-property-strip {
+    grid-template-columns: minmax(86px, 106px) minmax(110px, 1fr);
+    gap: 8px;
+    padding-inline: 8px;
+  }
+
+  .timeline .trajectory-property-strip__metric {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .timeline .trajectory-property-strip__plot {
+    height: 42px;
+    grid-column: auto;
+    grid-row: auto;
+  }
+}

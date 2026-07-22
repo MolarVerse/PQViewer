@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   autoProfile,
+  filterCommandActions,
   profilePresentation,
   selectedProfilePresentation,
 } from "./App";
@@ -93,5 +94,24 @@ describe("scene profiles", () => {
       cell: true,
       forces: true,
     });
+  });
+});
+
+describe("command search", () => {
+  const actions = [
+    { label: "Export figure", keywords: "render image png publication", detail: "Ctrl Shift S" },
+    { label: "Representation · Spacefill", keywords: "style atoms bonds" },
+    { label: "Show forces", keywords: "vectors arrows", detail: "F" },
+  ];
+
+  it("matches labels, scientific aliases, and shortcut details", () => {
+    expect(filterCommandActions(actions, "spacefill")).toEqual([actions[1]]);
+    expect(filterCommandActions(actions, "publication image")).toEqual([actions[0]]);
+    expect(filterCommandActions(actions, "ctrl s")).toEqual([actions[0]]);
+  });
+
+  it("returns every action for an empty query and none for an unknown command", () => {
+    expect(filterCommandActions(actions, "  ")).toEqual(actions);
+    expect(filterCommandActions(actions, "density surface")).toEqual([]);
   });
 });
