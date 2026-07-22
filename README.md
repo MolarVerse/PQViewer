@@ -58,7 +58,10 @@ only when residue and backbone topology are present. Large force fields are
 evenly sampled, with displayed and total vector counts reported under Data.
 
 Playback defaults to every frame. Realtime playback, wrapping, geometry scale,
-quality, and appearance are available under Customize.
+quality, appearance, and optional Vim navigation are available from the
+top-bar Customize control or `Cmd/Ctrl+,`. Press `?` for the complete keyboard
+reference. Vim navigation adds `j`/`k`, `J`/`K`, `gg`/`G`, `:`, and `Ctrl+[`;
+standard shortcuts remain active. Shortcut labels follow the host platform.
 Dense or replicated scenes stay responsive by switching atom instances above
 80,000 to points and bond segments above 80,000 to lines, including when High
 quality is selected.

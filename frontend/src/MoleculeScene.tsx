@@ -489,7 +489,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     updateSelection(state, selectedAtom);
   }, [frame, presentation, selectedAtom]);
 
-  return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" />;
+  return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" tabIndex={0} />;
 });
 
 async function exportScenePng(state: SceneState, options: PngExportOptions): Promise<Blob> {

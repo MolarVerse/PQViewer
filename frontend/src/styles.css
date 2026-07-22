@@ -81,6 +81,11 @@ svg:focus-visible {
   outline-offset: 2px;
 }
 
+.molecule-canvas:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
 kbd,
 output {
   font-family: var(--numeric);
@@ -157,7 +162,8 @@ output {
 .topbar-tools,
 .scene-status,
 .open-button,
-.command-button {
+.command-button,
+.customize-button {
   display: flex;
   align-items: center;
 }
@@ -219,6 +225,7 @@ output {
 
 .open-button,
 .command-button,
+.customize-button,
 .more-button,
 .icon-button {
   min-width: 36px;
@@ -239,6 +246,7 @@ output {
 
 .open-button:hover,
 .command-button:hover,
+.customize-button:hover,
 .more-button:hover,
 .icon-button:hover {
   background: var(--surface-soft);
@@ -247,6 +255,7 @@ output {
 
 .open-button .icon,
 .command-button .icon,
+.customize-button .icon,
 .more-button .icon,
 .icon-button .icon {
   width: 17px;
@@ -256,6 +265,21 @@ output {
 .command-button kbd {
   color: var(--quiet);
   font-size: 10px;
+}
+
+.customize-button {
+  width: 36px;
+  padding: 0;
+}
+
+.customize-button[aria-expanded="true"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.customize-button:disabled {
+  opacity: 0.48;
+  cursor: default;
 }
 
 .more-control {
@@ -272,7 +296,7 @@ output {
   z-index: 30;
   top: calc(100% + 7px);
   right: 0;
-  width: 202px;
+  width: 226px;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 11px;
@@ -561,7 +585,8 @@ output {
   color: var(--disabled);
 }
 
-.toggle-row > button[role="switch"] {
+.toggle-row > button[role="switch"],
+.vim-heading > button[role="switch"] {
   position: relative;
   width: 34px;
   height: 20px;
@@ -574,7 +599,8 @@ output {
   transition: background-color 190ms ease;
 }
 
-.toggle-row > button[role="switch"] i {
+.toggle-row > button[role="switch"] i,
+.vim-heading > button[role="switch"] i {
   position: absolute;
   top: 3px;
   left: 3px;
@@ -586,11 +612,13 @@ output {
   transition: transform 190ms ease;
 }
 
-.toggle-row > button[role="switch"][aria-checked="true"] {
+.toggle-row > button[role="switch"][aria-checked="true"],
+.vim-heading > button[role="switch"][aria-checked="true"] {
   background: var(--accent);
 }
 
-.toggle-row > button[role="switch"][aria-checked="true"] i {
+.toggle-row > button[role="switch"][aria-checked="true"] i,
+.vim-heading > button[role="switch"][aria-checked="true"] i {
   transform: translateX(14px);
 }
 
@@ -712,7 +740,7 @@ output {
 .scene-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 5px;
   margin: 0 -15px -15px;
   padding: 11px 15px 15px;
@@ -1336,6 +1364,130 @@ input[type="range"]::-moz-range-thumb {
   text-align: center;
 }
 
+.shortcut-backdrop {
+  padding-top: min(10vh, 76px);
+}
+
+.shortcut-panel {
+  width: min(720px, 100%);
+  max-height: min(680px, calc(100svh - 120px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  animation: palette-in 210ms ease both;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.shortcut-heading,
+.vim-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.shortcut-heading {
+  min-height: 66px;
+  padding: 15px 16px 12px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcut-heading strong,
+.shortcut-heading span,
+.vim-heading strong,
+.vim-heading span {
+  display: block;
+}
+
+.shortcut-heading strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.shortcut-heading span,
+.vim-heading span {
+  margin-top: 3px;
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.shortcut-groups {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 4px 18px 14px;
+}
+
+.shortcut-groups > section {
+  min-width: 0;
+  padding: 13px 16px 4px 0;
+}
+
+.shortcut-groups > section + section {
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+}
+
+.shortcut-groups h3 {
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.shortcut-row {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: minmax(70px, auto) 1fr;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.shortcut-row kbd {
+  width: fit-content;
+  max-width: 100%;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.vim-shortcuts {
+  padding: 14px 18px 17px;
+  border-top: 1px solid var(--line);
+}
+
+.vim-heading {
+  align-items: center;
+}
+
+.vim-heading strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.vim-shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 12px;
+  margin-top: 9px;
+  transition: opacity 180ms ease;
+}
+
+.vim-shortcuts:not(.is-active) .vim-shortcut-grid {
+  opacity: 0.62;
+}
+
 .customize-sheet {
   position: absolute;
   z-index: 51;
@@ -1389,6 +1541,82 @@ input[type="range"]::-moz-range-thumb {
   color: var(--quiet);
   font-size: 10px;
   line-height: 1.4;
+}
+
+.settings-link {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.settings-link:hover {
+  color: var(--text);
+}
+
+.settings-link kbd {
+  color: var(--quiet);
+  font-size: 10px;
+}
+
+.keyboard-settings .toggle-row {
+  min-height: 38px;
+}
+
+.inline-settings {
+  display: grid;
+  gap: 7px;
+}
+
+.inline-setting {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.inline-setting > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.customize-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.customize-pair .settings-section {
+  min-width: 0;
+  border-top: 0;
+}
+
+#customize-sheet .settings-section {
+  padding: 12px 0;
+}
+
+.geometry-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.slider-settings .geometry-settings label {
+  min-width: 0;
+  min-height: 44px;
+  grid-template-columns: 1fr;
+  align-content: center;
+  gap: 2px;
 }
 
 .settings-segmented {
@@ -1805,6 +2033,7 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .open-button,
+  .customize-button,
   .more-button,
   .icon-button {
     min-width: 44px;
@@ -1843,13 +2072,15 @@ input[type="range"]::-moz-range-thumb {
     height: 44px;
   }
 
-  .toggle-row > button[role="switch"] {
+  .toggle-row > button[role="switch"],
+  .vim-heading > button[role="switch"] {
     width: 44px;
     height: 44px;
     background: transparent;
   }
 
-  .toggle-row > button[role="switch"]::before {
+  .toggle-row > button[role="switch"]::before,
+  .vim-heading > button[role="switch"]::before {
     content: "";
     position: absolute;
     top: 12px;
@@ -1861,16 +2092,19 @@ input[type="range"]::-moz-range-thumb {
     transition: background-color 190ms ease;
   }
 
-  .toggle-row > button[role="switch"] i {
+  .toggle-row > button[role="switch"] i,
+  .vim-heading > button[role="switch"] i {
     top: 15px;
     left: 8px;
   }
 
-  .toggle-row > button[role="switch"][aria-checked="true"] {
+  .toggle-row > button[role="switch"][aria-checked="true"],
+  .vim-heading > button[role="switch"][aria-checked="true"] {
     background: transparent;
   }
 
-  .toggle-row > button[role="switch"][aria-checked="true"]::before {
+  .toggle-row > button[role="switch"][aria-checked="true"]::before,
+  .vim-heading > button[role="switch"][aria-checked="true"]::before {
     background: var(--accent);
   }
 
@@ -1983,6 +2217,30 @@ input[type="range"]::-moz-range-thumb {
 
   .command-results > button {
     min-height: 48px;
+  }
+
+  .shortcut-panel {
+    max-height: calc(100svh - 16px);
+    border-radius: 17px;
+    animation-name: mobile-sheet-in;
+  }
+
+  .shortcut-groups {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcut-groups > section {
+    padding: 13px 0 8px;
+  }
+
+  .shortcut-groups > section + section {
+    padding-left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .vim-shortcut-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .customize-backdrop {

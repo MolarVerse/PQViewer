@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameArray, FrameCache, getManifest, normalizeSeries, openFiles } from "./api";
 import { centeredFramePositions, framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
 import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
+import { advanceFrameIndex, parseVimPreference, resolveVimNavigation, shortcutLabelsForPlatform } from "./keyboard";
+import type { VimNavigationAction, VimPrefix, ViewerShortcutLabels } from "./keyboard";
 import { MAX_PNG_EXPORT_PIXELS } from "./scene/pngExport";
 import type {
   Appearance,
@@ -19,7 +21,7 @@ type PlaybackMode = "every-frame" | "realtime";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
 type WorkspacePresentationDefaults = Partial<Pick<ScenePresentation, "wrap" | "color">>;
 type ForceVectorStats = { rendered: number; total: number };
-type IconName = "back" | "check" | "chevron" | "close" | "command" | "cube" | "folder" | "more" | "next" | "pause" | "play" | "retry" | "search";
+type IconName = "back" | "check" | "chevron" | "close" | "command" | "cube" | "folder" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -62,8 +64,10 @@ export default function App() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [renderOpen, setRenderOpen] = useState(false);
   const [rendering, setRendering] = useState(false);
+  const [vimMode, setVimMode] = useState(initialVimMode);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
   const [notice, setNotice] = useState("");
@@ -73,12 +77,15 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sceneMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
   const autoProfileKey = useRef("");
   const realtimeTarget = useRef(0);
   const realtimeWorker = useRef<{ cancelled: boolean; manifest: Manifest } | null>(null);
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
+  const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
     if (realtimeWorker.current) realtimeWorker.current.cancelled = true;
@@ -124,6 +131,12 @@ export default function App() {
       }
     } catch {}
   }, [workspacePresentationDefaults]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("pqviewer-vim-navigation", String(vimMode));
+    } catch {}
+  }, [vimMode]);
 
   useEffect(() => {
     let active = true;
@@ -223,6 +236,14 @@ export default function App() {
     [manifest?.frame_count],
   );
 
+  const stepFrame = useCallback(
+    (delta: number) => {
+      if (!manifest?.frame_count) return;
+      setFrameIndex((current) => advanceFrameIndex(current, delta, manifest.frame_count));
+    },
+    [manifest?.frame_count],
+  );
+
   const selectView = useCallback((preset: ViewPreset) => {
     setViewPreset(preset);
     setViewSignal((value) => value + 1);
@@ -233,12 +254,43 @@ export default function App() {
     if (index !== null) setShowInspector(true);
   }, []);
 
+  const showCommands = useCallback(() => {
+    if (rendering) return;
+    setSceneOpen(false);
+    setMoreOpen(false);
+    setCustomizeOpen(false);
+    setShortcutsOpen(false);
+    setRenderOpen(false);
+    setCommandOpen(true);
+  }, [rendering]);
+
+  const showCustomize = useCallback(() => {
+    if (rendering) return;
+    setSceneOpen(false);
+    setMoreOpen(false);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setRenderOpen(false);
+    setCustomizeOpen(true);
+  }, [rendering]);
+
+  const showShortcuts = useCallback(() => {
+    if (rendering) return;
+    setSceneOpen(false);
+    setMoreOpen(false);
+    setCommandOpen(false);
+    setCustomizeOpen(false);
+    setRenderOpen(false);
+    setShortcutsOpen(true);
+  }, [rendering]);
+
   const showRender = useCallback(() => {
     if (!moleculeSceneRef.current || rendering) return;
     setSceneOpen(false);
     setMoreOpen(false);
     setCommandOpen(false);
     setCustomizeOpen(false);
+    setShortcutsOpen(false);
     setRenderOpen(true);
   }, [rendering]);
 
@@ -391,71 +443,138 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [notice, opening, rendering]);
 
+  const dismissActive = useCallback(() => {
+    vimSequenceRef.current = { prefix: null, at: 0 };
+    if (commandOpen) setCommandOpen(false);
+    else if (shortcutsOpen) setShortcutsOpen(false);
+    else if (renderOpen && !rendering) setRenderOpen(false);
+    else if (customizeOpen) setCustomizeOpen(false);
+    else if (sceneOpen) setSceneOpen(false);
+    else if (moreOpen) setMoreOpen(false);
+    else if (selectedAtom !== null) setSelectedAtom(null);
+    else setShowInspector(false);
+  }, [commandOpen, customizeOpen, moreOpen, renderOpen, rendering, sceneOpen, selectedAtom, shortcutsOpen]);
+
+  const runVimNavigation = useCallback((action: VimNavigationAction) => {
+    if (action === "commands") {
+      showCommands();
+      return;
+    }
+    if (action === "first-frame") {
+      setPlaying(false);
+      setFrame(0);
+      return;
+    }
+    if (action === "last-frame") {
+      setPlaying(false);
+      setFrame((manifest?.frame_count ?? 1) - 1);
+      return;
+    }
+    const delta = {
+      "next-frame": 1,
+      "next-ten-frames": 10,
+      "previous-frame": -1,
+      "previous-ten-frames": -10,
+    }[action];
+    setPlaying(false);
+    stepFrame(delta);
+  }, [manifest?.frame_count, setFrame, showCommands, stepFrame]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
       const target = event.target as HTMLElement | null;
-      const modifier = event.metaKey || event.ctrlKey;
-      if (modifier && event.shiftKey && event.key.toLowerCase() === "s") {
+      const primaryModifier = event.metaKey !== event.ctrlKey && !event.altKey;
+      if (primaryModifier && event.shiftKey && event.key.toLowerCase() === "s") {
         event.preventDefault();
         showRender();
         return;
       }
-      if (modifier && event.key.toLowerCase() === "k") {
+      if (primaryModifier && !event.shiftKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCommandOpen(true);
+        showCommands();
         return;
       }
-      if (modifier && event.key.toLowerCase() === "o") {
+      if (primaryModifier && !event.shiftKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        fileInputRef.current?.click();
+        if (!rendering) fileInputRef.current?.click();
+        return;
+      }
+      if (primaryModifier && !event.shiftKey && (event.key === "," || event.code === "Comma")) {
+        event.preventDefault();
+        showCustomize();
+        return;
+      }
+      if (vimMode && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "[") {
+        event.preventDefault();
+        dismissActive();
         return;
       }
       if (event.key === "Escape") {
-        if (commandOpen) setCommandOpen(false);
-        else if (renderOpen && !rendering) setRenderOpen(false);
-        else if (customizeOpen) setCustomizeOpen(false);
-        else if (sceneOpen) setSceneOpen(false);
-        else if (moreOpen) setMoreOpen(false);
-        else if (selectedAtom !== null) setSelectedAtom(null);
-        else setShowInspector(false);
+        dismissActive();
         return;
       }
-      if (target?.matches("input, select, button, textarea")) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isTextEditingTarget(target)) return;
+      if (isActivationTarget(target) && (event.key === "Enter" || event.code === "Space")) return;
       if (event.key === "/") {
         event.preventDefault();
-        setCommandOpen(true);
+        if (!event.repeat) showCommands();
       } else if (event.key === "?") {
         event.preventDefault();
-        setCustomizeOpen(true);
-      } else if (event.key.toLowerCase() === "i") {
+        if (!event.repeat) showShortcuts();
+      } else if (commandOpen || customizeOpen || moreOpen || renderOpen || sceneOpen || shortcutsOpen) {
+        return;
+      } else if (vimMode) {
+        const now = performance.now();
+        const activePrefix = now - vimSequenceRef.current.at <= 750
+          ? vimSequenceRef.current.prefix
+          : null;
+        if (event.repeat && event.key === "g") {
+          event.preventDefault();
+          return;
+        }
+        const resolution = resolveVimNavigation(event.key, activePrefix);
+        vimSequenceRef.current = { prefix: resolution.prefix, at: resolution.prefix ? now : 0 };
+        if (resolution.prefix) {
+          if (!event.repeat) event.preventDefault();
+          return;
+        }
+        if (resolution.action) {
+          event.preventDefault();
+          runVimNavigation(resolution.action);
+          return;
+        }
+      }
+      if (event.key.toLowerCase() === "i" && !event.repeat) {
         setShowInspector((value) => !value);
-      } else if (event.key.toLowerCase() === "v") {
+      } else if (event.key.toLowerCase() === "v" && !event.repeat) {
         setSceneOpen((value) => !value);
-      } else if (event.key.toLowerCase() === "w" && capabilities?.water) {
+      } else if (event.key.toLowerCase() === "w" && capabilities?.water && !event.repeat) {
         updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" });
-      } else if (event.key.toLowerCase() === "b") {
+      } else if (event.key.toLowerCase() === "b" && !event.repeat) {
         updatePresentation({ mode: presentation.mode === "lines" ? "ball-stick" : "lines" });
-      } else if (event.key.toLowerCase() === "c" && cellAvailable) {
+      } else if (event.key.toLowerCase() === "c" && cellAvailable && !event.repeat) {
         updatePresentation({ cell: !presentation.cell });
-      } else if (event.key.toLowerCase() === "f" && forceAvailable) {
+      } else if (event.key.toLowerCase() === "f" && forceAvailable && !event.repeat) {
         updatePresentation({ forces: !presentation.forces });
-      } else if (event.code === "Space") {
+      } else if (event.code === "Space" && !event.repeat) {
         event.preventDefault();
         if ((manifest?.frame_count ?? 0) > 1) setPlaying((value) => !value);
       } else if (event.key === "ArrowLeft") {
         event.preventDefault();
         setPlaying(false);
-        setFrame(displayedFrameIndex - (event.shiftKey ? 10 : 1));
+        stepFrame(-(event.shiftKey ? 10 : 1));
       } else if (event.key === "ArrowRight") {
         event.preventDefault();
         setPlaying(false);
-        setFrame(displayedFrameIndex + (event.shiftKey ? 10 : 1));
-      } else if (event.key === "Home" || event.key.toLowerCase() === "r") {
+        stepFrame(event.shiftKey ? 10 : 1);
+      } else if ((event.key === "Home" || event.key.toLowerCase() === "r") && !event.repeat) {
         event.preventDefault();
         setResetSignal((value) => value + 1);
-      } else if (["Digit1", "Digit2", "Digit3", "Digit4"].includes(event.code)) {
+      } else if (["1", "2", "3", "4"].includes(event.key) && !event.shiftKey && !event.repeat) {
         event.preventDefault();
-        selectView(({ Digit1: "perspective", Digit2: "xy", Digit3: "xz", Digit4: "yz" } as const)[event.code as "Digit1" | "Digit2" | "Digit3" | "Digit4"]);
+        selectView(({ "1": "perspective", "2": "xy", "3": "xz", "4": "yz" } as const)[event.key as "1" | "2" | "3" | "4"]);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -465,19 +584,26 @@ export default function App() {
     cellAvailable,
     commandOpen,
     customizeOpen,
-    displayedFrameIndex,
+    dismissActive,
     forceAvailable,
     manifest?.frame_count,
     moreOpen,
     presentation,
     renderOpen,
     rendering,
+    runVimNavigation,
     sceneOpen,
     selectView,
     selectedAtom,
     setFrame,
+    stepFrame,
+    shortcutsOpen,
+    showCommands,
+    showCustomize,
     showRender,
+    showShortcuts,
     updatePresentation,
+    vimMode,
   ]);
 
   const commands = useMemo<CommandAction[]>(() => {
@@ -486,9 +612,9 @@ export default function App() {
       setCommandOpen(false);
     };
     return [
-      { id: "open", label: "Open trajectory", detail: "⌘O", run: run(() => fileInputRef.current?.click()) },
+      { id: "open", label: "Open trajectory", detail: shortcutLabels.open, run: run(() => fileInputRef.current?.click()) },
       { id: "fit", label: "Fit structure", detail: "R", run: run(() => setResetSignal((value) => value + 1)) },
-      { id: "render", label: "Render PNG", detail: "⌘⇧S", disabled: !frame, run: run(showRender) },
+      { id: "render", label: "Render PNG", detail: shortcutLabels.render, disabled: !frame, run: run(showRender) },
       ...(["perspective", "xy", "xz", "yz"] as ViewPreset[]).map((view, index) => ({
         id: `view-${view}`,
         label: view === "perspective" ? "Perspective view" : `${view.toUpperCase()} view`,
@@ -507,9 +633,10 @@ export default function App() {
       { id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", detail: "F", disabled: !forceAvailable, run: run(() => updatePresentation({ forces: !presentation.forces })) },
       { id: "data", label: showInspector ? "Hide data" : "Show data", detail: "I", run: run(() => setShowInspector((value) => !value)) },
       { id: "appearance", label: `Use ${appearance === "light" ? "dark" : "light"} appearance`, run: run(() => setAppearance((value) => value === "light" ? "dark" : "light")) },
-      { id: "customize", label: "Customize workspace", detail: "?", run: run(() => setCustomizeOpen(true)) },
+      { id: "customize", label: "Customize workspace", detail: shortcutLabels.customize, run: run(showCustomize) },
+      { id: "shortcuts", label: "Keyboard shortcuts", detail: "?", run: run(showShortcuts) },
     ];
-  }, [appearance, capabilities, cellAvailable, forceAvailable, frame, presentation, selectView, showInspector, showRender, updatePresentation]);
+  }, [appearance, capabilities, cellAvailable, forceAvailable, frame, presentation, selectView, shortcutLabels, showCustomize, showInspector, showRender, showShortcuts, updatePresentation]);
 
   const workspaceClass = [
     "workspace",
@@ -585,17 +712,32 @@ export default function App() {
                 {cellAvailable && <span>PBC <strong>{pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</strong></span>}
               </div>
             )}
-            <button className="open-button" type="button" onClick={() => fileInputRef.current?.click()}><Icon name="folder" />Open</button>
-            <button className="command-button" type="button" onClick={() => setCommandOpen(true)} aria-label="Search commands"><Icon name="search" /><kbd>⌘K</kbd></button>
+            <button className="open-button" type="button" aria-keyshortcuts="Meta+O Control+O" title={`Open · ${shortcutLabels.open}`} onClick={() => fileInputRef.current?.click()}><Icon name="folder" />Open</button>
+            <button className="command-button" type="button" aria-label="Search commands" aria-keyshortcuts="Meta+K Control+K" title={`Commands · ${shortcutLabels.commands}`} onClick={showCommands}><Icon name="search" /><kbd>{shortcutLabels.commands}</kbd></button>
+            <button
+              className="customize-button"
+              type="button"
+              aria-label="Customize workspace"
+              aria-keyshortcuts="Meta+, Control+,"
+              aria-haspopup="dialog"
+              aria-controls="customize-sheet"
+              aria-expanded={customizeOpen}
+              title={`Customize · ${shortcutLabels.customize}`}
+              disabled={rendering}
+              onClick={showCustomize}
+            ><Icon name="sliders" /></button>
             <div className="more-control" ref={moreMenuRef}>
-              <button className="more-button" type="button" aria-label="More" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}><Icon name="more" /></button>
+              <button ref={moreButtonRef} className="more-button" type="button" aria-label="More" aria-haspopup="menu" aria-controls="more-menu" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}><Icon name="more" /></button>
               {moreOpen && <MoreMenu
                 appearance={appearance}
                 canRender={Boolean(frame)}
+                shortcutLabels={shortcutLabels}
+                triggerRef={moreButtonRef}
+                onClose={() => setMoreOpen(false)}
                 onOpen={() => { setMoreOpen(false); fileInputRef.current?.click(); }}
-                onCommands={() => { setMoreOpen(false); setCommandOpen(true); }}
+                onCommands={showCommands}
                 onRender={showRender}
-                onCustomize={() => { setMoreOpen(false); setCustomizeOpen(true); }}
+                onShortcuts={showShortcuts}
                 onAppearance={() => {
                   setMoreOpen(false);
                   setAppearance((value) => value === "light" ? "dark" : "light");
@@ -623,7 +765,6 @@ export default function App() {
             onPresentation={updatePresentation}
             onFit={() => setResetSignal((value) => value + 1)}
             onInspector={() => setShowInspector((value) => !value)}
-            onCustomize={() => { setSceneOpen(false); setCustomizeOpen(true); }}
           />
         )}
 
@@ -692,9 +833,12 @@ export default function App() {
           appearance={appearance}
           playbackMode={playbackMode}
           presentation={presentation}
+          vimMode={vimMode}
           onAppearance={setAppearance}
           onPlaybackMode={setPlaybackMode}
           onPresentation={updateWorkspacePresentation}
+          onShortcuts={showShortcuts}
+          onVimMode={setVimMode}
           onReset={() => {
             setWorkspacePresentationDefaults({});
             if (capabilities) {
@@ -707,10 +851,17 @@ export default function App() {
             }
             setPlaybackMode("every-frame");
             setAppearance("light");
+            setVimMode(false);
             setProfile("auto");
             setResetSignal((value) => value + 1);
           }}
           onClose={() => setCustomizeOpen(false)}
+        />}
+        {shortcutsOpen && <ShortcutSheet
+          shortcutLabels={shortcutLabels}
+          vimMode={vimMode}
+          onVimMode={setVimMode}
+          onClose={() => setShortcutsOpen(false)}
         />}
         {renderOpen && <RenderSheet
           busy={rendering}
@@ -751,7 +902,6 @@ function SceneDock({
   onPresentation,
   onFit,
   onInspector,
-  onCustomize,
 }: {
   menuRef: { current: HTMLDivElement | null };
   open: boolean;
@@ -769,7 +919,6 @@ function SceneDock({
   onPresentation: (change: Partial<ScenePresentation>) => void;
   onFit: () => void;
   onInspector: () => void;
-  onCustomize: () => void;
 }) {
   const popoverRef = useRef<HTMLElement>(null);
   const profiles: Array<{ id: Exclude<SceneProfile, "custom">; label: string }> = [
@@ -897,7 +1046,6 @@ function SceneDock({
         <div className="scene-actions">
           <button type="button" onClick={onFit}>Fit</button>
           <button type="button" className={showInspector ? "is-active" : ""} onClick={onInspector}>Data</button>
-          <button type="button" onClick={onCustomize}>Customize…</button>
         </div>
       </section>}
     </div>
@@ -955,7 +1103,7 @@ function Toggle({
 }) {
   return <div className={disabled ? "toggle-row is-disabled" : "toggle-row"}>
     <span>{label}</span>
-    <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}><i /></button>
+    <button type="button" role="switch" aria-label={label} aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}><i /></button>
   </div>;
 }
 
@@ -981,26 +1129,65 @@ function OrientationControl({ preset, onView }: { preset: ViewPreset; onView: (p
 function MoreMenu({
   appearance,
   canRender,
+  shortcutLabels,
+  triggerRef,
+  onClose,
   onOpen,
   onCommands,
   onRender,
-  onCustomize,
+  onShortcuts,
   onAppearance,
 }: {
   appearance: Appearance;
   canRender: boolean;
+  shortcutLabels: ViewerShortcutLabels;
+  triggerRef: Readonly<{ current: HTMLButtonElement | null }>;
+  onClose: () => void;
   onOpen: () => void;
   onCommands: () => void;
   onRender: () => void;
-  onCustomize: () => void;
+  onShortcuts: () => void;
   onAppearance: () => void;
 }) {
-  return <div className="more-menu" role="menu">
-    <button type="button" role="menuitem" onClick={onOpen}><span>Open…</span><kbd>⌘O</kbd></button>
-    <button type="button" role="menuitem" onClick={onCommands}><span>Commands</span><kbd>⌘K</kbd></button>
-    <button type="button" role="menuitem" disabled={!canRender} onClick={onRender}><span>Render image…</span><kbd>⌘⇧S</kbd></button>
+  const menuRef = useRef<HTMLDivElement>(null);
+  const items = () => [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not([disabled])') ?? [])];
+  useEffect(() => {
+    const animation = requestAnimationFrame(() => items()[0]?.focus());
+    return () => cancelAnimationFrame(animation);
+  }, []);
+  const moveFocus = (direction: number) => {
+    const enabled = items();
+    if (enabled.length === 0) return;
+    const index = Math.max(0, enabled.indexOf(document.activeElement as HTMLButtonElement));
+    enabled[(index + direction + enabled.length) % enabled.length].focus();
+  };
+
+  return <div
+    ref={menuRef}
+    className="more-menu"
+    id="more-menu"
+    role="menu"
+    onBlur={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onClose();
+    }}
+    onKeyDown={(event) => {
+      if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(1); }
+      else if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(-1); }
+      else if (event.key === "Home") { event.preventDefault(); items()[0]?.focus(); }
+      else if (event.key === "End") { event.preventDefault(); items().at(-1)?.focus(); }
+      else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onClose();
+        requestAnimationFrame(() => triggerRef.current?.focus());
+      }
+    }}
+  >
+    <button type="button" role="menuitem" aria-keyshortcuts="Meta+O Control+O" onClick={onOpen}><span>Open…</span><kbd>{shortcutLabels.open}</kbd></button>
+    <button type="button" role="menuitem" aria-keyshortcuts="Meta+K Control+K" onClick={onCommands}><span>Commands</span><kbd>{shortcutLabels.commands}</kbd></button>
+    <button type="button" role="menuitem" aria-keyshortcuts="Meta+Shift+S Control+Shift+S" disabled={!canRender} onClick={onRender}><span>Render image…</span><kbd>{shortcutLabels.render}</kbd></button>
     <hr />
-    <button type="button" role="menuitem" onClick={onCustomize}><span>Customize…</span><kbd>?</kbd></button>
+    <button type="button" role="menuitem" aria-keyshortcuts="?" onClick={onShortcuts}><span>Keyboard shortcuts</span><kbd>?</kbd></button>
     <button type="button" role="menuitem" onClick={onAppearance}><span>{appearance === "light" ? "Dark" : "Light"} appearance</span></button>
   </div>;
 }
@@ -1070,7 +1257,7 @@ function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClos
   }, [actions, query]);
 
   useModalFocus(panelRef, inputRef);
-  useEffect(() => setActive(Math.max(0, visible.findIndex((action) => !action.disabled))), [query]);
+  useEffect(() => setActive(Math.max(0, visible.findIndex((action) => !action.disabled))), [visible]);
 
   const move = (direction: number) => {
     const enabled = visible.map((action, index) => action.disabled ? -1 : index).filter((index) => index >= 0);
@@ -1086,6 +1273,11 @@ function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClos
         value={query}
         placeholder="Search commands"
         aria-label="Search commands"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls="command-results"
+        aria-expanded="true"
+        aria-activedescendant={visible[active] ? `command-${visible[active].id}` : undefined}
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") { event.preventDefault(); move(1); }
@@ -1093,9 +1285,10 @@ function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClos
           else if (event.key === "Enter") { event.preventDefault(); if (!visible[active]?.disabled) visible[active]?.run(); }
         }}
       /><kbd>esc</kbd></label>
-      <div className="command-results" role="listbox">
+      <div className="command-results" id="command-results" role="listbox">
         {visible.map((action, index) => <button
           key={action.id}
+          id={`command-${action.id}`}
           type="button"
           role="option"
           aria-selected={index === active}
@@ -1110,22 +1303,104 @@ function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClos
   </div>;
 }
 
+function ShortcutSheet({
+  shortcutLabels,
+  vimMode,
+  onVimMode,
+  onClose,
+}: {
+  shortcutLabels: ViewerShortcutLabels;
+  vimMode: boolean;
+  onVimMode: (enabled: boolean) => void;
+  onClose: () => void;
+}) {
+  const panelRef = useRef<HTMLElement>(null);
+  useModalFocus(panelRef);
+  const groups: Array<{ title: string; items: Array<[string, string]> }> = [
+    {
+      title: "Trajectory",
+      items: [
+        ["← / →", "Previous / next frame"],
+        ["Shift ← / →", "Move ten frames"],
+        ["Space", "Play / pause"],
+      ],
+    },
+    {
+      title: "View",
+      items: [
+        ["R", "Fit structure"],
+        ["1–4", "3D, XY, XZ, YZ"],
+        ["V / I", "Scene / data"],
+        ["B / C", "Bonds / cell"],
+        ["F / W", "Forces / water"],
+      ],
+    },
+    {
+      title: "Workspace",
+      items: [
+        [shortcutLabels.commands, "Commands"],
+        [shortcutLabels.customize, "Customize"],
+        [shortcutLabels.open, "Open trajectory"],
+        [shortcutLabels.render, "Render image"],
+        ["? / Esc", "Shortcuts / close"],
+      ],
+    },
+  ];
+  const vimItems: Array<[string, string]> = [
+    ["j / k", "Next / previous frame"],
+    ["J / K", "Forward / back ten"],
+    ["gg / G", "First / last frame"],
+    [":", "Commands"],
+    ["Ctrl [", "Close surface"],
+  ];
+
+  return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section ref={panelRef} className="shortcut-panel" id="shortcut-sheet" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabIndex={-1}>
+      <div className="shortcut-heading">
+        <div><strong>Keyboard shortcuts</strong><span>Viewer and trajectory controls.</span></div>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="Close keyboard shortcuts"><Icon name="close" /></button>
+      </div>
+      <div className="shortcut-groups">
+        {groups.map((group) => <section key={group.title}>
+          <h3>{group.title}</h3>
+          {group.items.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
+        </section>)}
+      </div>
+      <section className={vimMode ? "vim-shortcuts is-active" : "vim-shortcuts"}>
+        <div className="vim-heading">
+          <div><strong>Vim navigation</strong><span>Optional trajectory keys; standard shortcuts stay active.</span></div>
+          <button type="button" role="switch" aria-label="Vim navigation" aria-checked={vimMode} onClick={() => onVimMode(!vimMode)}><i /></button>
+        </div>
+        <div className="vim-shortcut-grid">
+          {vimItems.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
+        </div>
+      </section>
+    </section>
+  </div>;
+}
+
 function CustomizeSheet({
   appearance,
   playbackMode,
   presentation,
+  vimMode,
   onAppearance,
   onPlaybackMode,
   onPresentation,
+  onShortcuts,
+  onVimMode,
   onReset,
   onClose,
 }: {
   appearance: Appearance;
   playbackMode: PlaybackMode;
   presentation: ScenePresentation;
+  vimMode: boolean;
   onAppearance: (appearance: Appearance) => void;
   onPlaybackMode: (mode: PlaybackMode) => void;
   onPresentation: (change: Partial<ScenePresentation>) => void;
+  onShortcuts: () => void;
+  onVimMode: (enabled: boolean) => void;
   onReset: () => void;
   onClose: () => void;
 }) {
@@ -1133,25 +1408,41 @@ function CustomizeSheet({
   useModalFocus(panelRef);
 
   return <div className="customize-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <aside ref={panelRef} className="customize-sheet" role="dialog" aria-modal="true" aria-label="Customize workspace" tabIndex={-1}>
+    <aside ref={panelRef} className="customize-sheet" id="customize-sheet" role="dialog" aria-modal="true" aria-label="Customize workspace" tabIndex={-1}>
       <div className="sheet-heading"><div><strong>Customize</strong><span>Workspace defaults</span></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close customize"><Icon name="close" /></button></div>
 
       <section className="settings-section">
-        <h3>Appearance</h3>
-        <div className="settings-segmented">
-          {(["light", "dark"] as const).map((value) => <button key={value} type="button" className={appearance === value ? "is-active" : ""} aria-pressed={appearance === value} onClick={() => onAppearance(value)}>{displayLabel(value)}</button>)}
+        <h3>Display</h3>
+        <div className="inline-settings">
+          <div className="inline-setting"><span>Appearance</span><div className="settings-segmented">
+            {(["light", "dark"] as const).map((value) => <button key={value} type="button" className={appearance === value ? "is-active" : ""} aria-pressed={appearance === value} onClick={() => onAppearance(value)}>{displayLabel(value)}</button>)}
+          </div></div>
+          <div className="inline-setting"><span>Color</span><div className="settings-segmented">
+            {(["element", "residue"] as const).map((color) => <button key={color} type="button" className={presentation.color === color ? "is-active" : ""} aria-pressed={presentation.color === color} onClick={() => onPresentation({ color })}>{displayLabel(color)}</button>)}
+          </div></div>
+          <div className="inline-setting"><span>Quality</span><div className="settings-segmented">
+            {(["auto", "high"] as const).map((quality) => <button key={quality} type="button" className={presentation.quality === quality ? "is-active" : ""} aria-pressed={presentation.quality === quality} onClick={() => onPresentation({ quality })}>{displayLabel(quality)}</button>)}
+          </div></div>
         </div>
       </section>
 
-      <section className="settings-section">
-        <h3>Playback</h3>
-        <button className={playbackMode === "every-frame" ? "settings-choice is-active" : "settings-choice"} type="button" aria-pressed={playbackMode === "every-frame"} onClick={() => onPlaybackMode("every-frame")}>
-          <span><strong>Every frame</strong><small>Wait for each frame before advancing.</small></span>{playbackMode === "every-frame" && <Icon name="check" />}
-        </button>
-        <button className={playbackMode === "realtime" ? "settings-choice is-active" : "settings-choice"} type="button" aria-pressed={playbackMode === "realtime"} onClick={() => onPlaybackMode("realtime")}>
-          <span><strong>Realtime</strong><small>Keep time and skip frames when needed.</small></span>{playbackMode === "realtime" && <Icon name="check" />}
-        </button>
-      </section>
+      <div className="customize-pair">
+        <section className="settings-section keyboard-settings">
+          <h3>Keyboard</h3>
+          <Toggle label="Vim navigation" checked={vimMode} onChange={onVimMode} />
+          <button className="settings-link" type="button" onClick={onShortcuts}><span>Shortcuts</span><kbd>?</kbd></button>
+          <small>{vimMode ? "j/k steps frames; J/K moves ten." : "Standard keys stay active."}</small>
+        </section>
+
+        <section className="settings-section">
+          <h3>Playback</h3>
+          <div className="settings-segmented">
+            <button type="button" className={playbackMode === "every-frame" ? "is-active" : ""} aria-pressed={playbackMode === "every-frame"} onClick={() => onPlaybackMode("every-frame")}>Every frame</button>
+            <button type="button" className={playbackMode === "realtime" ? "is-active" : ""} aria-pressed={playbackMode === "realtime"} onClick={() => onPlaybackMode("realtime")}>Realtime</button>
+          </div>
+          <small>{playbackMode === "every-frame" ? "Show every frame." : "Keep time; skip when needed."}</small>
+        </section>
+      </div>
 
       <section className="settings-section">
         <h3>Periodic wrapping</h3>
@@ -1165,23 +1456,11 @@ function CustomizeSheet({
             : "Original coordinates are preserved."}</small>
       </section>
 
-      <section className="settings-section">
-        <h3>Color</h3>
-        <div className="settings-segmented">
-          {(["element", "residue"] as const).map((color) => <button key={color} type="button" className={presentation.color === color ? "is-active" : ""} aria-pressed={presentation.color === color} onClick={() => onPresentation({ color })}>{displayLabel(color)}</button>)}
-        </div>
-      </section>
-
       <section className="settings-section slider-settings">
         <h3>Geometry</h3>
-        <label><span>Atoms <output>{formatScale(presentation.atomScale)}</output></span><input type="range" min={0.55} max={1.6} step={0.05} value={presentation.atomScale} onChange={(event) => onPresentation({ atomScale: Number(event.target.value) })} /></label>
-        <label><span>Bonds <output>{formatScale(presentation.bondScale)}</output></span><input type="range" min={0.55} max={1.8} step={0.05} value={presentation.bondScale} onChange={(event) => onPresentation({ bondScale: Number(event.target.value) })} /></label>
-      </section>
-
-      <section className="settings-section">
-        <h3>Quality</h3>
-        <div className="settings-segmented">
-          {(["auto", "high"] as const).map((quality) => <button key={quality} type="button" className={presentation.quality === quality ? "is-active" : ""} aria-pressed={presentation.quality === quality} onClick={() => onPresentation({ quality })}>{displayLabel(quality)}</button>)}
+        <div className="geometry-settings">
+          <label><span>Atoms <output>{formatScale(presentation.atomScale)}</output></span><input type="range" min={0.55} max={1.6} step={0.05} value={presentation.atomScale} onChange={(event) => onPresentation({ atomScale: Number(event.target.value) })} /></label>
+          <label><span>Bonds <output>{formatScale(presentation.bondScale)}</output></span><input type="range" min={0.55} max={1.8} step={0.05} value={presentation.bondScale} onChange={(event) => onPresentation({ bondScale: Number(event.target.value) })} /></label>
         </div>
       </section>
 
@@ -1632,6 +1911,7 @@ function Icon({ name }: { name: IconName }) {
       {name === "folder" && <path d="M4 7.5h6l1.6 2H20v8.5H4V7.5Z" {...common} />}
       {name === "more" && <><circle cx="6.5" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="17.5" cy="12" r="1" fill="currentColor" /></>}
       {name === "search" && <><circle cx="10.5" cy="10.5" r="5.5" {...common} /><path d="m14.6 14.6 4 4" {...common} /></>}
+      {name === "sliders" && <><path d="M5 7h5m4 0h5M5 17h3m4 0h7" {...common} /><circle cx="12" cy="7" r="2" {...common} /><circle cx="10" cy="17" r="2" {...common} /></>}
       {name === "play" && <path d="m9 7 7 5-7 5V7Z" fill="currentColor" />}
       {name === "pause" && <><path d="M9 7v10M15 7v10" {...common} strokeWidth="2" /></>}
       {name === "back" && <><path d="m14.5 8-5 4 5 4" {...common} /><path d="M7 7v10" {...common} /></>}
@@ -1925,6 +2205,28 @@ function initialPlaybackMode(): PlaybackMode {
   } catch {
     return "every-frame";
   }
+}
+
+function initialVimMode(): boolean {
+  try {
+    return parseVimPreference(window.localStorage.getItem("pqviewer-vim-navigation"));
+  } catch {
+    return false;
+  }
+}
+
+function browserPlatform(): string {
+  if (typeof navigator === "undefined") return "";
+  const navigatorWithHints = navigator as Navigator & { userAgentData?: { platform?: string } };
+  return navigatorWithHints.userAgentData?.platform || navigator.platform || navigator.userAgent;
+}
+
+function isTextEditingTarget(target: HTMLElement | null): boolean {
+  return Boolean(target?.isContentEditable || target?.closest('input, select, textarea, [role="textbox"]'));
+}
+
+function isActivationTarget(target: HTMLElement | null): boolean {
+  return Boolean(target?.closest('button, a[href], [role="button"], [role="menuitem"]'));
 }
 
 function initialPresentation(): ScenePresentation {
