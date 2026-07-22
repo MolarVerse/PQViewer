@@ -3983,3 +3983,137 @@ input[type="range"]::-moz-range-thumb {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Essential viewer */
+
+:root {
+  --timeline-height: 52px;
+  --workbench-width: 280px;
+}
+
+.workspace.timeline-compact {
+  --timeline-height: 52px;
+}
+
+.workbench-open .molecule-canvas,
+.workbench-open .canvas-field,
+.workbench-open .timeline {
+  width: 100%;
+}
+
+.workbench {
+  position: absolute;
+  z-index: 24;
+  top: calc(var(--header-height) + 10px);
+  right: 12px;
+  bottom: auto;
+  left: auto;
+  width: var(--workbench-width);
+  height: auto;
+  max-height: calc(100% - var(--header-height) - var(--timeline-height) - 20px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.workbench.atom-card {
+  width: 300px;
+}
+
+.workbench-heading {
+  min-height: 44px;
+  padding: 5px 6px 5px 14px;
+}
+
+.workbench-body {
+  max-height: calc(100svh - var(--header-height) - var(--timeline-height) - 66px);
+  overflow: auto;
+}
+
+.workbench-section,
+.workbench-section:first-child {
+  padding: 8px 14px;
+}
+
+.scene-panel .workbench-section + .workbench-section {
+  border-top: 1px solid var(--line);
+}
+
+.panel-select-row {
+  min-height: 34px;
+}
+
+.display-toggles {
+  padding-block: 4px;
+}
+
+.display-toggles .toggle-row {
+  min-height: 36px;
+}
+
+.display-toggles .toggle-row + .toggle-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.atom-card .inspector-content {
+  padding: 0;
+}
+
+.atom-card .readout-section {
+  padding: 12px 14px 14px;
+  border: 0;
+}
+
+.workbench-open .canvas-controls {
+  right: 12px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.timeline,
+.timeline.is-compact {
+  height: var(--timeline-height);
+}
+
+.timeline .transport-row {
+  min-height: var(--timeline-height);
+}
+
+@media (max-width: 520px) {
+  .workbench,
+  .workbench.atom-card {
+    position: absolute;
+    top: calc(var(--header-height) + 8px);
+    right: 8px;
+    bottom: auto;
+    left: 8px;
+    width: auto;
+    height: auto;
+    max-height: calc(100% - var(--header-height) - var(--timeline-height) - 16px);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: 0 12px 30px color-mix(in srgb, var(--text) 11%, transparent);
+  }
+
+  .panel-button,
+  .render-button {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .panel-button .icon,
+  .render-button .icon {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .open-button {
+    width: auto;
+    min-width: 62px;
+    padding-inline: 8px;
+    font-size: 10px;
+  }
+}

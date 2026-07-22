@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   autoProfile,
-  parseWorkspacePresentationDefaults,
   profilePresentation,
-  resolveRenderGuideSize,
-  renderSizeValidationMessage,
   selectedProfilePresentation,
 } from "./App";
 import type { SceneCapabilities, ScenePresentation } from "./types";
@@ -57,14 +54,13 @@ describe("scene profiles", () => {
     )).toMatchObject({ wrap: "atom", color: "element" });
   });
 
-  it("restores explicit workspace wrap and color choices for Auto datasets", () => {
+  it("keeps automatic display choices deterministic", () => {
     const capabilities: SceneCapabilities = {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
       suggestedProfile: "crystal",
     };
-    const saved = parseWorkspacePresentationDefaults('{"wrap":"none","color":"residue"}');
     expect(selectedProfilePresentation(
       "auto",
       presentation,
@@ -72,31 +68,7 @@ describe("scene profiles", () => {
       false,
       false,
       capabilities,
-      saved,
-    )).toMatchObject({ wrap: "none", color: "residue", cell: true });
-  });
-
-  it("does not apply workspace Auto defaults to an explicit profile", () => {
-    const capabilities: SceneCapabilities = {
-      water: false,
-      ribbon: false,
-      ribbonReason: "Backbone topology unavailable",
-      suggestedProfile: "crystal",
-    };
-    expect(selectedProfilePresentation(
-      "molecule",
-      presentation,
-      true,
-      false,
-      false,
-      capabilities,
-      { wrap: "none", color: "residue" },
-    )).toMatchObject({ wrap: "molecule", color: "element", cell: false });
-  });
-
-  it("ignores invalid saved workspace choices", () => {
-    expect(parseWorkspacePresentationDefaults('{"wrap":"outside","color":"rainbow"}')).toEqual({});
-    expect(parseWorkspacePresentationDefaults("not-json")).toEqual({});
+    )).toMatchObject({ wrap: "atom", color: "element", cell: true });
   });
 
   it("prefers an available protein ribbon", () => {
@@ -108,56 +80,18 @@ describe("scene profiles", () => {
     };
     expect(autoProfile(capabilities, true, true)).toBe("protein");
   });
-});
 
-describe("render size validation", () => {
-  it("requires whole-pixel dimensions", () => {
-    expect(renderSizeValidationMessage(2400.5, 1800)).toBe("Width must be a whole number of pixels.");
-    expect(renderSizeValidationMessage(2400, 1800.25)).toBe("Height must be a whole number of pixels.");
-    expect(renderSizeValidationMessage(512.5, 6000.5)).toBe("Width and height must be whole numbers of pixels.");
-  });
-
-  it("identifies dimensions below the minimum", () => {
-    expect(renderSizeValidationMessage(511, 1800)).toBe("Width must be at least 512 px.");
-    expect(renderSizeValidationMessage(2400, 100)).toBe("Height must be at least 512 px.");
-    expect(renderSizeValidationMessage(0, 0)).toBe("Width and height must be at least 512 px.");
-  });
-
-  it("identifies dimensions above the per-axis maximum", () => {
-    expect(renderSizeValidationMessage(6001, 1800)).toBe("Width cannot exceed 6,000 px.");
-    expect(renderSizeValidationMessage(2400, 6001)).toBe("Height cannot exceed 6,000 px.");
-    expect(renderSizeValidationMessage(7000, 7000)).toBe("Width and height cannot exceed 6,000 px.");
-  });
-
-  it("keeps the megapixel limit distinct", () => {
-    expect(renderSizeValidationMessage(6000, 5000)).toBe("Maximum output is 24 megapixels.");
-    expect(renderSizeValidationMessage(6000, 4000)).toBeNull();
-    expect(renderSizeValidationMessage(Number.NaN, 1800)).toBe("Enter a valid width and height.");
-  });
-
-  it("accepts exact inclusive boundaries", () => {
-    expect(renderSizeValidationMessage(512, 512)).toBeNull();
-    expect(renderSizeValidationMessage(6000, 512)).toBeNull();
-    expect(renderSizeValidationMessage(6000, 4000)).toBeNull();
-    expect(renderSizeValidationMessage(6000, 4001)).toBe("Maximum output is 24 megapixels.");
-  });
-});
-
-describe("render guide sizing", () => {
-  it("preserves the requested aspect inside narrow viewports", () => {
-    const guide = resolveRenderGuideSize(320, 622, 4 / 3);
-    expect(guide.width).toBeLessThanOrEqual(272);
-    expect(guide.height).toBeLessThanOrEqual(622 * 0.72);
-    expect(guide.width / guide.height).toBeCloseTo(4 / 3, 2);
-  });
-
-  it("caps large guides without changing their aspect", () => {
-    const guide = resolveRenderGuideSize(1440, 900, 16 / 9);
-    expect(guide).toEqual({ width: 924, height: 520 });
-    expect(guide.width / guide.height).toBeCloseTo(16 / 9, 2);
-  });
-
-  it("rejects invalid geometry", () => {
-    expect(resolveRenderGuideSize(0, 900, 4 / 3)).toEqual({ width: 0, height: 0 });
+  it("keeps periodic trajectories inside PQ's centered cell", () => {
+    const capabilities: SceneCapabilities = {
+      water: false,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      suggestedProfile: "molecule",
+    };
+    expect(profilePresentation("trajectory", presentation, true, true, capabilities)).toMatchObject({
+      wrap: "atom",
+      cell: true,
+      forces: true,
+    });
   });
 });
