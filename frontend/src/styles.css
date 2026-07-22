@@ -2410,6 +2410,7 @@ input[type="range"]::-moz-range-thumb {
 
 .topbar-tools,
 .panel-button,
+.inspect-button,
 .render-button {
   display: flex;
   align-items: center;
@@ -2421,6 +2422,7 @@ input[type="range"]::-moz-range-thumb {
 
 .open-button,
 .panel-button,
+.inspect-button,
 .render-button,
 .command-button,
 .more-button,
@@ -2432,6 +2434,7 @@ input[type="range"]::-moz-range-thumb {
 
 .open-button,
 .panel-button,
+.inspect-button,
 .render-button {
   gap: 7px;
   padding: 0 10px;
@@ -2444,7 +2447,9 @@ input[type="range"]::-moz-range-thumb {
 
 .open-button:hover,
 .panel-button:hover,
-.panel-button[aria-expanded="true"] {
+.panel-button[aria-expanded="true"],
+.inspect-button:hover,
+.inspect-button[aria-expanded="true"] {
   border-color: var(--line);
   background: var(--surface-soft);
   color: var(--text);
@@ -2470,6 +2475,7 @@ input[type="range"]::-moz-range-thumb {
 
 .open-button:disabled,
 .panel-button:disabled,
+.inspect-button:disabled,
 .command-button:disabled,
 .more-button:disabled {
   color: var(--disabled);
@@ -3387,5 +3393,593 @@ input[type="range"]::-moz-range-thumb {
 
   .viewport-divider {
     margin-inline: 1px;
+  }
+}
+
+/* Minimal scientific workspace */
+
+:root {
+  --header-height: 48px;
+  --viewport-toolbar-height: 0px;
+  --workbench-width: 320px;
+  --export-width: 380px;
+}
+
+.app-shell,
+.workspace {
+  min-height: 0;
+}
+
+.scene-status,
+.command-button,
+.viewport-toolbar {
+  display: none;
+}
+
+.molecule-canvas,
+.canvas-field {
+  top: var(--header-height);
+  height: calc(100% - var(--header-height) - var(--timeline-height));
+}
+
+.export-open .molecule-canvas,
+.export-open .canvas-field {
+  width: calc(100% - var(--export-width));
+}
+
+.canvas-controls {
+  position: absolute;
+  z-index: 12;
+  top: calc(var(--header-height) + 10px);
+  right: 12px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--text) 7%, transparent);
+  transition: right 180ms ease;
+}
+
+.workbench-open .canvas-controls {
+  right: calc(var(--workbench-width) + 12px);
+}
+
+.export-open .canvas-controls {
+  right: calc(var(--export-width) + 12px);
+}
+
+.canvas-controls > button,
+.canvas-controls .orientation-control button {
+  min-width: 34px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.canvas-controls > button:hover,
+.canvas-controls .orientation-control button:hover,
+.canvas-controls .orientation-control button.is-active {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.canvas-controls .orientation-control {
+  position: static;
+  display: flex;
+  margin: 0;
+  padding: 0 0 0 2px;
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.canvas-controls .orientation-control .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.canvas-view-select {
+  display: none;
+}
+
+.canvas-controls button:disabled,
+.canvas-controls select:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.workbench {
+  top: var(--header-height);
+  left: auto;
+  bottom: 0;
+  width: var(--workbench-width);
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.workbench:focus {
+  outline: none;
+}
+
+.workbench:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.workbench-heading {
+  min-height: 50px;
+  padding: 7px 10px 7px 16px;
+}
+
+.workbench-heading strong {
+  font-size: 13px;
+}
+
+.workbench-expand-button .icon {
+  transform: rotate(180deg);
+  transition: transform 160ms ease;
+}
+
+.workbench.is-expanded .workbench-expand-button .icon {
+  transform: rotate(0);
+}
+
+.workbench-body {
+  overscroll-behavior: contain;
+}
+
+.workbench-section:first-child {
+  padding-top: 12px;
+}
+
+.selection-chip {
+  position: absolute;
+  z-index: 13;
+  top: calc(var(--header-height) + 12px);
+  left: 12px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--text) 7%, transparent);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.selection-chip strong {
+  color: var(--text);
+  font-family: var(--numeric);
+  font-size: 11px;
+}
+
+.selection-chip:hover {
+  border-color: var(--line-strong);
+  color: var(--accent);
+}
+
+.export-sheet {
+  position: fixed;
+  z-index: 32;
+  top: var(--header-height);
+  right: 0;
+  bottom: 0;
+  width: var(--export-width);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: -10px 0 28px color-mix(in srgb, var(--text) 8%, transparent);
+  animation: workbench-in 180ms ease both;
+}
+
+.export-sheet[hidden] {
+  display: none;
+}
+
+.export-sheet:focus {
+  outline: none;
+}
+
+.export-sheet:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.export-heading {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 8px 10px 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.export-heading strong,
+.export-heading span {
+  display: block;
+}
+
+.export-heading strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.export-heading span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.export-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.export-footer {
+  min-height: 56px;
+  display: grid;
+  grid-template-columns: 1fr 1.45fr;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.export-footer button {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.export-footer .primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.export-footer button:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
+.export-options {
+  border-bottom: 1px solid var(--line);
+}
+
+.export-options > summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 16px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.export-options > summary small {
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: 9px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-options-body {
+  border-top: 1px solid var(--line);
+}
+
+.export-open .render-guide-region {
+  right: var(--export-width);
+}
+
+.timeline,
+.timeline.is-compact {
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: var(--timeline-height);
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  transform: none;
+}
+
+.frame-counter {
+  white-space: nowrap;
+}
+
+.workbench-open .timeline {
+  width: calc(100% - var(--workbench-width));
+}
+
+.export-open .timeline {
+  width: calc(100% - var(--export-width));
+}
+
+.playback-mode-control {
+  display: none;
+}
+
+@media (max-width: 719px) {
+  .inspect-button {
+    display: none;
+  }
+
+  .workbench-open .molecule-canvas,
+  .workbench-open .canvas-field,
+  .export-open .molecule-canvas,
+  .export-open .canvas-field {
+    width: 100%;
+  }
+
+  .workbench,
+  .workbench.is-expanded {
+    position: fixed;
+    top: auto;
+    right: 0;
+    bottom: var(--timeline-height);
+    left: 0;
+    width: auto;
+    height: min(44svh, 360px);
+    max-height: calc(100svh - var(--header-height) - var(--timeline-height) - 16px);
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: 0 -10px 28px color-mix(in srgb, var(--text) 8%, transparent);
+  }
+
+  .workbench.is-expanded {
+    height: min(68svh, 560px);
+  }
+
+  .workbench-heading {
+    min-height: 50px;
+  }
+
+  .workbench-expand-button {
+    display: grid;
+  }
+
+  .workbench-open .timeline,
+  .export-open .timeline {
+    width: 100%;
+  }
+
+  .workbench-open .canvas-controls,
+  .export-open .canvas-controls {
+    right: 8px;
+  }
+
+  .canvas-controls {
+    top: calc(var(--header-height) + 8px);
+    right: 8px;
+    height: 44px;
+  }
+
+  .canvas-controls > button {
+    min-width: 44px;
+    height: 40px;
+  }
+
+  .canvas-controls .orientation-control {
+    display: none;
+  }
+
+  .canvas-view-select {
+    height: 40px;
+    display: flex;
+    align-items: center;
+    border-left: 1px solid var(--line);
+  }
+
+  .canvas-view-select select {
+    width: 58px;
+    height: 40px;
+    padding: 0 18px 0 8px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 11px;
+  }
+
+  .selection-chip {
+    top: calc(var(--header-height) + 13px);
+    left: 8px;
+    height: 40px;
+  }
+
+  .export-sheet {
+    top: auto;
+    right: 0;
+    bottom: var(--timeline-height);
+    left: 0;
+    width: auto;
+    height: min(46svh, 400px);
+    border: 0;
+    border-top: 1px solid var(--line);
+    box-shadow: 0 -10px 28px color-mix(in srgb, var(--text) 8%, transparent);
+    animation-name: mobile-sheet-in;
+  }
+
+  .export-open .render-guide-region {
+    right: 0;
+  }
+
+  .export-heading {
+    min-height: 50px;
+  }
+
+  .export-footer button {
+    min-height: 44px;
+  }
+
+  .render-panel .render-presets {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .render-panel .render-presets button {
+    min-width: 0;
+    padding-inline: 4px;
+  }
+}
+
+@media (max-width: 760px) {
+  .topbar {
+    padding-inline: 8px 4px;
+  }
+
+  .open-button {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .panel-button,
+  .inspect-button,
+  .render-button {
+    width: auto;
+    min-width: 50px;
+    height: 44px;
+    padding: 0 9px;
+    font-size: 10px;
+  }
+
+  .panel-button span {
+    display: inline;
+  }
+
+  .more-button {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+}
+
+@media (min-width: 720px) {
+  .more-inspect-action {
+    display: none !important;
+  }
+}
+
+@media (max-width: 520px) {
+  .identity > div {
+    display: none;
+  }
+
+  .identity-mark {
+    width: 28px;
+    height: 28px;
+  }
+}
+
+@media (min-width: 720px) and (max-width: 760px) {
+  .workbench-open .molecule-canvas,
+  .workbench-open .canvas-field {
+    width: calc(100% - var(--workbench-width));
+  }
+
+  .export-open .molecule-canvas,
+  .export-open .canvas-field {
+    width: calc(100% - var(--export-width));
+  }
+}
+
+@media (min-width: 480px) and (max-width: 760px) and (max-height: 520px) {
+  .workspace,
+  .workspace.timeline-compact {
+    --timeline-height: 58px;
+  }
+
+  .timeline .plot-row {
+    display: none;
+  }
+
+  .workbench,
+  .workbench.is-expanded,
+  .export-sheet {
+    top: var(--header-height);
+    right: 0;
+    bottom: var(--timeline-height);
+    left: auto;
+    width: min(320px, 48vw);
+    height: auto;
+    max-height: none;
+    border: 0;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: -10px 0 28px color-mix(in srgb, var(--text) 8%, transparent);
+  }
+
+  .workbench-heading {
+    display: flex;
+  }
+
+  .workbench-expand-button {
+    display: none;
+  }
+
+  .workbench-open .canvas-controls,
+  .export-open .canvas-controls {
+    right: calc(min(320px, 48vw) + 8px);
+  }
+
+  .workbench-open .molecule-canvas,
+  .workbench-open .canvas-field,
+  .export-open .molecule-canvas,
+  .export-open .canvas-field {
+    width: calc(100% - min(320px, 48vw));
+  }
+
+  .export-open .render-guide-region {
+    right: min(320px, 48vw);
+  }
+
+  .workbench-open .timeline,
+  .export-open .timeline {
+    width: calc(100% - min(320px, 48vw));
+  }
+
+  .render-panel .render-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
