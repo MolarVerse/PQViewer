@@ -51,28 +51,33 @@ pqviewer path/to/md.xyz \
 ```
 
 Files can also be opened together from the interface or dropped on the canvas.
-The Scene control groups representations, water and hydrogen filters, forces,
-and periodic images. Cell image ranges use integer lattice offsets, so a unit
-cell can be moved or expanded along each periodic axis. Ribbon view is enabled
-only when residue and backbone topology are present. Large force fields are
-evenly sampled, with displayed and total vector counts reported under Data.
+The docked Scene panel keeps representation, color, water and hydrogen filters,
+forces, wrapping, and periodic images in one place. Cell image ranges use
+integer lattice offsets, so a unit cell can be moved or expanded along each
+periodic axis. The PQ-centered `−½…+½` convention is shown beside the cell
+controls. Ribbon view is enabled only when residue and backbone topology are
+present. Selecting an atom opens its values in the adjacent Data panel.
 
-Playback defaults to every frame. Realtime playback, wrapping, geometry scale,
-quality, appearance, and optional Vim navigation are available from the
-top-bar Customize control or `Cmd/Ctrl+,`. Press `?` for the complete keyboard
-reference. Vim navigation adds `j`/`k`, `J`/`K`, `gg`/`G`, `:`, and `Ctrl+[`;
-standard shortcuts remain active. Shortcut labels follow the host platform.
+Playback defaults to every frame. The trajectory timeline stays docked below
+the viewport, with frame delivery beside the transport controls. Quality,
+appearance, and optional Vim navigation live under Preferences (`Cmd/Ctrl+,`).
+Press `?` for the complete keyboard reference. Vim navigation adds `j`/`k`,
+`J`/`K`, `gg`/`G`, `:`, and `Ctrl+[`; standard shortcuts remain active.
+Shortcut labels follow the host platform.
 Dense or replicated scenes stay responsive by switching atom instances above
 80,000 to points and bond segments above 80,000 to lines, including when High
 quality is selected.
 
-For publication images, choose More → Render image or press `Cmd/Ctrl+Shift+S`.
+For publication images, choose the permanent Render action or press
+`Cmd/Ctrl+Shift+S`.
 Export a preset or custom PNG on white or with true transparency. Orthographic
 projection is the default; perspective remains available. Fit keeps the current
 orientation, measures the rendered geometry, and adds balanced spacing. Periodic
 neighbors complete bonds through cell boundaries; Clipped preserves the strict
 wrapped view. Export uses adaptive supersampling, restrained ambient
-occlusion, and explicit sRGB output up to 24 megapixels.
+occlusion, and explicit sRGB output up to 24 megapixels. The viewport previews
+the output aspect ratio, and the DPI guide reports physical print size without
+changing the exported pixel dimensions.
 
 The viewer runs locally and opens in the default browser. Use `--no-open` for
 remote or scripted use.

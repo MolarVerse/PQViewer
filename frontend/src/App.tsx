@@ -19,9 +19,10 @@ import type {
 type LoadState = "loading" | "ready" | "error";
 type PlaybackMode = "every-frame" | "realtime";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
+type WorkbenchTab = "scene" | "data" | "render";
 type WorkspacePresentationDefaults = Partial<Pick<ScenePresentation, "wrap" | "color">>;
 type ForceVectorStats = { rendered: number; total: number };
-type IconName = "back" | "check" | "chevron" | "close" | "command" | "cube" | "folder" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
+type IconName = "back" | "check" | "chevron" | "close" | "command" | "cube" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -53,31 +54,33 @@ export default function App() {
   const [workspacePresentationDefaults, setWorkspacePresentationDefaults] = useState<WorkspacePresentationDefaults>(initialWorkspacePresentationDefaults);
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtom, setSelectedAtom] = useState<number | null>(null);
-  const [showInspector, setShowInspector] = useState(false);
+  const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(initialWorkbenchTab);
+  const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
   const [resetSignal, setResetSignal] = useState(0);
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
   const [viewSignal, setViewSignal] = useState(0);
   const [seriesName, setSeriesName] = useState("");
   const [forceScale, setForceScale] = useState(1);
   const [appearance, setAppearance] = useState<Appearance>(initialAppearance);
-  const [sceneOpen, setSceneOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [renderOpen, setRenderOpen] = useState(false);
   const [rendering, setRendering] = useState(false);
+  const [renderValid, setRenderValid] = useState(true);
   const [vimMode, setVimMode] = useState(initialVimMode);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
   const [notice, setNotice] = useState("");
   const [sceneInfo, setSceneInfo] = useState<RenderedSceneInfo | null>(null);
+  const [renderAspect, setRenderAspect] = useState(4 / 3);
   const cache = useRef(new FrameCache());
   const moleculeSceneRef = useRef<MoleculeSceneHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const sceneMenuRef = useRef<HTMLDivElement>(null);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const panelButtonRef = useRef<HTMLButtonElement>(null);
+  const workbenchTabsRef = useRef<HTMLElement>(null);
   const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
   const autoProfileKey = useRef("");
@@ -95,7 +98,6 @@ export default function App() {
     setFrameIndex(0);
     setLoadedFrame(null);
     setSelectedAtom(null);
-    setShowInspector(false);
     setForceScale(1);
     setPlaying(false);
     setSceneInfo(null);
@@ -159,6 +161,11 @@ export default function App() {
 
   useEffect(() => {
     if (!manifest || manifest.frame_count === 0) return;
+    if (rendering) {
+      if (realtimeWorker.current) realtimeWorker.current.cancelled = true;
+      realtimeWorker.current = null;
+      return;
+    }
     realtimeTarget.current = frameIndex;
 
     if (playbackMode === "realtime") {
@@ -221,7 +228,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [frameIndex, manifest, playbackMode]);
+  }, [frameIndex, manifest, playbackMode, rendering]);
 
   const series = useMemo(() => normalizeSeries(manifest?.series), [manifest?.series]);
   useEffect(() => {
@@ -249,67 +256,89 @@ export default function App() {
     setViewSignal((value) => value + 1);
   }, []);
 
+  const focusWorkbenchTab = useCallback((tab: WorkbenchTab) => {
+    requestAnimationFrame(() => workbenchTabsRef.current?.querySelector<HTMLButtonElement>(`[data-workbench-tab="${tab}"]`)?.focus());
+  }, []);
+
+  const openWorkbench = useCallback((tab: WorkbenchTab, focus = false) => {
+    setWorkbenchTab(tab);
+    if (focus) focusWorkbenchTab(tab);
+  }, [focusWorkbenchTab]);
+
+  const closeWorkbench = useCallback((restoreFocus = false) => {
+    setWorkbenchTab(null);
+    setWorkbenchExpanded(false);
+    if (restoreFocus) requestAnimationFrame(() => panelButtonRef.current?.focus());
+  }, []);
+
   const selectAtom = useCallback((index: number | null) => {
     setSelectedAtom(index);
-    if (index !== null) setShowInspector(true);
+    if (index !== null) setWorkbenchTab((current) => current ?? "data");
   }, []);
+
+  const showOpen = useCallback(() => {
+    if (rendering) return;
+    setMoreOpen(false);
+    setCommandOpen(false);
+    setPreferencesOpen(false);
+    setShortcutsOpen(false);
+    fileInputRef.current?.click();
+  }, [rendering]);
 
   const showCommands = useCallback(() => {
     if (rendering) return;
-    setSceneOpen(false);
     setMoreOpen(false);
-    setCustomizeOpen(false);
+    setPreferencesOpen(false);
     setShortcutsOpen(false);
-    setRenderOpen(false);
     setCommandOpen(true);
   }, [rendering]);
 
-  const showCustomize = useCallback(() => {
+  const showPreferences = useCallback(() => {
     if (rendering) return;
-    setSceneOpen(false);
     setMoreOpen(false);
     setCommandOpen(false);
     setShortcutsOpen(false);
-    setRenderOpen(false);
-    setCustomizeOpen(true);
+    setPreferencesOpen(true);
   }, [rendering]);
 
   const showShortcuts = useCallback(() => {
     if (rendering) return;
-    setSceneOpen(false);
     setMoreOpen(false);
     setCommandOpen(false);
-    setCustomizeOpen(false);
-    setRenderOpen(false);
+    setPreferencesOpen(false);
     setShortcutsOpen(true);
   }, [rendering]);
 
   const showRender = useCallback(() => {
-    if (!moleculeSceneRef.current || rendering) return;
-    setSceneOpen(false);
+    if (!moleculeSceneRef.current || !sceneInfo?.capabilities || !loadedFrame?.data || frameLoading || rendering) return;
     setMoreOpen(false);
     setCommandOpen(false);
-    setCustomizeOpen(false);
+    setPreferencesOpen(false);
     setShortcutsOpen(false);
-    setRenderOpen(true);
-  }, [rendering]);
+    setPlaying(false);
+    openWorkbench("render", true);
+  }, [frameLoading, loadedFrame?.data, openWorkbench, rendering, sceneInfo?.capabilities]);
 
   const exportPng = useCallback(async (options: PngExportOptions) => {
     const scene = moleculeSceneRef.current;
-    if (!scene) return;
+    if (!scene || rendering) return;
+    if (frameLoading) {
+      setNotice("Wait for the current frame to finish loading.");
+      return;
+    }
+    setPlaying(false);
     setRendering(true);
     setNotice("Rendering PNG…");
     try {
       const blob = await scene.exportPng(options);
       downloadBlob(blob, renderFileName(manifest?.name, options.width, options.height));
-      setRenderOpen(false);
       setNotice(`Rendered ${options.width.toLocaleString()} × ${options.height.toLocaleString()} px`);
     } catch (error) {
       setNotice(`Render failed · ${message(error)}`);
     } finally {
       setRendering(false);
     }
-  }, [manifest?.name]);
+  }, [frameLoading, manifest?.name, rendering]);
 
   const frame = loadedFrame?.data ?? null;
   const displayedFrameIndex = loadedFrame?.index ?? frameIndex;
@@ -323,6 +352,7 @@ export default function App() {
     : null;
   const activeSeries = series.find((entry) => entry.name === seriesName) ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
+  const canRender = Boolean(frame && capabilities && !frameLoading);
 
   const updatePresentation = useCallback((change: Partial<ScenePresentation>) => {
     setPresentation((current) => ({ ...current, ...change }));
@@ -372,18 +402,17 @@ export default function App() {
   }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile, series.length, workspacePresentationDefaults]);
 
   useEffect(() => {
-    if (!sceneOpen && !moreOpen) return;
+    if (!moreOpen) return;
     const closeMenus = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (sceneOpen && !sceneMenuRef.current?.contains(target)) setSceneOpen(false);
       if (moreOpen && !moreMenuRef.current?.contains(target)) setMoreOpen(false);
     };
     window.addEventListener("pointerdown", closeMenus);
     return () => window.removeEventListener("pointerdown", closeMenus);
-  }, [moreOpen, sceneOpen]);
+  }, [moreOpen]);
 
   useEffect(() => {
-    if (!playing || !manifest || manifest.frame_count < 2) return;
+    if (!playing || rendering || !manifest || manifest.frame_count < 2) return;
     const interval = 100 / speed;
     if (playbackMode === "every-frame") {
       if (frameLoading || loadedFrame?.index !== frameIndex) return;
@@ -408,10 +437,10 @@ export default function App() {
     };
     animation = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animation);
-  }, [frameIndex, frameLoading, loadedFrame?.index, manifest, playbackMode, playing, speed]);
+  }, [frameIndex, frameLoading, loadedFrame?.index, manifest, playbackMode, playing, rendering, speed]);
 
   const openSelectedFiles = useCallback(async (selected: File[]) => {
-    if (selected.length === 0) return;
+    if (selected.length === 0 || rendering) return;
     const request = openRequest.current + 1;
     openRequest.current = request;
     openController.current?.abort();
@@ -433,7 +462,7 @@ export default function App() {
         setOpening(false);
       }
     }
-  }, [activateManifest]);
+  }, [activateManifest, rendering]);
 
   useEffect(() => () => openController.current?.abort(), []);
 
@@ -447,13 +476,12 @@ export default function App() {
     vimSequenceRef.current = { prefix: null, at: 0 };
     if (commandOpen) setCommandOpen(false);
     else if (shortcutsOpen) setShortcutsOpen(false);
-    else if (renderOpen && !rendering) setRenderOpen(false);
-    else if (customizeOpen) setCustomizeOpen(false);
-    else if (sceneOpen) setSceneOpen(false);
+    else if (preferencesOpen) setPreferencesOpen(false);
     else if (moreOpen) setMoreOpen(false);
+    else if (workbenchTab === "data" && selectedAtom !== null) setSelectedAtom(null);
+    else if (workbenchTab && !rendering) closeWorkbench(true);
     else if (selectedAtom !== null) setSelectedAtom(null);
-    else setShowInspector(false);
-  }, [commandOpen, customizeOpen, moreOpen, renderOpen, rendering, sceneOpen, selectedAtom, shortcutsOpen]);
+  }, [closeWorkbench, commandOpen, moreOpen, preferencesOpen, rendering, selectedAtom, shortcutsOpen, workbenchTab]);
 
   const runVimNavigation = useCallback((action: VimNavigationAction) => {
     if (action === "commands") {
@@ -497,14 +525,15 @@ export default function App() {
       }
       if (primaryModifier && !event.shiftKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        if (!rendering) fileInputRef.current?.click();
+        showOpen();
         return;
       }
       if (primaryModifier && !event.shiftKey && (event.key === "," || event.code === "Comma")) {
         event.preventDefault();
-        showCustomize();
+        showPreferences();
         return;
       }
+      if (rendering) return;
       if (vimMode && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === "[") {
         event.preventDefault();
         dismissActive();
@@ -523,7 +552,7 @@ export default function App() {
       } else if (event.key === "?") {
         event.preventDefault();
         if (!event.repeat) showShortcuts();
-      } else if (commandOpen || customizeOpen || moreOpen || renderOpen || sceneOpen || shortcutsOpen) {
+      } else if (commandOpen || moreOpen || preferencesOpen || shortcutsOpen) {
         return;
       } else if (vimMode) {
         const now = performance.now();
@@ -546,10 +575,12 @@ export default function App() {
           return;
         }
       }
-      if (event.key.toLowerCase() === "i" && !event.repeat) {
-        setShowInspector((value) => !value);
-      } else if (event.key.toLowerCase() === "v" && !event.repeat) {
-        setSceneOpen((value) => !value);
+      if (event.key.toLowerCase() === "i" && capabilities && !event.repeat) {
+        if (workbenchTab === "data") closeWorkbench(true);
+        else openWorkbench("data", true);
+      } else if (event.key.toLowerCase() === "v" && capabilities && !event.repeat) {
+        if (workbenchTab === "scene") closeWorkbench(true);
+        else openWorkbench("scene", true);
       } else if (event.key.toLowerCase() === "w" && capabilities?.water && !event.repeat) {
         updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" });
       } else if (event.key.toLowerCase() === "b" && !event.repeat) {
@@ -582,28 +613,30 @@ export default function App() {
   }, [
     capabilities?.water,
     cellAvailable,
+    closeWorkbench,
     commandOpen,
-    customizeOpen,
+    preferencesOpen,
     dismissActive,
     forceAvailable,
     manifest?.frame_count,
     moreOpen,
+    openWorkbench,
     presentation,
-    renderOpen,
     rendering,
     runVimNavigation,
-    sceneOpen,
     selectView,
     selectedAtom,
     setFrame,
     stepFrame,
     shortcutsOpen,
     showCommands,
-    showCustomize,
+    showOpen,
+    showPreferences,
     showRender,
     showShortcuts,
     updatePresentation,
     vimMode,
+    workbenchTab,
   ]);
 
   const commands = useMemo<CommandAction[]>(() => {
@@ -612,9 +645,9 @@ export default function App() {
       setCommandOpen(false);
     };
     return [
-      { id: "open", label: "Open trajectory", detail: shortcutLabels.open, run: run(() => fileInputRef.current?.click()) },
+      { id: "open", label: "Open trajectory", detail: shortcutLabels.open, run: run(showOpen) },
       { id: "fit", label: "Fit structure", detail: "R", run: run(() => setResetSignal((value) => value + 1)) },
-      { id: "render", label: "Render PNG", detail: shortcutLabels.render, disabled: !frame, run: run(showRender) },
+      { id: "render", label: "Render PNG", detail: shortcutLabels.render, disabled: !canRender, run: run(showRender) },
       ...(["perspective", "xy", "xz", "yz"] as ViewPreset[]).map((view, index) => ({
         id: `view-${view}`,
         label: view === "perspective" ? "Perspective view" : `${view.toUpperCase()} view`,
@@ -631,16 +664,19 @@ export default function App() {
       { id: "water", label: presentation.water === "hide" ? "Show water" : "Hide water", detail: "W", disabled: !capabilities?.water, run: run(() => updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" })) },
       { id: "cell", label: presentation.cell ? "Hide cell" : "Show cell", detail: "C", disabled: !cellAvailable, run: run(() => updatePresentation({ cell: !presentation.cell })) },
       { id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", detail: "F", disabled: !forceAvailable, run: run(() => updatePresentation({ forces: !presentation.forces })) },
-      { id: "data", label: showInspector ? "Hide data" : "Show data", detail: "I", run: run(() => setShowInspector((value) => !value)) },
+      { id: "scene", label: workbenchTab === "scene" ? "Hide scene panel" : "Show scene panel", detail: "V", disabled: !capabilities, run: run(() => workbenchTab === "scene" ? closeWorkbench() : openWorkbench("scene")) },
+      { id: "data", label: workbenchTab === "data" ? "Hide data panel" : "Show data panel", detail: "I", disabled: !capabilities, run: run(() => workbenchTab === "data" ? closeWorkbench() : openWorkbench("data")) },
       { id: "appearance", label: `Use ${appearance === "light" ? "dark" : "light"} appearance`, run: run(() => setAppearance((value) => value === "light" ? "dark" : "light")) },
-      { id: "customize", label: "Customize workspace", detail: shortcutLabels.customize, run: run(showCustomize) },
+      { id: "preferences", label: "Preferences", detail: shortcutLabels.preferences, run: run(showPreferences) },
       { id: "shortcuts", label: "Keyboard shortcuts", detail: "?", run: run(showShortcuts) },
     ];
-  }, [appearance, capabilities, cellAvailable, forceAvailable, frame, presentation, selectView, shortcutLabels, showCustomize, showInspector, showRender, showShortcuts, updatePresentation]);
+  }, [appearance, canRender, capabilities, cellAvailable, closeWorkbench, forceAvailable, openWorkbench, presentation, selectView, shortcutLabels, showOpen, showPreferences, showRender, showShortcuts, updatePresentation, workbenchTab]);
 
+  const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
   const workspaceClass = [
     "workspace",
-    showInspector ? "" : "inspector-hidden",
+    workbenchVisible ? "workbench-open" : "workbench-closed",
+    rendering ? "is-rendering" : "",
     series.length === 0 ? "timeline-compact" : "",
   ].filter(Boolean).join(" ");
 
@@ -649,6 +685,7 @@ export default function App() {
       className="app-shell"
       onDragEnter={(event) => {
         event.preventDefault();
+        if (rendering) return;
         dragDepth.current += 1;
         setDropActive(true);
       }}
@@ -662,6 +699,7 @@ export default function App() {
         event.preventDefault();
         dragDepth.current = 0;
         setDropActive(false);
+        if (rendering) return;
         void openSelectedFiles([...event.dataTransfer.files]);
       }}
     >
@@ -670,9 +708,11 @@ export default function App() {
         className="sr-only file-input"
         type="file"
         tabIndex={-1}
+        disabled={rendering}
         multiple
         accept=".xyz,.extxyz,.force,.frc,.forces,.vel,.velocs,.velocity,.charge,.chrg,.charges,.en,.info,.top,.topology,.mol,.moldescriptor"
         onChange={(event) => {
+          if (rendering) return;
           void openSelectedFiles([...(event.currentTarget.files ?? [])]);
           event.currentTarget.value = "";
         }}
@@ -709,34 +749,35 @@ export default function App() {
             {manifest && (
               <div className="scene-status">
                 <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> atoms</span>
+                <span><strong>{manifest.frame_count.toLocaleString()}</strong> frames</span>
                 {cellAvailable && <span>PBC <strong>{pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</strong></span>}
               </div>
             )}
-            <button className="open-button" type="button" aria-keyshortcuts="Meta+O Control+O" title={`Open · ${shortcutLabels.open}`} onClick={() => fileInputRef.current?.click()}><Icon name="folder" />Open</button>
-            <button className="command-button" type="button" aria-label="Search commands" aria-keyshortcuts="Meta+K Control+K" title={`Commands · ${shortcutLabels.commands}`} onClick={showCommands}><Icon name="search" /><kbd>{shortcutLabels.commands}</kbd></button>
+            <button className="open-button" type="button" disabled={rendering} aria-keyshortcuts="Meta+O Control+O" title={`Open · ${shortcutLabels.open}`} onClick={showOpen}><Icon name="folder" />Open</button>
             <button
-              className="customize-button"
+              ref={panelButtonRef}
+              className="panel-button"
               type="button"
-              aria-label="Customize workspace"
-              aria-keyshortcuts="Meta+, Control+,"
-              aria-haspopup="dialog"
-              aria-controls="customize-sheet"
-              aria-expanded={customizeOpen}
-              title={`Customize · ${shortcutLabels.customize}`}
-              disabled={rendering}
-              onClick={showCustomize}
-            ><Icon name="sliders" /></button>
+              aria-label={workbenchVisible ? `Hide ${workbenchTab} panel` : "Show scene panel"}
+              aria-controls="workbench"
+              aria-expanded={workbenchVisible}
+              disabled={rendering || !capabilities}
+              onClick={() => workbenchTab ? closeWorkbench(false) : openWorkbench("scene", true)}
+            ><Icon name="sliders" /><span>Tools</span></button>
+            <button className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />Render</button>
+            <button className="command-button" type="button" disabled={rendering} aria-label="Search commands" aria-keyshortcuts="Meta+K Control+K" title={`Commands · ${shortcutLabels.commands}`} onClick={showCommands}><Icon name="search" /><kbd>{shortcutLabels.commands}</kbd></button>
             <div className="more-control" ref={moreMenuRef}>
-              <button ref={moreButtonRef} className="more-button" type="button" aria-label="More" aria-haspopup="menu" aria-controls="more-menu" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}><Icon name="more" /></button>
+              <button ref={moreButtonRef} className="more-button" type="button" disabled={rendering} aria-label="More" aria-haspopup="menu" aria-controls="more-menu" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}><Icon name="more" /></button>
               {moreOpen && <MoreMenu
                 appearance={appearance}
-                canRender={Boolean(frame)}
+                canRender={canRender}
                 shortcutLabels={shortcutLabels}
                 triggerRef={moreButtonRef}
                 onClose={() => setMoreOpen(false)}
-                onOpen={() => { setMoreOpen(false); fileInputRef.current?.click(); }}
+                onOpen={showOpen}
                 onCommands={showCommands}
                 onRender={showRender}
+                onPreferences={showPreferences}
                 onShortcuts={showShortcuts}
                 onAppearance={() => {
                   setMoreOpen(false);
@@ -748,53 +789,113 @@ export default function App() {
         </header>
 
         {manifest && manifest.frame_count > 0 && capabilities && (
-          <SceneDock
-            menuRef={sceneMenuRef}
-            open={sceneOpen}
+          <ViewportToolbar
+            busy={rendering}
             profile={profile}
             presentation={presentation}
-            capabilities={capabilities!}
-            pbc={pbc}
+            capabilities={capabilities}
             cellAvailable={cellAvailable}
             forceAvailable={forceAvailable}
-            renderedImageCount={sceneInfo?.imageCount ?? null}
-            forceVectorStats={forceVectorStats}
-            showInspector={showInspector}
-            onOpen={() => setSceneOpen((value) => !value)}
-            onProfile={chooseProfile}
-            onPresentation={updatePresentation}
+            onPresentation={updateWorkspacePresentation}
             onFit={() => setResetSignal((value) => value + 1)}
-            onInspector={() => setShowInspector((value) => !value)}
+            onView={selectView}
+            viewPreset={viewPreset}
           />
         )}
 
-        {manifest && manifest.frame_count > 0 && <OrientationControl preset={viewPreset} onView={selectView} />}
+        {workbenchVisible && workbenchTab === "render" && <RenderGuide aspect={renderAspect} />}
 
-        {manifest && (
-          <Inspector
-            open={showInspector}
-            manifest={manifest}
-            frame={frame}
-            frameIndex={displayedFrameIndex}
-            selectedAtom={selectedAtom}
-            series={activeSeries}
-            cellAvailable={cellAvailable}
-            presentation={presentation}
-            forceAvailable={forceAvailable}
-            forceVectorStats={forceVectorStats}
-            forceScale={forceScale}
-            onForceScale={setForceScale}
-            onClose={() => setShowInspector(false)}
-          />
-        )}
+        {manifest && capabilities && <aside className={workbenchExpanded ? "workbench is-expanded" : "workbench"} id="workbench" aria-label="Scientific workbench" hidden={!workbenchTab}>
+          <nav ref={workbenchTabsRef} className="workbench-tabs" role="tablist" aria-label="Workbench panels" onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const tabs: WorkbenchTab[] = ["scene", "data", "render"];
+            const current = Math.max(0, tabs.indexOf(workbenchTab ?? "scene"));
+            const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+            openWorkbench(tabs[next], true);
+          }}>
+            {(["scene", "data", "render"] as WorkbenchTab[]).map((tab) => <button
+              key={tab}
+              type="button"
+              role="tab"
+              id={`workbench-tab-${tab}`}
+              data-workbench-tab={tab}
+              className={workbenchTab === tab ? "is-active" : ""}
+              aria-selected={workbenchTab === tab}
+              aria-controls="workbench-panel"
+              tabIndex={workbenchTab === tab ? 0 : -1}
+              disabled={rendering}
+              onClick={() => openWorkbench(tab)}
+            >{tab === "data" && selectedAtom !== null ? `Data · ${atomSymbol(manifest, selectedAtom)}${selectedAtom + 1}` : displayLabel(tab)}</button>)}
+          </nav>
+          <div className="workbench-heading">
+            <div>
+              <strong>{workbenchTab === "scene" ? "Scene" : workbenchTab === "render" ? "Render image" : selectedAtom === null ? "Data" : `${atomSymbol(manifest, selectedAtom)} · Atom ${selectedAtom + 1}`}</strong>
+              <span>{workbenchTab === "scene" ? "What the viewport shows" : workbenchTab === "render" ? "Publication output" : "Selection and frame values"}</span>
+            </div>
+            <div className="workbench-heading-actions">
+              <button className="workbench-expand-button" type="button" disabled={rendering} aria-expanded={workbenchExpanded} onClick={() => setWorkbenchExpanded((value) => !value)} aria-label={workbenchExpanded ? "Use compact panel" : "Expand panel"}><Icon name="chevron" /></button>
+              <button className="icon-button" type="button" disabled={rendering} onClick={() => closeWorkbench(true)} aria-label="Close scientific panel"><Icon name="close" /></button>
+            </div>
+          </div>
+          <div className="workbench-body" id="workbench-panel" role="tabpanel" aria-labelledby={workbenchTab ? `workbench-tab-${workbenchTab}` : undefined}>
+            {workbenchTab === "scene" && <ScenePanel
+              profile={profile}
+              presentation={presentation}
+              capabilities={capabilities}
+              pbc={pbc}
+              cellAvailable={cellAvailable}
+              forceAvailable={forceAvailable}
+              forceVectorStats={forceVectorStats}
+              renderedImageCount={sceneInfo?.imageCount ?? null}
+              forceScale={forceScale}
+              onProfile={chooseProfile}
+              onPresentation={updateWorkspacePresentation}
+              onForceScale={setForceScale}
+            />}
+            {workbenchTab === "data" && <Inspector
+              manifest={manifest}
+              frame={frame}
+              frameIndex={displayedFrameIndex}
+              selectedAtom={selectedAtom}
+              series={activeSeries}
+              cellAvailable={cellAvailable}
+              presentation={presentation}
+              forceAvailable={forceAvailable}
+              forceVectorStats={forceVectorStats}
+              forceScale={forceScale}
+            />}
+            <div className="workbench-pane" hidden={workbenchTab !== "render"}>
+              <RenderPanel
+                busy={rendering || frameLoading}
+                periodicAvailable={pbc.some(Boolean)
+                  && presentation.wrap === "atom"
+                  && presentation.mode !== "spacefill"
+                  && presentation.mode !== "ribbon"}
+                onAspectChange={setRenderAspect}
+                onValidityChange={setRenderValid}
+                onRender={exportPng}
+              />
+            </div>
+          </div>
+          {workbenchTab === "render" ? <footer className="workbench-footer render-workbench-footer">
+            <button type="button" disabled={rendering} onClick={() => closeWorkbench(true)}>Close</button>
+            <button className="primary" type="submit" form="publication-render-form" disabled={rendering || frameLoading || !renderValid}>{rendering ? "Rendering…" : frameLoading ? "Loading frame…" : "Render PNG"}</button>
+          </footer> : <footer className="workbench-footer">
+            <button type="button" disabled={rendering} onClick={showPreferences}><Icon name="sliders" /><span>Preferences</span><kbd>{shortcutLabels.preferences}</kbd></button>
+            <button type="button" disabled={rendering} onClick={showShortcuts}><span>Shortcuts</span><kbd>?</kbd></button>
+          </footer>}
+        </aside>}
 
         {manifest && manifest.frame_count > 0 && (
           <Timeline
+            busy={rendering}
             frameCount={manifest.frame_count}
             frameIndex={displayedFrameIndex}
             playing={playing}
             canPlay={canPlay}
             speed={speed}
+            playbackMode={playbackMode}
             series={series}
             activeSeries={activeSeries}
             frameError={frameError}
@@ -804,6 +905,7 @@ export default function App() {
             }}
             onPlay={() => canPlay && setPlaying((value) => !value)}
             onSpeed={setSpeed}
+            onPlaybackMode={setPlaybackMode}
             onSeries={setSeriesName}
           />
         )}
@@ -823,54 +925,35 @@ export default function App() {
             title={manifest.name === "No trajectory" ? "Open a trajectory" : "No frames found"}
             detail="Drop a trajectory or open one from disk."
             action="Open"
-            onAction={() => fileInputRef.current?.click()}
+            onAction={showOpen}
           />
         )}
-        {notice && <div className={opening ? "notice is-busy" : "notice"} role="status">{notice}</div>}
+        {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status">{notice}</div>}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
         {commandOpen && <CommandPalette actions={commands} onClose={() => setCommandOpen(false)} />}
-        {customizeOpen && <CustomizeSheet
+        {preferencesOpen && <PreferencesSheet
           appearance={appearance}
           playbackMode={playbackMode}
           presentation={presentation}
           vimMode={vimMode}
           onAppearance={setAppearance}
           onPlaybackMode={setPlaybackMode}
-          onPresentation={updateWorkspacePresentation}
+          onPresentation={(change) => setPresentation((current) => ({ ...current, ...change }))}
           onShortcuts={showShortcuts}
           onVimMode={setVimMode}
           onReset={() => {
-            setWorkspacePresentationDefaults({});
-            if (capabilities) {
-              const resolved = autoProfile(capabilities, forceAvailable, series.length > 0);
-              setPresentation(profilePresentation(resolved, defaultPresentation, cellAvailable, forceAvailable, capabilities));
-              autoProfileKey.current = manifest ? `${manifest.name}:${manifest.topology.atom_count}` : "";
-            } else {
-              setPresentation(defaultPresentation);
-              autoProfileKey.current = "";
-            }
-            setPlaybackMode("every-frame");
+            setPresentation((current) => ({ ...current, quality: "auto" }));
             setAppearance("light");
+            setPlaybackMode("every-frame");
             setVimMode(false);
-            setProfile("auto");
-            setResetSignal((value) => value + 1);
           }}
-          onClose={() => setCustomizeOpen(false)}
+          onClose={() => setPreferencesOpen(false)}
         />}
         {shortcutsOpen && <ShortcutSheet
           shortcutLabels={shortcutLabels}
           vimMode={vimMode}
           onVimMode={setVimMode}
           onClose={() => setShortcutsOpen(false)}
-        />}
-        {renderOpen && <RenderSheet
-          busy={rendering}
-          periodicAvailable={pbc.some(Boolean)
-            && presentation.wrap === "atom"
-            && presentation.mode !== "spacefill"
-            && presentation.mode !== "ribbon"}
-          onRender={exportPng}
-          onClose={() => !rendering && setRenderOpen(false)}
         />}
       </div>
     </main>
@@ -885,9 +968,28 @@ interface CommandAction {
   run: () => void;
 }
 
-function SceneDock({
-  menuRef,
-  open,
+function RenderGuide({ aspect }: { aspect: number }) {
+  const regionRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const region = regionRef.current;
+    if (!region || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      setSize(resolveRenderGuideSize(region.clientWidth, region.clientHeight, aspect));
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(region);
+    measure();
+    return () => observer.disconnect();
+  }, [aspect]);
+
+  return <div ref={regionRef} className="render-guide-region" aria-hidden="true">
+    {size.width > 0 && <div className="render-guide" style={size}><span>Output frame</span></div>}
+  </div>;
+}
+
+function ScenePanel({
   profile,
   presentation,
   capabilities,
@@ -896,15 +998,11 @@ function SceneDock({
   forceAvailable,
   forceVectorStats,
   renderedImageCount,
-  showInspector,
-  onOpen,
+  forceScale,
   onProfile,
   onPresentation,
-  onFit,
-  onInspector,
+  onForceScale,
 }: {
-  menuRef: { current: HTMLDivElement | null };
-  open: boolean;
   profile: SceneProfile;
   presentation: ScenePresentation;
   capabilities: SceneCapabilities;
@@ -913,14 +1011,11 @@ function SceneDock({
   forceAvailable: boolean;
   forceVectorStats: ForceVectorStats | null;
   renderedImageCount: number | null;
-  showInspector: boolean;
-  onOpen: () => void;
+  forceScale: number;
   onProfile: (profile: Exclude<SceneProfile, "custom">) => void;
   onPresentation: (change: Partial<ScenePresentation>) => void;
-  onFit: () => void;
-  onInspector: () => void;
+  onForceScale: (scale: number) => void;
 }) {
-  const popoverRef = useRef<HTMLElement>(null);
   const profiles: Array<{ id: Exclude<SceneProfile, "custom">; label: string }> = [
     { id: "auto", label: "Auto" },
     { id: "molecule", label: "Molecule" },
@@ -934,93 +1029,65 @@ function SceneDock({
   const imageCount = renderedImageCount ?? requestedImageCount;
   const imagesTruncated = imageCount < requestedImageCount;
 
-  useEffect(() => {
-    if (open) popoverRef.current?.scrollTo({ top: 0 });
-  }, [open]);
-
   return (
-    <div className="scene-control" ref={menuRef}>
-      <button
-        className="scene-trigger"
-        type="button"
-        onClick={onOpen}
-        aria-label={`Scene: ${profileLabel(profile)}, ${representationLabel(presentation.mode)}`}
-        aria-expanded={open}
-        aria-controls="scene-popover"
-      >
-        <span>Scene</span>
-        <strong>{profileLabel(profile)} · {representationLabel(presentation.mode)}</strong>
-        <Icon name="chevron" />
-      </button>
+    <div className="scene-panel">
+      <section className="workbench-section preset-section">
+        <h3>Scene preset</h3>
+        <label className="panel-select-row preset-select-row"><span>Preset</span><select value={profile} onChange={(event) => onProfile(event.target.value as Exclude<SceneProfile, "custom">)}>
+          {profile === "custom" && <option value="custom" disabled>Custom</option>}
+          {profiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select></label>
+        <small className="capability-note">Sets a useful starting view; every control remains editable.</small>
+      </section>
 
-      {open && <section ref={popoverRef} className="scene-popover" id="scene-popover" aria-label="Scene controls">
-        <div className="popover-heading">
-          <div><strong>Scene</strong><span>Choose what the canvas shows.</span></div>
-          <button className="icon-button" type="button" onClick={onOpen} aria-label="Close scene controls"><Icon name="close" /></button>
-        </div>
-
-        <div className="profile-strip" aria-label="Scene profile">
-          {profiles.map((item) => <button
-            key={item.id}
-            type="button"
-            className={profile === item.id ? "is-active" : ""}
-            aria-pressed={profile === item.id}
-            onClick={() => onProfile(item.id)}
-          >{item.label}</button>)}
-        </div>
-
-        <div className="scene-group">
-          <span className="scene-group-label">Representation</span>
-          <div className="representation-grid">
-            {modes.map((mode) => {
-              const unavailable = mode === "ribbon" && !capabilities.ribbon;
-              return <button
-                key={mode}
-                type="button"
-                className={presentation.mode === mode ? "is-active" : ""}
-                aria-pressed={presentation.mode === mode}
-                disabled={unavailable}
-                title={unavailable ? capabilities.ribbonReason : undefined}
-                onClick={() => onPresentation({ mode })}
-              ><span>{representationLabel(mode)}</span>{presentation.mode === mode && <Icon name="check" />}</button>;
-            })}
+      <section className="workbench-section">
+        <h3>Appearance</h3>
+        <label className="panel-select-row"><span>Representation</span><select value={presentation.mode} onChange={(event) => onPresentation({ mode: event.target.value as RepresentationMode })}>
+          {modes.map((mode) => <option key={mode} value={mode} disabled={mode === "ribbon" && !capabilities.ribbon}>{representationLabel(mode)}</option>)}
+        </select></label>
+        <label className="panel-select-row"><span>Color by</span><select value={presentation.color} onChange={(event) => onPresentation({ color: event.target.value as ScenePresentation["color"] })}>
+          <option value="element">Element</option>
+          <option value="residue">Residue</option>
+        </select></label>
+        {!capabilities.ribbon && <small className="capability-note">{capabilities.ribbonReason}</small>}
+        <details className="panel-details">
+          <summary>Geometry</summary>
+          <div className="geometry-settings">
+            <label><span>Atoms <output>{formatScale(presentation.atomScale)}</output></span><input type="range" min={0.55} max={1.6} step={0.05} value={presentation.atomScale} onChange={(event) => onPresentation({ atomScale: Number(event.target.value) })} /></label>
+            <label><span>Bonds <output>{formatScale(presentation.bondScale)}</output></span><input type="range" min={0.55} max={1.8} step={0.05} value={presentation.bondScale} onChange={(event) => onPresentation({ bondScale: Number(event.target.value) })} /></label>
           </div>
-          {!capabilities.ribbon && <small className="capability-note">{capabilities.ribbonReason}</small>}
-        </div>
+        </details>
+      </section>
 
-        <div className="scene-group compact-group">
-          <span className="scene-group-label">Structure</span>
-          <Toggle label="Hydrogens" checked={presentation.hydrogens} onChange={(hydrogens) => onPresentation({ hydrogens })} />
-          <div className={capabilities.water ? "choice-row" : "choice-row is-disabled"}>
-            <span>Water</span>
-            {capabilities.water ? <div className="mini-segmented" aria-label="Water display">
-              {(["show", "hide", "only"] as const).map((water) => <button
-                key={water}
-                type="button"
-                className={presentation.water === water ? "is-active" : ""}
-                aria-pressed={presentation.water === water}
-                onClick={() => onPresentation({ water })}
-              >{displayLabel(water)}</button>)}
-            </div> : <small>None detected</small>}
-          </div>
+      <section className="workbench-section">
+        <h3>Components</h3>
+        <Toggle label="Hydrogens" checked={presentation.hydrogens} onChange={(hydrogens) => onPresentation({ hydrogens })} />
+        <div className={capabilities.water ? "choice-row" : "choice-row is-disabled"}>
+          <span>Water</span>
+          {capabilities.water ? <div className="mini-segmented" aria-label="Water display">
+            {(["show", "hide", "only"] as const).map((water) => <button
+              key={water}
+              type="button"
+              className={presentation.water === water ? "is-active" : ""}
+              aria-pressed={presentation.water === water}
+              onClick={() => onPresentation({ water })}
+            >{displayLabel(water)}</button>)}
+          </div> : <small>None detected</small>}
         </div>
+      </section>
 
-        <div className="scene-group compact-group">
-          <span className="scene-group-label">Overlays</span>
-          <Toggle label="Cell" checked={presentation.cell && cellAvailable} disabled={!cellAvailable} onChange={(cell) => onPresentation({ cell })} />
-          <Toggle label="Forces" checked={presentation.forces && forceAvailable} disabled={!forceAvailable} onChange={(forces) => onPresentation({ forces })} />
-          {presentation.forces && forceVectorStats && forceVectorStats.total > forceVectorStats.rendered && (
-            <small className="capability-note">Showing {forceVectorStats.rendered.toLocaleString()} of {forceVectorStats.total.toLocaleString()} evenly sampled vectors.</small>
-          )}
-        </div>
-
-        {cellAvailable && <div className="scene-group image-group">
-          <div className="scene-group-heading"><span className="scene-group-label">Cell images</span><output>{imagesTruncated ? `${imageCount} / ${requestedImageCount}` : imageCount}</output></div>
+      <section className="workbench-section periodic-workbench-section">
+        <div className="layer-heading"><div><strong>Periodic cell</strong><span>{cellAvailable ? "Centered at −½…+½" : "No cell data"}</span></div><Toggle label="Cell" checked={presentation.cell && cellAvailable} disabled={!cellAvailable} onChange={(cell) => onPresentation({ cell })} /></div>
+        {cellAvailable && <>
+          <div className="choice-row"><span>Wrap</span><div className="mini-segmented" aria-label="Periodic wrapping">
+            {(["molecule", "atom", "none"] as const).map((wrap) => <button key={wrap} type="button" className={presentation.wrap === wrap ? "is-active" : ""} aria-pressed={presentation.wrap === wrap} onClick={() => onPresentation({ wrap })}>{wrap === "none" ? "Original" : displayLabel(wrap)}</button>)}
+          </div></div>
+          <div className="workbench-section-heading image-heading"><h3>Replicas</h3><output>{imagesTruncated ? `${imageCount} / ${requestedImageCount}` : imageCount}</output></div>
           <div className="image-presets" aria-label="Cell image presets">
             {([
-              ["Unit", periodicImages(pbc, 0, 0)],
-              ["2×", periodicImages(pbc, -1, 0)],
-              ["3×", periodicImages(pbc, -1, 1)],
+              [replicaGridLabel(pbc, 1), periodicImages(pbc, 0, 0)],
+              [replicaGridLabel(pbc, 2), periodicImages(pbc, -1, 0)],
+              [replicaGridLabel(pbc, 3), periodicImages(pbc, -1, 1)],
             ] as Array<[string, ScenePresentation["images"]]>).map(([label, images]) => <button
               key={label}
               type="button"
@@ -1029,25 +1096,30 @@ function SceneDock({
               onClick={() => setImages(images)}
             >{label}</button>)}
           </div>
-          <div className="image-ranges">
-            {(["a", "b", "c"] as const).map((axis, index) => <ImageAxisControl
-              key={axis}
-              axis={axis}
-              periodic={pbc[index]}
-              min={presentation.images.min[index]}
-              max={presentation.images.max[index]}
-              onChange={(min, max) => setImages(withImageAxis(presentation.images, index, min, max))}
-            />)}
-          </div>
+          <details className="panel-details">
+            <summary>Custom replica range</summary>
+            <div className="image-ranges">
+              {(["a", "b", "c"] as const).map((axis, index) => <ImageAxisControl
+                key={axis}
+                axis={axis}
+                periodic={pbc[index]}
+                min={presentation.images.min[index]}
+                max={presentation.images.max[index]}
+                onChange={(min, max) => setImages(withImageAxis(presentation.images, index, min, max))}
+              />)}
+            </div>
+          </details>
           {imagesTruncated && <small className="capability-note">Showing the nearest {imageCount} of {requestedImageCount} requested.</small>}
-          <small className="cell-origin-note">The PQ cell is centered at the origin.</small>
-        </div>}
+        </>}
+      </section>
 
-        <div className="scene-actions">
-          <button type="button" onClick={onFit}>Fit</button>
-          <button type="button" className={showInspector ? "is-active" : ""} onClick={onInspector}>Data</button>
-        </div>
-      </section>}
+      <section className="workbench-section force-workbench-section">
+        <div className="layer-heading"><div><strong>Forces</strong><span>{forceAvailable ? "Per-atom vectors" : "No force data"}</span></div><Toggle label="Forces" checked={presentation.forces && forceAvailable} disabled={!forceAvailable} onChange={(forces) => onPresentation({ forces })} /></div>
+        {forceAvailable && presentation.forces && <>
+          {forceVectorStats && <small className="capability-note">{forceVectorStats.total > forceVectorStats.rendered ? `${forceVectorStats.rendered.toLocaleString()} of ${forceVectorStats.total.toLocaleString()} vectors · evenly sampled` : `${forceVectorStats.total.toLocaleString()} vectors`}</small>}
+          <label className="panel-slider"><span>Scale <output>{formatNumber(forceScale)}×</output></span><input type="range" min={0.25} max={4} step={0.25} value={forceScale} onChange={(event) => onForceScale(Number(event.target.value))} /></label>
+        </>}
+      </section>
     </div>
   );
 }
@@ -1107,7 +1179,53 @@ function Toggle({
   </div>;
 }
 
-function OrientationControl({ preset, onView }: { preset: ViewPreset; onView: (preset: ViewPreset) => void }) {
+function ViewportToolbar({
+  busy,
+  profile,
+  presentation,
+  capabilities,
+  cellAvailable,
+  forceAvailable,
+  viewPreset,
+  onPresentation,
+  onFit,
+  onView,
+}: {
+  busy: boolean;
+  profile: SceneProfile;
+  presentation: ScenePresentation;
+  capabilities: SceneCapabilities;
+  cellAvailable: boolean;
+  forceAvailable: boolean;
+  viewPreset: ViewPreset;
+  onPresentation: (change: Partial<ScenePresentation>) => void;
+  onFit: () => void;
+  onView: (preset: ViewPreset) => void;
+}) {
+  return <div className="viewport-toolbar" role="toolbar" aria-label="Quick view controls">
+    <span className="viewport-preset">{profileLabel(profile)}</span>
+    <label className="viewport-style-control"><span>Style</span><select aria-label="Representation" value={presentation.mode} disabled={busy} onChange={(event) => onPresentation({ mode: event.target.value as RepresentationMode })}>
+      {(["ball-stick", "spacefill", "licorice", "lines", "ribbon"] as RepresentationMode[]).map((mode) => <option key={mode} value={mode} disabled={mode === "ribbon" && !capabilities.ribbon}>{representationLabel(mode)}</option>)}
+    </select></label>
+    <label className="viewport-color-control"><span>Color</span><select aria-label="Color by" value={presentation.color} disabled={busy} onChange={(event) => onPresentation({ color: event.target.value as ScenePresentation["color"] })}>
+      <option value="element">Element</option>
+      <option value="residue">Residue</option>
+    </select></label>
+    {cellAvailable && <button type="button" disabled={busy} className={presentation.cell ? "is-active" : ""} aria-pressed={presentation.cell} onClick={() => onPresentation({ cell: !presentation.cell })}>Cell</button>}
+    {forceAvailable && <button type="button" disabled={busy} className={presentation.forces ? "is-active" : ""} aria-pressed={presentation.forces} onClick={() => onPresentation({ forces: !presentation.forces })}>Forces</button>}
+    <span className="viewport-divider" />
+    <button type="button" disabled={busy} onClick={onFit}>Fit</button>
+    <label className="mobile-view-select"><span>View</span><select aria-label="Camera orientation" value={viewPreset} disabled={busy} onChange={(event) => onView(event.target.value as ViewPreset)}>
+      <option value="perspective">3D</option>
+      <option value="xy">XY</option>
+      <option value="xz">XZ</option>
+      <option value="yz">YZ</option>
+    </select></label>
+    <OrientationControl preset={viewPreset} busy={busy} onView={onView} />
+  </div>;
+}
+
+function OrientationControl({ preset, busy, onView }: { preset: ViewPreset; busy: boolean; onView: (preset: ViewPreset) => void }) {
   const views: Array<{ id: ViewPreset; label: string }> = [
     { id: "perspective", label: "3D" },
     { id: "xy", label: "XY" },
@@ -1118,6 +1236,7 @@ function OrientationControl({ preset, onView }: { preset: ViewPreset; onView: (p
     {views.map((view) => <button
       key={view.id}
       type="button"
+      disabled={busy}
       className={preset === view.id ? "is-active" : ""}
       aria-pressed={preset === view.id}
       aria-label={view.id === "perspective" ? "Perspective view" : `${view.label} view`}
@@ -1135,6 +1254,7 @@ function MoreMenu({
   onOpen,
   onCommands,
   onRender,
+  onPreferences,
   onShortcuts,
   onAppearance,
 }: {
@@ -1146,6 +1266,7 @@ function MoreMenu({
   onOpen: () => void;
   onCommands: () => void;
   onRender: () => void;
+  onPreferences: () => void;
   onShortcuts: () => void;
   onAppearance: () => void;
 }) {
@@ -1187,6 +1308,7 @@ function MoreMenu({
     <button type="button" role="menuitem" aria-keyshortcuts="Meta+K Control+K" onClick={onCommands}><span>Commands</span><kbd>{shortcutLabels.commands}</kbd></button>
     <button type="button" role="menuitem" aria-keyshortcuts="Meta+Shift+S Control+Shift+S" disabled={!canRender} onClick={onRender}><span>Render image…</span><kbd>{shortcutLabels.render}</kbd></button>
     <hr />
+    <button type="button" role="menuitem" aria-keyshortcuts="Meta+, Control+," onClick={onPreferences}><span>Preferences…</span><kbd>{shortcutLabels.preferences}</kbd></button>
     <button type="button" role="menuitem" aria-keyshortcuts="?" onClick={onShortcuts}><span>Keyboard shortcuts</span><kbd>?</kbd></button>
     <button type="button" role="menuitem" onClick={onAppearance}><span>{appearance === "light" ? "Dark" : "Light"} appearance</span></button>
   </div>;
@@ -1331,7 +1453,7 @@ function ShortcutSheet({
         ["R", "Fit structure"],
         ["1–4", "3D, XY, XZ, YZ"],
         ["V / I", "Scene / data"],
-        ["B / C", "Bonds / cell"],
+        ["B / C", "Lines style / cell"],
         ["F / W", "Forces / water"],
       ],
     },
@@ -1339,7 +1461,7 @@ function ShortcutSheet({
       title: "Workspace",
       items: [
         [shortcutLabels.commands, "Commands"],
-        [shortcutLabels.customize, "Customize"],
+        [shortcutLabels.preferences, "Preferences"],
         [shortcutLabels.open, "Open trajectory"],
         [shortcutLabels.render, "Render image"],
         ["? / Esc", "Shortcuts / close"],
@@ -1351,7 +1473,7 @@ function ShortcutSheet({
     ["J / K", "Forward / back ten"],
     ["gg / G", "First / last frame"],
     [":", "Commands"],
-    ["Ctrl [", "Close surface"],
+    ["Ctrl [", "Back / clear selection"],
   ];
 
   return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -1379,7 +1501,7 @@ function ShortcutSheet({
   </div>;
 }
 
-function CustomizeSheet({
+function PreferencesSheet({
   appearance,
   playbackMode,
   presentation,
@@ -1408,8 +1530,8 @@ function CustomizeSheet({
   useModalFocus(panelRef);
 
   return <div className="customize-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <aside ref={panelRef} className="customize-sheet" id="customize-sheet" role="dialog" aria-modal="true" aria-label="Customize workspace" tabIndex={-1}>
-      <div className="sheet-heading"><div><strong>Customize</strong><span>Workspace defaults</span></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close customize"><Icon name="close" /></button></div>
+    <aside ref={panelRef} className="customize-sheet preferences-sheet" id="preferences-sheet" role="dialog" aria-modal="true" aria-label="Preferences" tabIndex={-1}>
+      <div className="sheet-heading"><div><strong>Preferences</strong><span>Application behavior</span></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close preferences"><Icon name="close" /></button></div>
 
       <section className="settings-section">
         <h3>Display</h3>
@@ -1417,68 +1539,45 @@ function CustomizeSheet({
           <div className="inline-setting"><span>Appearance</span><div className="settings-segmented">
             {(["light", "dark"] as const).map((value) => <button key={value} type="button" className={appearance === value ? "is-active" : ""} aria-pressed={appearance === value} onClick={() => onAppearance(value)}>{displayLabel(value)}</button>)}
           </div></div>
-          <div className="inline-setting"><span>Color</span><div className="settings-segmented">
-            {(["element", "residue"] as const).map((color) => <button key={color} type="button" className={presentation.color === color ? "is-active" : ""} aria-pressed={presentation.color === color} onClick={() => onPresentation({ color })}>{displayLabel(color)}</button>)}
-          </div></div>
           <div className="inline-setting"><span>Quality</span><div className="settings-segmented">
             {(["auto", "high"] as const).map((quality) => <button key={quality} type="button" className={presentation.quality === quality ? "is-active" : ""} aria-pressed={presentation.quality === quality} onClick={() => onPresentation({ quality })}>{displayLabel(quality)}</button>)}
           </div></div>
         </div>
       </section>
 
-      <div className="customize-pair">
-        <section className="settings-section keyboard-settings">
-          <h3>Keyboard</h3>
-          <Toggle label="Vim navigation" checked={vimMode} onChange={onVimMode} />
-          <button className="settings-link" type="button" onClick={onShortcuts}><span>Shortcuts</span><kbd>?</kbd></button>
-          <small>{vimMode ? "j/k steps frames; J/K moves ten." : "Standard keys stay active."}</small>
-        </section>
-
-        <section className="settings-section">
-          <h3>Playback</h3>
-          <div className="settings-segmented">
-            <button type="button" className={playbackMode === "every-frame" ? "is-active" : ""} aria-pressed={playbackMode === "every-frame"} onClick={() => onPlaybackMode("every-frame")}>Every frame</button>
-            <button type="button" className={playbackMode === "realtime" ? "is-active" : ""} aria-pressed={playbackMode === "realtime"} onClick={() => onPlaybackMode("realtime")}>Realtime</button>
-          </div>
-          <small>{playbackMode === "every-frame" ? "Show every frame." : "Keep time; skip when needed."}</small>
-        </section>
-      </div>
-
       <section className="settings-section">
-        <h3>Periodic wrapping</h3>
-        <div className="settings-segmented three-up">
-          {(["molecule", "atom", "none"] as const).map((wrap) => <button key={wrap} type="button" className={presentation.wrap === wrap ? "is-active" : ""} aria-pressed={presentation.wrap === wrap} onClick={() => onPresentation({ wrap })}>{displayLabel(wrap)}</button>)}
-        </div>
-        <small>{presentation.wrap === "molecule"
-          ? "Whole molecules stay intact."
-          : presentation.wrap === "atom"
-            ? "Every atom stays inside the centered cell."
-            : "Original coordinates are preserved."}</small>
+        <h3>Trajectory</h3>
+        <div className="inline-setting"><span>Frame delivery</span><div className="settings-segmented">
+          <button type="button" className={playbackMode === "every-frame" ? "is-active" : ""} aria-pressed={playbackMode === "every-frame"} onClick={() => onPlaybackMode("every-frame")}>Every frame</button>
+          <button type="button" className={playbackMode === "realtime" ? "is-active" : ""} aria-pressed={playbackMode === "realtime"} onClick={() => onPlaybackMode("realtime")}>Realtime</button>
+        </div></div>
+        <small>Every frame waits for data; Realtime may skip ahead.</small>
       </section>
 
-      <section className="settings-section slider-settings">
-        <h3>Geometry</h3>
-        <div className="geometry-settings">
-          <label><span>Atoms <output>{formatScale(presentation.atomScale)}</output></span><input type="range" min={0.55} max={1.6} step={0.05} value={presentation.atomScale} onChange={(event) => onPresentation({ atomScale: Number(event.target.value) })} /></label>
-          <label><span>Bonds <output>{formatScale(presentation.bondScale)}</output></span><input type="range" min={0.55} max={1.8} step={0.05} value={presentation.bondScale} onChange={(event) => onPresentation({ bondScale: Number(event.target.value) })} /></label>
-        </div>
+      <section className="settings-section keyboard-settings">
+        <h3>Keyboard</h3>
+        <Toggle label="Vim navigation" checked={vimMode} onChange={onVimMode} />
+        <button className="settings-link" type="button" onClick={onShortcuts}><span>Keyboard shortcuts</span><kbd>?</kbd></button>
+        <small>{vimMode ? "j/k steps frames; J/K moves ten." : "Standard shortcuts stay active."}</small>
       </section>
 
-      <div className="sheet-actions"><button type="button" onClick={onReset}>Reset</button><button className="primary" type="button" onClick={onClose}>Done</button></div>
+      <div className="sheet-actions"><button type="button" onClick={onReset}>Reset preferences</button><button className="primary" type="button" onClick={onClose}>Done</button></div>
     </aside>
   </div>;
 }
 
-function RenderSheet({
+function RenderPanel({
   busy,
   periodicAvailable,
+  onAspectChange,
+  onValidityChange,
   onRender,
-  onClose,
 }: {
   busy: boolean;
   periodicAvailable: boolean;
+  onAspectChange: (aspect: number) => void;
+  onValidityChange: (valid: boolean) => void;
   onRender: (options: PngExportOptions) => Promise<void>;
-  onClose: () => void;
 }) {
   const [width, setWidth] = useState(2400);
   const [height, setHeight] = useState(1800);
@@ -1486,8 +1585,7 @@ function RenderSheet({
   const [fit, setFit] = useState(true);
   const [projection, setProjection] = useState<"orthographic" | "perspective">("orthographic");
   const [periodicContext, setPeriodicContext] = useState(true);
-  const panelRef = useRef<HTMLElement>(null);
-  useModalFocus(panelRef);
+  const [dpi, setDpi] = useState(300);
   const presets = [
     { label: "Figure", detail: "4:3", width: 2400, height: 1800 },
     { label: "Wide", detail: "16:9", width: 3200, height: 1800 },
@@ -1497,11 +1595,20 @@ function RenderSheet({
   const pixels = width * height;
   const validationMessage = renderSizeValidationMessage(width, height);
   const invalid = validationMessage !== null;
+  const printWidth = width / dpi * 25.4;
+  const printHeight = height / dpi * 25.4;
 
-  return <div className="customize-backdrop render-backdrop" onPointerDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
-    <aside ref={panelRef} className="customize-sheet render-sheet" role="dialog" aria-modal="true" aria-label="Render image" tabIndex={-1}>
-      <div className="sheet-heading"><div><strong>Render image</strong><span>High-resolution PNG</span></div><button className="icon-button" type="button" disabled={busy} onClick={onClose} aria-label="Close render image"><Icon name="close" /></button></div>
+  useEffect(() => {
+    if (width > 0 && height > 0) onAspectChange(width / height);
+  }, [height, onAspectChange, width]);
 
+  useEffect(() => onValidityChange(!invalid), [invalid, onValidityChange]);
+
+  return <form id="publication-render-form" className="render-panel" onSubmit={(event) => {
+    event.preventDefault();
+    if (invalid || busy) return;
+    void onRender({ width, height, transparent, fit, projection, periodicContext, padding: 0.08 });
+  }}>
       <section className="settings-section">
         <h3>Format</h3>
         <div className="render-presets">
@@ -1527,6 +1634,17 @@ function RenderSheet({
           <label><span>Height</span><input type="number" min={512} max={6000} step={1} value={height} disabled={busy} onChange={(event) => setHeight(Number(event.target.value))} onBlur={() => setHeight(clamp(Math.round(height || 512), 512, 6000))} /></label>
         </div>
         <small>{validationMessage ?? `${(pixels / 1_000_000).toFixed(1)} MP · sRGB PNG`}</small>
+      </section>
+
+      <section className="settings-section print-scale-section">
+        <h3>Print scale</h3>
+        <label className="render-print-row"><span>DPI guide</span><select value={dpi} disabled={busy} onChange={(event) => setDpi(Number(event.target.value))}>
+          <option value={150}>150 dpi</option>
+          <option value={300}>300 dpi</option>
+          <option value={600}>600 dpi</option>
+        </select></label>
+        <output>{printWidth.toFixed(1)} × {printHeight.toFixed(1)} mm</output>
+        <small>Print planning only; pixels stay unchanged.</small>
       </section>
 
       <div className="render-options-grid">
@@ -1566,9 +1684,7 @@ function RenderSheet({
         </section>}
       </div>
 
-      <div className="sheet-actions"><button type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="primary" type="button" disabled={invalid || busy} onClick={() => void onRender({ width, height, transparent, fit, projection, periodicContext, padding: 0.08 })}>{busy ? "Rendering…" : "Render PNG"}</button></div>
-    </aside>
-  </div>;
+  </form>;
 }
 
 function DropOverlay({ replacing }: { replacing: boolean }) {
@@ -1576,7 +1692,6 @@ function DropOverlay({ replacing }: { replacing: boolean }) {
 }
 
 function Inspector({
-  open,
   manifest,
   frame,
   frameIndex,
@@ -1587,10 +1702,7 @@ function Inspector({
   forceAvailable,
   forceVectorStats,
   forceScale,
-  onForceScale,
-  onClose,
 }: {
-  open: boolean;
   manifest: Manifest;
   frame: FrameData | null;
   frameIndex: number;
@@ -1601,8 +1713,6 @@ function Inspector({
   forceAvailable: boolean;
   forceVectorStats: ForceVectorStats | null;
   forceScale: number;
-  onForceScale: (scale: number) => void;
-  onClose: () => void;
 }) {
   const positions = centeredFramePositions(frame, manifest.topology.atom_count);
   const forces = frameArray(frame, ["forces", "force"]);
@@ -1620,7 +1730,12 @@ function Inspector({
   const chargeUnit = arrayUnit(frame, manifest, "charges");
   const residueIndex = atom === null ? -1 : manifest.topology.atom_residue_index?.[atom] ?? -1;
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
-  const selectionSection = atom === null ? null : (
+  const selectionSection = atom === null ? (
+    <section className="readout-section atom-section empty-selection">
+      <h3>Selection</h3>
+      <p className="quiet-copy">Click an atom in the viewport to inspect its coordinates and properties.</p>
+    </section>
+  ) : (
     <section className="readout-section atom-section">
       <h3>Selection</h3>
       <Readout label="Element" value={symbol ?? "—"} />
@@ -1635,14 +1750,7 @@ function Inspector({
   );
 
   return (
-    <aside className={open ? "inspector is-open" : "inspector"} aria-label="Inspector">
-      <div className="panel-heading">
-        <h2>{atom === null ? "Data" : `${symbol} · Atom ${atom + 1}`}</h2>
-        <button className="icon-button close-inspector" type="button" onClick={onClose} aria-label="Close inspector">
-          <Icon name="close" />
-        </button>
-      </div>
-
+    <div className="inspector-content">
       {selectionSection}
 
       <section className="readout-section">
@@ -1687,71 +1795,63 @@ function Inspector({
             : forceVectorStats.total.toLocaleString()}
         />}
         <Readout label="Normalization" value="90th percentile · displayed vectors" />
-        <label className="force-scale">
-          <span className="sr-only">Force vector scale</span>
-          <span>0.25×</span>
-          <input
-            type="range"
-            min={0.25}
-            max={4}
-            step={0.25}
-            value={forceScale}
-            onChange={(event) => onForceScale(Number(event.target.value))}
-          />
-          <span>4×</span>
-        </label>
+        <Readout label="Scale" value={`${formatNumber(forceScale)}×`} />
       </section>}
-
-      {atom === null && (
-        <section className="readout-section atom-section">
-          <h3>Selection</h3>
-          <p className="quiet-copy">Select an atom.</p>
-        </section>
-      )}
-
-    </aside>
+    </div>
   );
 }
 
 function Timeline({
+  busy,
   frameCount,
   frameIndex,
   playing,
   canPlay,
   speed,
+  playbackMode,
   series,
   activeSeries,
   frameError,
   onFrame,
   onPlay,
   onSpeed,
+  onPlaybackMode,
   onSeries,
 }: {
+  busy: boolean;
   frameCount: number;
   frameIndex: number;
   playing: boolean;
   canPlay: boolean;
   speed: number;
+  playbackMode: PlaybackMode;
   series: DisplaySeries[];
   activeSeries: DisplaySeries | null;
   frameError: string;
   onFrame: (index: number) => void;
   onPlay: () => void;
   onSpeed: (speed: number) => void;
+  onPlaybackMode: (mode: PlaybackMode) => void;
   onSeries: (name: string) => void;
 }) {
   return (
-    <section className={series.length > 0 ? "timeline" : "timeline is-compact"} aria-label="Trajectory controls">
+    <section className={`${series.length > 0 ? "timeline" : "timeline is-compact"}${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
       <div className="transport-row">
         <div className="transport-buttons">
-          <button type="button" className="transport-button" onClick={() => onFrame(frameIndex - 1)} disabled={frameIndex === 0} aria-label="Previous frame">
+          <button type="button" className="transport-button jump-button" onClick={() => onFrame(0)} disabled={busy || frameIndex === 0} aria-label="First frame">
+            <Icon name="first" />
+          </button>
+          <button type="button" className="transport-button" onClick={() => onFrame(frameIndex - 1)} disabled={busy || frameIndex === 0} aria-label="Previous frame">
             <Icon name="back" />
           </button>
-          <button type="button" className="play-button" onClick={onPlay} disabled={!canPlay} aria-label={playing ? "Pause" : "Play"}>
+          <button type="button" className="play-button" onClick={onPlay} disabled={busy || !canPlay} aria-label={playing ? "Pause" : "Play"}>
             <Icon name={playing ? "pause" : "play"} />
           </button>
-          <button type="button" className="transport-button" onClick={() => onFrame(frameIndex + 1)} disabled={frameIndex === frameCount - 1} aria-label="Next frame">
+          <button type="button" className="transport-button" onClick={() => onFrame(frameIndex + 1)} disabled={busy || frameIndex === frameCount - 1} aria-label="Next frame">
             <Icon name="next" />
+          </button>
+          <button type="button" className="transport-button jump-button" onClick={() => onFrame(frameCount - 1)} disabled={busy || frameIndex === frameCount - 1} aria-label="Last frame">
+            <Icon name="last" />
           </button>
         </div>
         <label className="scrubber">
@@ -1761,29 +1861,37 @@ function Timeline({
             min={0}
             max={Math.max(frameCount - 1, 0)}
             value={frameIndex}
+            disabled={busy}
             onChange={(event) => onFrame(Number(event.target.value))}
           />
         </label>
         <output className="frame-counter">{String(frameIndex + 1).padStart(String(frameCount).length, "0")} / {frameCount}</output>
         <label className="speed-control">
           <span className="sr-only">Playback speed</span>
-          <select value={speed} onChange={(event) => onSpeed(Number(event.target.value))}>
+          <select value={speed} disabled={busy} onChange={(event) => onSpeed(Number(event.target.value))}>
             <option value={0.25}>0.25×</option>
             <option value={0.5}>0.5×</option>
             <option value={1}>1×</option>
             <option value={2}>2×</option>
           </select>
         </label>
+        <label className="playback-mode-control">
+          <span className="sr-only">Frame delivery</span>
+          <select value={playbackMode} disabled={busy} onChange={(event) => onPlaybackMode(event.target.value as PlaybackMode)}>
+            <option value="every-frame">Every frame</option>
+            <option value="realtime">Realtime</option>
+          </select>
+        </label>
       </div>
 
       {series.length > 0 && <div className="plot-row">
         <div className="plot-label">
-          <select value={activeSeries?.name ?? ""} onChange={(event) => onSeries(event.target.value)} aria-label="Timeline property">
+          <select value={activeSeries?.name ?? ""} disabled={busy} onChange={(event) => onSeries(event.target.value)} aria-label="Timeline property">
             {series.map((entry) => <option key={entry.name} value={entry.name}>{entry.label}</option>)}
           </select>
           <small>{activeSeries?.unit ?? ""}</small>
         </div>
-        <SeriesPlot series={activeSeries} frameCount={frameCount} frameIndex={frameIndex} onFrame={onFrame} />
+        <SeriesPlot series={activeSeries} frameCount={frameCount} frameIndex={frameIndex} disabled={busy} onFrame={onFrame} />
         {frameError && <div className="frame-error" title={frameError}>Frame unavailable</div>}
       </div>}
     </section>
@@ -1794,11 +1902,13 @@ function SeriesPlot({
   series,
   frameCount,
   frameIndex,
+  disabled,
   onFrame,
 }: {
   series: DisplaySeries | null;
   frameCount: number;
   frameIndex: number;
+  disabled: boolean;
   onFrame: (index: number) => void;
 }) {
   const values = (series?.values ?? []).slice(0, frameCount);
@@ -1834,6 +1944,7 @@ function SeriesPlot({
   const currentX = (frameIndex / denominator) * 1000;
 
   const seek = (event: React.PointerEvent<SVGSVGElement>) => {
+    if (disabled) return;
     if (event.type === "pointermove" && event.buttons !== 1) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     onFrame(((event.clientX - bounds.left) / bounds.width) * (frameCount - 1));
@@ -1841,7 +1952,7 @@ function SeriesPlot({
 
   return (
     <div className="series-plot">
-      <svg viewBox="0 0 1000 92" preserveAspectRatio="none" onPointerDown={seek} onPointerMove={seek} aria-label={series ? `${series.label} over time` : "Trajectory timeline"}>
+      <svg viewBox="0 0 1000 92" preserveAspectRatio="none" onPointerDown={seek} onPointerMove={seek} aria-disabled={disabled} aria-label={series ? `${series.label} over time` : "Trajectory timeline"}>
         <line className="plot-grid" x1="0" x2="1000" y1="14" y2="14" />
         <line className="plot-grid" x1="0" x2="1000" y1="46" y2="46" />
         <line className="plot-grid" x1="0" x2="1000" y1="78" y2="78" />
@@ -1909,13 +2020,16 @@ function Icon({ name }: { name: IconName }) {
       {name === "command" && <path d="M9 8.5V6a2 2 0 1 0-2 2h10a2 2 0 1 0-2-2v12a2 2 0 1 0 2-2H7a2 2 0 1 0 2 2V8.5Z" {...common} />}
       {name === "cube" && <><path d="m5 8 7-4 7 4v8l-7 4-7-4V8Z" {...common} /><path d="m5 8 7 4 7-4M12 12v8" {...common} /></>}
       {name === "folder" && <path d="M4 7.5h6l1.6 2H20v8.5H4V7.5Z" {...common} />}
+      {name === "image" && <><rect x="4" y="5" width="16" height="14" rx="2" {...common} /><circle cx="9" cy="10" r="1.5" {...common} /><path d="m6.5 17 4.2-4 2.6 2.4 2.2-2 2 1.8" {...common} /></>}
       {name === "more" && <><circle cx="6.5" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="17.5" cy="12" r="1" fill="currentColor" /></>}
       {name === "search" && <><circle cx="10.5" cy="10.5" r="5.5" {...common} /><path d="m14.6 14.6 4 4" {...common} /></>}
       {name === "sliders" && <><path d="M5 7h5m4 0h5M5 17h3m4 0h7" {...common} /><circle cx="12" cy="7" r="2" {...common} /><circle cx="10" cy="17" r="2" {...common} /></>}
       {name === "play" && <path d="m9 7 7 5-7 5V7Z" fill="currentColor" />}
       {name === "pause" && <><path d="M9 7v10M15 7v10" {...common} strokeWidth="2" /></>}
-      {name === "back" && <><path d="m14.5 8-5 4 5 4" {...common} /><path d="M7 7v10" {...common} /></>}
-      {name === "next" && <><path d="m9.5 8 5 4-5 4" {...common} /><path d="M17 7v10" {...common} /></>}
+      {name === "first" && <><path d="m15.5 8-5 4 5 4" {...common} /><path d="M8 7v10" {...common} /></>}
+      {name === "back" && <path d="m14.5 8-5 4 5 4" {...common} />}
+      {name === "next" && <path d="m9.5 8 5 4-5 4" {...common} />}
+      {name === "last" && <><path d="m8.5 8 5 4-5 4" {...common} /><path d="M16 7v10" {...common} /></>}
       {name === "close" && <path d="m8 8 8 8m0-8-8 8" {...common} />}
       {name === "retry" && <><path d="M18 9a7 7 0 1 0 .5 5" {...common} /><path d="M18 5v4h-4" {...common} /></>}
     </svg>
@@ -2118,6 +2232,10 @@ function periodicImages(pbc: [boolean, boolean, boolean], min: number, max: numb
   };
 }
 
+function replicaGridLabel(pbc: [boolean, boolean, boolean], size: number): string {
+  return pbc.map((periodic) => periodic ? size : 1).join("×");
+}
+
 function withImageAxis(
   images: ScenePresentation["images"],
   axis: number,
@@ -2176,6 +2294,14 @@ export function renderSizeValidationMessage(width: number, height: number): stri
   return null;
 }
 
+export function resolveRenderGuideSize(regionWidth: number, regionHeight: number, aspect: number): { width: number; height: number } {
+  if (![regionWidth, regionHeight, aspect].every((value) => Number.isFinite(value) && value > 0)) return { width: 0, height: 0 };
+  const maxWidth = Math.max(0, regionWidth - 48);
+  const maxHeight = Math.min(regionHeight * 0.72, 520);
+  const width = Math.min(maxWidth, maxHeight * aspect);
+  return { width: Math.round(width), height: Math.round(width / aspect) };
+}
+
 function dimensionSubject(width: boolean, height: boolean): string {
   if (width && height) return "Width and height";
   if (width) return "Width";
@@ -2205,6 +2331,11 @@ function initialPlaybackMode(): PlaybackMode {
   } catch {
     return "every-frame";
   }
+}
+
+function initialWorkbenchTab(): WorkbenchTab | null {
+  if (typeof window === "undefined") return "scene";
+  return window.matchMedia("(max-width: 960px)").matches ? null : "scene";
 }
 
 function initialVimMode(): boolean {

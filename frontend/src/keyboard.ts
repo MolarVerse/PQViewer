@@ -1,6 +1,6 @@
 export interface ViewerShortcutLabels {
   commands: string;
-  customize: string;
+  preferences: string;
   open: string;
   render: string;
 }
@@ -23,9 +23,9 @@ export interface VimNavigationResolution {
 
 export function shortcutLabelsForPlatform(platform: string): ViewerShortcutLabels {
   if (isApplePlatform(platform)) {
-    return { commands: "⌘K", customize: "⌘,", open: "⌘O", render: "⌘⇧S" };
+    return { commands: "⌘K", preferences: "⌘,", open: "⌘O", render: "⌘⇧S" };
   }
-  return { commands: "Ctrl K", customize: "Ctrl ,", open: "Ctrl O", render: "Ctrl Shift S" };
+  return { commands: "Ctrl K", preferences: "Ctrl ,", open: "Ctrl O", render: "Ctrl Shift S" };
 }
 
 export function isApplePlatform(platform: string): boolean {

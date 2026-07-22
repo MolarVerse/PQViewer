@@ -128,6 +128,15 @@ interface SceneState {
   fitContext: FitContext | null;
 }
 
+interface PublicationSnapshot {
+  model: PreparedScene;
+  manifest: Manifest;
+  presentation: ScenePresentation;
+  forces: THREE.Group | null;
+  camera: THREE.PerspectiveCamera;
+  target: THREE.Vector3;
+}
+
 interface ScenePalette {
   background: string;
   bond: string;
@@ -273,9 +282,10 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       if (exportActiveRef.current) throw new Error("A PNG export is already in progress");
       const state = stateRef.current;
       if (!state?.model) throw new Error("The molecular scene is not ready to export");
+      const snapshot = capturePublicationSnapshot(state);
       exportActiveRef.current = true;
       try {
-        return await exportScenePng(state, options);
+        return await exportScenePng(state.renderer, snapshot, options);
       } finally {
         exportActiveRef.current = false;
       }
@@ -492,8 +502,28 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" tabIndex={0} />;
 });
 
-async function exportScenePng(state: SceneState, options: PngExportOptions): Promise<Blob> {
-  const renderer = state.renderer;
+function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
+  const model = state.model;
+  const manifest = state.topologyManifest;
+  const presentation = state.fitContext?.presentation;
+  if (!model || !manifest || !presentation) throw new Error("The molecular scene is not ready to export");
+  return {
+    model,
+    manifest,
+    presentation: {
+      ...presentation,
+      images: {
+        min: [...presentation.images.min] as CellOffset,
+        max: [...presentation.images.max] as CellOffset,
+      },
+    },
+    forces: state.forces?.clone(true) ?? null,
+    camera: state.camera.clone(),
+    target: state.controls.target.clone(),
+  };
+}
+
+async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: PublicationSnapshot, options: PngExportOptions): Promise<Blob> {
   const gl = renderer.getContext();
   if (gl.isContextLost()) throw new Error("PNG export is unavailable because the WebGL context was lost");
   const [
@@ -512,11 +542,11 @@ async function exportScenePng(state: SceneState, options: PngExportOptions): Pro
     import("three/examples/jsm/lines/LineSegmentsGeometry.js"),
   ]);
   const resolved = resolvePngExportOptions(options, rendererPngLimits(renderer, gl));
-  const publication = buildPublicationScene(state, resolved, { LineMaterial, LineSegments2, LineSegmentsGeometry });
+  const publication = buildPublicationScene(snapshot, resolved, { LineMaterial, LineSegments2, LineSegmentsGeometry });
   const camera = publicationCamera(
     publication.root,
-    state.camera,
-    state.controls.target,
+    snapshot.camera,
+    snapshot.target,
     resolved.width,
     resolved.height,
     resolved.projection,
@@ -717,14 +747,11 @@ const publicationContextPalette: ScenePalette = {
 };
 
 function buildPublicationScene(
-  state: SceneState,
+  snapshot: PublicationSnapshot,
   options: ResolvedPngExportOptions,
   lineConstructors: PublicationLineConstructors,
 ): PublicationScene {
-  const model = state.model;
-  const manifest = state.topologyManifest;
-  const presentation = state.fitContext?.presentation;
-  if (!model || !manifest || !presentation) throw new Error("The molecular scene is not ready to export");
+  const { model, manifest, presentation } = snapshot;
   const scene = new THREE.Scene();
   scene.background = null;
   const root = new THREE.Group();
@@ -797,7 +824,7 @@ function buildPublicationScene(
       root.add(cell);
     }
   }
-  if (state.forces) root.add(clonePublicationForces(state.forces, resources));
+  if (snapshot.forces) root.add(clonePublicationForces(snapshot.forces, resources));
 
   let hasAoGeometry = false;
   root.traverse((object) => {

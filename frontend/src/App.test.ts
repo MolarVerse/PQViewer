@@ -3,6 +3,7 @@ import {
   autoProfile,
   parseWorkspacePresentationDefaults,
   profilePresentation,
+  resolveRenderGuideSize,
   renderSizeValidationMessage,
   selectedProfilePresentation,
 } from "./App";
@@ -139,5 +140,24 @@ describe("render size validation", () => {
     expect(renderSizeValidationMessage(6000, 512)).toBeNull();
     expect(renderSizeValidationMessage(6000, 4000)).toBeNull();
     expect(renderSizeValidationMessage(6000, 4001)).toBe("Maximum output is 24 megapixels.");
+  });
+});
+
+describe("render guide sizing", () => {
+  it("preserves the requested aspect inside narrow viewports", () => {
+    const guide = resolveRenderGuideSize(320, 622, 4 / 3);
+    expect(guide.width).toBeLessThanOrEqual(272);
+    expect(guide.height).toBeLessThanOrEqual(622 * 0.72);
+    expect(guide.width / guide.height).toBeCloseTo(4 / 3, 2);
+  });
+
+  it("caps large guides without changing their aspect", () => {
+    const guide = resolveRenderGuideSize(1440, 900, 16 / 9);
+    expect(guide).toEqual({ width: 924, height: 520 });
+    expect(guide.width / guide.height).toBeCloseTo(16 / 9, 2);
+  });
+
+  it("rejects invalid geometry", () => {
+    expect(resolveRenderGuideSize(0, 900, 4 / 3)).toEqual({ width: 0, height: 0 });
   });
 });

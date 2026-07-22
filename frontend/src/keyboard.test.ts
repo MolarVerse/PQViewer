@@ -13,7 +13,7 @@ describe("platform shortcuts", () => {
     expect(isApplePlatform("iPad")).toBe(true);
     expect(shortcutLabelsForPlatform("macOS")).toEqual({
       commands: "⌘K",
-      customize: "⌘,",
+      preferences: "⌘,",
       open: "⌘O",
       render: "⌘⇧S",
     });
@@ -23,7 +23,7 @@ describe("platform shortcuts", () => {
     for (const platform of ["Linux x86_64", "Win32", ""]) {
       expect(shortcutLabelsForPlatform(platform)).toEqual({
         commands: "Ctrl K",
-        customize: "Ctrl ,",
+        preferences: "Ctrl ,",
         open: "Ctrl O",
         render: "Ctrl Shift S",
       });
