@@ -999,7 +999,7 @@ output {
 
 .timeline {
   position: absolute;
-  z-index: 10;
+  z-index: 18;
   left: 50%;
   bottom: 12px;
   width: min(960px, calc(100% - 28px));
@@ -2494,6 +2494,10 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .selection-bar > button:not(.icon-button):hover {
+  background: var(--accent-soft);
+}
+
+.selection-bar .measurement-mode[aria-pressed="true"] {
   background: var(--accent-soft);
 }
 
@@ -4511,42 +4515,6 @@ input[type="range"]::-moz-range-thumb {
   z-index: 70;
 }
 
-.workspace.timeline-data {
-  --timeline-height: 112px;
-}
-
-.timeline.has-series {
-  display: grid;
-  grid-template-rows: 51px minmax(0, 1fr);
-  padding: 0;
-}
-
-.timeline.has-series .transport-row {
-  height: 51px;
-  min-height: 51px;
-  padding-inline: 12px;
-}
-
-.timeline .trajectory-property-strip {
-  grid-template-columns: minmax(96px, 122px) minmax(120px, 1fr);
-  gap: 10px;
-  min-height: 0;
-  padding: 4px 12px 7px;
-}
-
-.timeline .trajectory-property-strip__plot {
-  height: 46px;
-}
-
-.timeline .trajectory-property-strip__frame {
-  display: none;
-}
-
-.timeline.is-busy .trajectory-property-strip {
-  opacity: 0.62;
-  pointer-events: none;
-}
-
 @media (max-width: 760px) {
   .command-button {
     display: inline-flex;
@@ -4565,24 +4533,4 @@ input[type="range"]::-moz-range-thumb {
     height: 18px;
   }
 
-  .workspace.timeline-data {
-    --timeline-height: 112px;
-  }
-
-  .timeline .trajectory-property-strip {
-    grid-template-columns: minmax(86px, 106px) minmax(110px, 1fr);
-    gap: 8px;
-    padding-inline: 8px;
-  }
-
-  .timeline .trajectory-property-strip__metric {
-    grid-column: auto;
-    grid-row: auto;
-  }
-
-  .timeline .trajectory-property-strip__plot {
-    height: 42px;
-    grid-column: auto;
-    grid-row: auto;
-  }
 }

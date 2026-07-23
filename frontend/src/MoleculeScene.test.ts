@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { centeredFramePositions, clearOrbitMotion, periodicBondSegments, sceneCapabilities } from "./MoleculeScene";
+import {
+  atomSelectionForInstance,
+  centeredFramePositions,
+  clearOrbitMotion,
+  periodicBondSegments,
+  sceneCapabilities,
+} from "./MoleculeScene";
 import {
   activeVectorInstances,
   backboneResidues,
@@ -113,6 +119,17 @@ function manifest(
 }
 
 describe("periodic geometry", () => {
+  it("keeps the picked periodic image with the base atom", () => {
+    const selection = atomSelectionForInstance(
+      new Uint32Array([4, 4]),
+      new Int8Array([0, 0, 0, 1, -1, 0]),
+      1,
+    );
+
+    expect(selection).toEqual({ atom: 4, image: [1, -1, 0] });
+    expect(atomSelectionForInstance(new Uint32Array([4]), new Int8Array([0, 0]), 0)).toBeNull();
+  });
+
   it("wraps triclinic fractional coordinates into [-0.5, 0.5)", () => {
     const sourceFractions: Array<[number, number, number]> = [
       [0.6, -0.6, 1.51],

@@ -1,6 +1,9 @@
 import type { DisplaySeries, FrameData, FrameHeader, Manifest, SeriesSpec } from "./types";
 
 const utf8 = new TextDecoder();
+const DEFAULT_FRAME_CACHE_LIMIT = 96;
+const DEFAULT_FRAME_CACHE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_PENDING_PREFETCH_LIMIT = 4;
 
 export async function getManifest(): Promise<Manifest> {
   const response = await fetch("/api/manifest", { headers: { Accept: "application/json" } });
@@ -71,54 +74,140 @@ export function decodeFrame(buffer: ArrayBuffer): FrameData {
   return { header, arrays };
 }
 
+interface FrameCacheEntry {
+  promise: Promise<FrameData>;
+  controller: AbortController | null;
+  byteLength: number;
+  prefetch: boolean;
+}
+
+export interface FrameCacheOptions {
+  maxFrames?: number;
+  maxBytes?: number;
+}
+
 export class FrameCache {
-  private readonly values = new Map<number, { promise: Promise<FrameData>; controller: AbortController | null }>();
-  private readonly limit = 96;
+  private readonly values = new Map<number, FrameCacheEntry>();
+  private readonly maxFrames: number;
+  private readonly maxBytes: number;
+  private resolvedBytes = 0;
+  private frameByteEstimate = 0;
+
+  constructor(options: FrameCacheOptions = {}) {
+    this.maxFrames = positiveInteger(options.maxFrames, DEFAULT_FRAME_CACHE_LIMIT);
+    this.maxBytes = positiveInteger(options.maxBytes, DEFAULT_FRAME_CACHE_BYTES);
+  }
 
   get(index: number): Promise<FrameData> {
     const cached = this.values.get(index);
     if (cached) {
+      cached.prefetch = false;
       this.values.delete(index);
       this.values.set(index, cached);
       return cached.promise;
     }
-    const controller = new AbortController();
-    let entry!: { promise: Promise<FrameData>; controller: AbortController | null };
-    const promise = getFrame(index, controller.signal)
-      .then((frame) => {
-        entry.controller = null;
-        return frame;
-      })
-      .catch((error) => {
-        if (this.values.get(index) === entry) this.values.delete(index);
-        throw error;
-      });
-    entry = { promise, controller };
-    this.values.set(index, entry);
-    while (this.values.size > this.limit) {
-      const oldest = this.values.keys().next().value as number | undefined;
-      if (oldest === undefined) break;
-      this.values.delete(oldest);
-    }
-    return entry.promise;
+    return this.load(index, false);
   }
 
   prefetch(index: number, frameCount: number): void {
-    if (index >= 0 && index < frameCount && !this.values.has(index)) void this.get(index).catch(() => {});
+    if (
+      index < 0
+      || index >= frameCount
+      || this.values.has(index)
+      || !this.canPrefetch()
+    ) {
+      return;
+    }
+    void this.load(index, true).catch(() => {});
   }
 
   cancelPendingExcept(index: number): void {
     for (const [key, entry] of this.values) {
       if (key === index || !entry.controller) continue;
-      entry.controller.abort();
-      this.values.delete(key);
+      this.remove(key, entry, true);
     }
   }
 
   clear(): void {
     for (const entry of this.values.values()) entry.controller?.abort();
     this.values.clear();
+    this.resolvedBytes = 0;
+    this.frameByteEstimate = 0;
   }
+
+  private load(index: number, prefetch: boolean): Promise<FrameData> {
+    const controller = new AbortController();
+    let entry!: FrameCacheEntry;
+    const promise = getFrame(index, controller.signal)
+      .then((frame) => {
+        entry.controller = null;
+        entry.byteLength = decodedFrameByteLength(frame);
+        this.frameByteEstimate = Math.max(this.frameByteEstimate, entry.byteLength);
+        if (this.values.get(index) === entry) {
+          this.resolvedBytes += entry.byteLength;
+          this.trim();
+        }
+        return frame;
+      })
+      .catch((error) => {
+        if (this.values.get(index) === entry) this.remove(index, entry, false);
+        throw error;
+      });
+    entry = { promise, controller, byteLength: 0, prefetch };
+    this.values.set(index, entry);
+    this.trim();
+    return promise;
+  }
+
+  private canPrefetch(): boolean {
+    const pendingPrefetches = [...this.values.values()].filter(
+      (entry) => entry.prefetch && entry.controller !== null,
+    ).length;
+    if (this.frameByteEstimate === 0) {
+      return pendingPrefetches < DEFAULT_PENDING_PREFETCH_LIMIT;
+    }
+
+    const residentCapacity = Math.floor(this.maxBytes / this.frameByteEstimate);
+    const prefetchLimit = Math.min(
+      DEFAULT_PENDING_PREFETCH_LIMIT,
+      Math.max(0, residentCapacity - 1),
+    );
+    return pendingPrefetches < prefetchLimit;
+  }
+
+  private trim(): void {
+    while (this.values.size > this.maxFrames || this.resolvedBytes > this.maxBytes) {
+      const oldest = this.values.keys().next().value as number | undefined;
+      if (oldest === undefined) break;
+      const entry = this.values.get(oldest);
+      if (entry) this.remove(oldest, entry, true);
+    }
+  }
+
+  private remove(index: number, entry: FrameCacheEntry, abort: boolean): void {
+    if (this.values.get(index) !== entry) return;
+    this.values.delete(index);
+    this.resolvedBytes = Math.max(0, this.resolvedBytes - entry.byteLength);
+    if (abort) entry.controller?.abort();
+  }
+}
+
+function decodedFrameByteLength(frame: FrameData): number {
+  const buffers = new Set<ArrayBufferLike>();
+  let total = 0;
+  for (const values of frame.arrays.values()) {
+    const buffer = values.buffer;
+    if (buffers.has(buffer)) continue;
+    buffers.add(buffer);
+    total += buffer.byteLength;
+    if (!Number.isSafeInteger(total)) return Number.MAX_SAFE_INTEGER;
+  }
+  return total;
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  if (!Number.isFinite(value) || value === undefined || value <= 0) return fallback;
+  return Math.max(1, Math.floor(value));
 }
 
 export function frameArray(frame: FrameData | null, names: string[]): Float32Array | null {

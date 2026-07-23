@@ -82,6 +82,11 @@ export type Appearance = "light" | "dark";
 
 export type CellOffset = [number, number, number];
 
+export interface AtomSelection {
+  atom: number;
+  image: CellOffset;
+}
+
 export type RepresentationMode = "ball-stick" | "spacefill" | "licorice" | "lines" | "ribbon";
 
 export interface ScenePresentation {

@@ -45,6 +45,7 @@ import type {
 } from "./scene/model";
 import type {
   Appearance,
+  AtomSelection,
   CellOffset,
   FrameData,
   Manifest,
@@ -69,15 +70,16 @@ interface MoleculeSceneProps {
   manifest: Manifest;
   frame: FrameData | null;
   presentation: ScenePresentation;
-  selectedAtoms: number[];
+  selectedAtoms: AtomSelection[];
   resetSignal: number;
   forceScale: number;
   velocityScale: number;
   appearance: Appearance;
   viewPreset?: ViewPreset;
   viewSignal?: number;
-  onSelect: (index: number | null, additive: boolean) => void;
+  onSelect: (selection: AtomSelection | null, additive: boolean) => void;
   onSceneInfo?: (info: RenderedSceneInfo | null) => void;
+  onSelectionPositions?: (positions: Float64Array | null) => void;
 }
 
 export type ViewPreset = "perspective" | "xy" | "xz" | "yz";
@@ -121,6 +123,7 @@ interface SceneState {
   selectionMaterial: THREE.MeshBasicMaterial;
   pickables: THREE.Object3D[];
   instanceToAtom: Uint32Array;
+  instanceImages: Int8Array;
   model: PreparedScene | null;
   topologyManifest: Manifest | null;
   preparedTopology: PreparedTopology | null;
@@ -282,15 +285,18 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   viewSignal = 0,
   onSelect,
   onSceneInfo,
+  onSelectionPositions,
 }: MoleculeSceneProps, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<SceneState | null>(null);
   const selectRef = useRef(onSelect);
   const sceneInfoRef = useRef(onSceneInfo);
+  const selectionPositionsRef = useRef(onSelectionPositions);
   const reportedInfoRef = useRef<{ manifest: Manifest; info: RenderedSceneInfo } | null>(null);
   const exportActiveRef = useRef(false);
   selectRef.current = onSelect;
   sceneInfoRef.current = onSceneInfo;
+  selectionPositionsRef.current = onSelectionPositions;
 
   useImperativeHandle(ref, () => ({
     exportPng: async (options) => {
@@ -368,6 +374,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       selectionMaterial,
       pickables: [],
       instanceToAtom: new Uint32Array(),
+      instanceImages: new Int8Array(),
       model: null,
       topologyManifest: null,
       preparedTopology: null,
@@ -438,6 +445,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       selectionMaterial.dispose();
       renderer.dispose();
       stateRef.current = null;
+      selectionPositionsRef.current?.(null);
     };
   }, []);
 
@@ -511,6 +519,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     }
     state.model = model;
     state.instanceToAtom = model.instanceToAtom;
+    state.instanceImages = model.instanceImages;
     state.renderTopology = state.preparedTopology;
     state.renderConfigKey = configKey;
     state.frameLayout = frameLayout;
@@ -541,8 +550,11 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
 
   useEffect(() => {
     const state = stateRef.current;
-    if (!state) return;
-    updateSelection(state, selectedAtoms);
+    const positions = state ? updateSelection(state, selectedAtoms) : null;
+    selectionPositionsRef.current?.(positions);
+    if (selectedAtoms.length > 0 && positions === null) {
+      selectRef.current(null, false);
+    }
   }, [frame, presentation, selectedAtoms]);
 
   return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" tabIndex={0} />;
@@ -1742,18 +1754,32 @@ function buildRibbon(
   );
 }
 
-function updateSelection(state: SceneState, selectedAtoms: number[]): void {
+function updateSelection(state: SceneState, selectedAtoms: AtomSelection[]): Float64Array | null {
   const model = state.model;
   if (!model) {
     state.selection.clear();
-    return;
+    return null;
   }
 
   let visible = 0;
-  const selected = new Set(selectedAtoms.filter((atom) => atom >= 0 && atom < model.count));
+  const selected = new Map<string, number>();
+  selectedAtoms.forEach(({ atom, image }, index) => {
+    if (atom >= 0 && atom < model.count && validCellOffset(image)) {
+      selected.set(selectionKey(atom, image), index);
+    }
+  });
+  const positions = new Float64Array(selectedAtoms.length * 3);
+  const found = new Uint8Array(selectedAtoms.length);
   for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
     const selectedAtom = state.instanceToAtom[instance];
-    if (!selected.has(selectedAtom)) continue;
+    const imageOffset = instance * 3;
+    const image: CellOffset = [
+      state.instanceImages[imageOffset],
+      state.instanceImages[imageOffset + 1],
+      state.instanceImages[imageOffset + 2],
+    ];
+    const selectedIndex = selected.get(selectionKey(selectedAtom, image));
+    if (selectedIndex === undefined) continue;
     let marker = state.selection.children[visible] as THREE.Mesh | undefined;
     if (!marker) {
       marker = new THREE.Mesh(state.selectionGeometry, state.selectionMaterial);
@@ -1761,6 +1787,8 @@ function updateSelection(state: SceneState, selectedAtoms: number[]): void {
       state.selection.add(marker);
     }
     setInstancePosition(marker.position, model, instance);
+    marker.position.toArray(positions, selectedIndex * 3);
+    found[selectedIndex] = 1;
     marker.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
     marker.visible = true;
     visible += 1;
@@ -1768,18 +1796,49 @@ function updateSelection(state: SceneState, selectedAtoms: number[]): void {
   while (state.selection.children.length > visible) {
     state.selection.remove(state.selection.children[state.selection.children.length - 1]);
   }
+  return selectedAtoms.length > 0 && found.every((value) => value === 1)
+    ? positions
+    : null;
 }
 
-function pickedAtom(hit: THREE.Intersection, state: SceneState): number | null {
+function pickedAtom(hit: THREE.Intersection, state: SceneState): AtomSelection | null {
   if (hit.object === state.atomObject) {
     const instance = hit.instanceId ?? hit.index;
-    return instance === undefined ? null : (state.instanceToAtom[instance] ?? null);
+    return instance === undefined
+      ? null
+      : atomSelectionForInstance(state.instanceToAtom, state.instanceImages, instance);
   }
   if (hit.object === state.ribbon && hit.face) {
     const attribute = state.ribbon.geometry.getAttribute("atomIndex");
-    return Math.round(attribute.getX(hit.face.a));
+    return { atom: Math.round(attribute.getX(hit.face.a)), image: [0, 0, 0] };
   }
   return null;
+}
+
+export function atomSelectionForInstance(
+  instanceToAtom: Uint32Array,
+  instanceImages: Int8Array,
+  instance: number,
+): AtomSelection | null {
+  if (!Number.isInteger(instance) || instance < 0 || instance >= instanceToAtom.length) return null;
+  const imageOffset = instance * 3;
+  if (imageOffset + 2 >= instanceImages.length) return null;
+  return {
+    atom: instanceToAtom[instance],
+    image: [
+      instanceImages[imageOffset],
+      instanceImages[imageOffset + 1],
+      instanceImages[imageOffset + 2],
+    ],
+  };
+}
+
+function validCellOffset(image: CellOffset): boolean {
+  return image.length === 3 && image.every(Number.isInteger);
+}
+
+function selectionKey(atom: number, image: CellOffset): string {
+  return `${atom}:${image[0]}:${image[1]}:${image[2]}`;
 }
 
 function setInstancePosition(

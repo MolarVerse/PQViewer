@@ -25,6 +25,8 @@ pqviewer path/to/md.xyz
 ```
 
 Try the included trajectory with `pqviewer examples/water.xyz`.
+Use `pqviewer examples/periodic-boundary.extxyz` to inspect centered wrapping,
+forces, step/time metadata, and minimum-image measurements.
 Run `pqviewer` without a path to open an empty workspace.
 
 Same-stem PQ companions are detected automatically; override them explicitly:
@@ -51,8 +53,9 @@ neighboring images. Ribbon appears when residue and backbone topology are
 present. Periodic coordinates follow PQ's centered `−½…+½` convention.
 
 Click an atom for a compact readout. Shift-click additional atoms to measure a
-distance, angle, or ordered dihedral; `Details` shows the selected atom's
-position and available per-atom values.
+distance, angle, or ordered dihedral. Periodic measurements use the exact
+minimum image by default; switch to displayed images when inspecting replicas.
+`Details` shows the selected atom's position and available per-atom values.
 
 The trajectory bar appears only for multi-frame data. It provides first,
 previous, play/pause, next, last, scrubbing, and the current frame number.

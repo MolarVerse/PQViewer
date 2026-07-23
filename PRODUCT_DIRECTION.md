@@ -67,11 +67,11 @@ The existing implementation is a good technical base. It already has:
 - atom and whole-molecule wrapping
 - ball-and-stick, space-filling, lines, and protein ribbon views
 - water filtering, force and velocity vectors, and atom inspection
-- ordered multi-selection with distance, angle, and dihedral readouts
+- ordered multi-selection with exact periodic distance, angle, and dihedral readouts
 - a compact trajectory bar with speed, stride, once, loop, and rock playback
 - command search, platform-aware shortcuts, and optional Vim navigation
 - high-resolution PNG output
-- 101 passing frontend tests, 42 passing backend tests, and a clean production build
+- 115 passing frontend tests, 43 passing backend tests, and a clean production build
 
 The next gaps are deeper scientific workflows rather than rendering basics:
 
