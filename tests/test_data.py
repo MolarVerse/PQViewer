@@ -10,7 +10,7 @@ import pytest
 from PQAnalysis.core import Atom, Residue
 from PQAnalysis.topology import Bond, BondedTopology, Topology
 
-from pqviewer.data import PQTrajectoryDataset
+from pqviewer.data import FrameData, PQTrajectoryDataset
 from pqviewer.packet import encode_frame
 
 
@@ -290,6 +290,30 @@ def test_packet_layout(tmp_path: Path) -> None:
         positions["shape"]
     )
     np.testing.assert_allclose(decoded, [[0, 0, 0], [1, 0, 0]])
+
+
+def test_packet_promotes_step_and_time_without_removing_scalars() -> None:
+    frame = FrameData(
+        index=7,
+        positions=np.zeros((1, 3)),
+        cell=np.zeros((3, 3)),
+        pbc=(False, False, False),
+        scalars={"step": 40, "time": 1.25, "energy": -2.5},
+        units={"time": "fs", "energy": "eV"},
+    )
+
+    packet = encode_frame(frame)
+    header_length = struct.unpack_from("<I", packet)[0]
+    header = json.loads(packet[4:4 + header_length])
+
+    assert header["step"] == 40
+    assert header["time"] == 1.25
+    assert header["scalars"] == {"step": 40, "time": 1.25, "energy": -2.5}
+    assert header["scalar_units"] == {
+        "step": None,
+        "time": "fs",
+        "energy": "eV",
+    }
 
 
 def test_refresh_waits_for_complete_frame(tmp_path: Path) -> None:

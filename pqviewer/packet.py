@@ -42,19 +42,24 @@ def encode_frame(frame: FrameData) -> bytes:
         payload_parts.append(chunk)
         offset += len(chunk)
 
+    scalar_values = {
+        key: _json_scalar(value) for key, value in frame.scalars.items()
+    }
     header = {
         "schema_version": SCHEMA_VERSION,
         "index": frame.index,
         "pbc": list(frame.pbc),
-        "scalars": {
-            key: _json_scalar(value) for key, value in frame.scalars.items()
-        },
+        "scalars": scalar_values,
         "scalar_units": {
             key: frame.units.get(key) for key in frame.scalars
         },
         "arrays": array_metadata,
         "payload_byte_length": offset,
     }
+    for key in ("step", "time"):
+        value = scalar_values.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            header[key] = value
     header_bytes = json.dumps(
         header,
         separators=(",", ":"),

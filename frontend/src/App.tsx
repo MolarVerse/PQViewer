@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { frameArray, FrameCache, getManifest, openFiles } from "./api";
 import { searchCommandActions } from "./commandSearch";
-import { centeredFramePositions, framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
+import { framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
 import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
 import {
   advanceFrameIndex,
@@ -10,7 +10,10 @@ import {
   shortcutLabelsForPlatform,
 } from "./keyboard";
 import type { ViewerShortcutLabels, VimNavigationAction, VimPrefix } from "./keyboard";
-import { measureAtomSelection, updateAtomSelection } from "./selection";
+import {
+  measureAtomSelection,
+  updateSceneSelection,
+} from "./selection";
 import {
   advancePlaybackFrame,
   DEFAULT_PLAYBACK_FPS,
@@ -18,6 +21,7 @@ import {
 } from "./trajectory";
 import type { PlaybackDirection, PlaybackMode } from "./trajectory";
 import type {
+  AtomSelection,
   CellOffset,
   FrameData,
   Manifest,
@@ -62,7 +66,8 @@ export default function App() {
   const [playbackDirection, setPlaybackDirection] = useState<PlaybackDirection>(1);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
   const [profile, setProfile] = useState<SceneProfile>("auto");
-  const [selectedAtoms, setSelectedAtoms] = useState<number[]>([]);
+  const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
+  const [selectionPositions, setSelectionPositions] = useState<Float64Array | null>(null);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -96,6 +101,7 @@ export default function App() {
     setFrameIndex(0);
     setLoadedFrame(null);
     setSelectedAtoms([]);
+    setSelectionPositions(null);
     setPlaying(false);
     setPlaybackDirection(1);
     setSceneInfo(null);
@@ -204,13 +210,19 @@ export default function App() {
     });
   }, [workbenchTab]);
 
-  const selectAtom = useCallback((index: number | null, additive = false) => {
-    if (index === null) {
+  const selectAtom = useCallback((selection: AtomSelection | null, additive = false) => {
+    if (selection === null) {
       setSelectedAtoms([]);
+      setSelectionPositions(null);
       setWorkbenchTab((current) => current === "inspect" ? null : current);
       return;
     }
-    setSelectedAtoms((current) => updateAtomSelection(current, index, additive ? "toggle" : "replace"));
+    setSelectionPositions(null);
+    setSelectedAtoms((current) => updateSceneSelection(
+      current,
+      selection,
+      additive ? "toggle" : "replace",
+    ));
   }, []);
 
   useEffect(() => {
@@ -268,17 +280,39 @@ export default function App() {
 
   const frame = loadedFrame?.data ?? null;
   const displayedFrameIndex = loadedFrame?.index ?? frameIndex;
-  const selectedAtom = selectedAtoms.at(-1) ?? null;
+  const selectedAtom = selectedAtoms.at(-1)?.atom ?? null;
   const cellAvailable = hasFrameCell(frame);
   const forces = frameArray(frame, ["forces", "force"]);
   const forceAvailable = Boolean(forces && forces.length >= (manifest?.topology.atom_count ?? 0) * 3);
   const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
   const velocityAvailable = Boolean(velocities && velocities.length >= (manifest?.topology.atom_count ?? 0) * 3);
-  const pbc = framePbc(frame);
+  const pbc = measurementPbc(frame);
   const capabilities = sceneInfo?.capabilities ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
   const canRender = Boolean(frame && capabilities && !frameLoading);
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
+
+  useEffect(() => {
+    setSelectedAtoms((current) => {
+      const visible = current.filter((selection) => selectionVisibleInImages(
+        selection,
+        presentation.images.min,
+        presentation.images.max,
+        pbc,
+      ));
+      return visible.length === current.length ? current : visible;
+    });
+  }, [
+    pbc[0],
+    pbc[1],
+    pbc[2],
+    presentation.images.max[0],
+    presentation.images.max[1],
+    presentation.images.max[2],
+    presentation.images.min[0],
+    presentation.images.min[1],
+    presentation.images.min[2],
+  ]);
   const showRender = useCallback(() => {
     if (!canRender || rendering) return;
     setCommandOpen(false);
@@ -708,6 +742,7 @@ export default function App() {
             appearance="light"
             onSelect={selectAtom}
             onSceneInfo={setSceneInfo}
+            onSelectionPositions={setSelectionPositions}
           />
         ) : (
           <div className="canvas-field" />
@@ -788,6 +823,7 @@ export default function App() {
               manifest={manifest}
               frame={frame}
               selectedAtom={selectedAtom}
+              selectedPosition={selectedPosition(selectionPositions, selectedAtoms.length - 1)}
               cellAvailable={cellAvailable}
             />}
           </div>
@@ -798,7 +834,11 @@ export default function App() {
             manifest={manifest}
             frame={frame}
             selectedAtoms={selectedAtoms}
-            onClear={() => setSelectedAtoms([])}
+            displayedPositions={selectionPositions}
+            onClear={() => {
+              setSelectedAtoms([]);
+              setSelectionPositions(null);
+            }}
             onDetails={() => openWorkbench("inspect", true)}
           />
         )}
@@ -1261,28 +1301,54 @@ function SelectionBar({
   manifest,
   frame,
   selectedAtoms,
+  displayedPositions,
   onClear,
   onDetails,
 }: {
   manifest: Manifest;
   frame: FrameData | null;
-  selectedAtoms: number[];
+  selectedAtoms: AtomSelection[];
+  displayedPositions: Float64Array | null;
   onClear: () => void;
   onDetails: () => void;
 }) {
-  const validAtoms = selectedAtoms.filter((atom) => atom >= 0 && atom < manifest.topology.atom_count);
-  const positions = centeredFramePositions(frame, manifest.topology.atom_count);
-  const measurement = positions ? measureAtomSelection(positions, validAtoms) : null;
-  const atomLabels = validAtoms.map((atom) => `${atomSymbol(manifest, atom)}${atom + 1}`);
+  const [minimumImage, setMinimumImage] = useState(true);
+  const validSelections = selectedAtoms.filter(
+    ({ atom }) => atom >= 0 && atom < manifest.topology.atom_count,
+  );
+  const validAtoms = validSelections.map(({ atom }) => atom);
+  const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+  const pbc = measurementPbc(frame);
+  const periodicMeasurement = Boolean(
+    cell
+    && pbc.some(Boolean)
+    && validSelections.length >= 2
+    && validSelections.length <= 4,
+  );
+  const supportsDisplayedImages = periodicMeasurement;
+  const measurementPositions = displayedPositions
+    && displayedPositions.length === validSelections.length * 3
+    && validSelections.length === selectedAtoms.length
+    ? displayedPositions
+    : null;
+  const measurement = measurementPositions
+    ? measureAtomSelection(
+        measurementPositions,
+        validSelections.map((_, index) => index),
+        periodicMeasurement && (!supportsDisplayedImages || minimumImage) && cell
+          ? { mode: "minimum-image", cell, pbc }
+          : { mode: "direct" },
+      )
+    : null;
+  const atomLabels = validSelections.map((selection) => atomSelectionLabel(manifest, selection));
   let title = validAtoms.length === 1 ? atomLabels[0] : `${validAtoms.length} atoms`;
   let value = "";
 
   if (measurement?.ok) {
     title = `${measurement.kind[0].toUpperCase()}${measurement.kind.slice(1)} · ${atomLabels.join("–")}`;
     value = `${formatNumber(measurement.value)} ${measurement.unit === "angstrom" ? "Å" : "°"}`;
-  } else if (validAtoms.length === 1 && positions) {
-    const offset = validAtoms[0] * 3;
-    value = [positions[offset], positions[offset + 1], positions[offset + 2]]
+  } else if (validAtoms.length === 1 && measurementPositions) {
+    value = [measurementPositions[0], measurementPositions[1], measurementPositions[2]]
       .map((coordinate) => formatNumber(coordinate))
       .join("  ");
   } else if (validAtoms.length > 1) {
@@ -1295,7 +1361,19 @@ function SelectionBar({
       <strong>{title}</strong>
       {value && <output>{value}</output>}
     </div>
-    <span className="selection-hint">Shift-click to measure</span>
+    {supportsDisplayedImages ? (
+      <button
+        className="measurement-mode"
+        type="button"
+        aria-pressed={minimumImage}
+        title="Choose minimum-image or displayed-image geometry"
+        onClick={() => setMinimumImage((current) => !current)}
+      >
+        {minimumImage ? "Minimum image" : "Displayed images"}
+      </button>
+    ) : (
+      <span className="selection-hint">Shift-click to measure</span>
+    )}
     <button type="button" onClick={onDetails}>Details</button>
     <button className="icon-button" type="button" onClick={onClear} aria-label="Clear selection"><Icon name="close" /></button>
   </section>;
@@ -1305,14 +1383,15 @@ function Inspector({
   manifest,
   frame,
   selectedAtom,
+  selectedPosition,
   cellAvailable,
 }: {
   manifest: Manifest;
   frame: FrameData | null;
   selectedAtom: number | null;
+  selectedPosition: Float64Array | null;
   cellAvailable: boolean;
 }) {
-  const positions = centeredFramePositions(frame, manifest.topology.atom_count);
   const forces = frameArray(frame, ["forces", "force"]);
   const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
   const charges = frameArray(frame, ["charges", "charge"]);
@@ -1329,7 +1408,14 @@ function Inspector({
       {manifest.topology.atom_names?.[atom] && <Readout label="Name" value={manifest.topology.atom_names[atom]} />}
       {residue && <Readout label="Residue" value={`${residue.name ?? `Type ${residue.type_id ?? "—"}`} · ${residue.index + 1}`} />}
       {!residue && manifest.topology.residue_ids?.[atom] !== undefined && <Readout label="Residue type" value={String(manifest.topology.residue_ids[atom])} />}
-      {positions && <VectorReadout label={cellAvailable ? "Cell position" : "Position"} values={positions} offset={atom * 3} unit="Å" />}
+      {selectedPosition && (
+        <VectorReadout
+          label={cellAvailable ? "Displayed cell position" : "Displayed position"}
+          values={selectedPosition}
+          offset={0}
+          unit="Å"
+        />
+      )}
       {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} unit={forceUnit} />}
       {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3} unit={velocityUnit} />}
       {charges && charges[atom] !== undefined && <Readout label="Charge" value={withUnit(formatNumber(charges[atom]), chargeUnit)} />}
@@ -1448,10 +1534,46 @@ function Timeline({
   );
 }
 
-function frameMetadata(frame: FrameData | null): string {
-  const step = typeof frame?.header.step === "number" ? `step ${formatNumber(frame.header.step)}` : "";
-  const time = typeof frame?.header.time === "number" ? `t ${formatNumber(frame.header.time)}` : "";
+export function frameMetadata(frame: FrameData | null): string {
+  const stepValue = numericFrameMetadata(frame, "step");
+  const timeValue = numericFrameMetadata(frame, "time");
+  const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
+  const time = timeValue === null ? "" : `t ${formatNumber(timeValue)}`;
   return [step, time].filter(Boolean).join(" · ");
+}
+
+export function measurementPbc(frame: FrameData | null): [boolean, boolean, boolean] {
+  const values = frame?.header.pbc;
+  if (Array.isArray(values) && values.length === 3) {
+    return [Boolean(values[0]), Boolean(values[1]), Boolean(values[2])];
+  }
+  return framePbc(frame);
+}
+
+export function selectionVisibleInImages(
+  selection: AtomSelection,
+  minimum: CellOffset,
+  maximum: CellOffset,
+  pbc: readonly [boolean, boolean, boolean],
+): boolean {
+  return selection.image.every((value, axis) => {
+    if (!pbc[axis]) return value === 0;
+    const low = Math.min(minimum[axis], maximum[axis]);
+    const high = Math.max(minimum[axis], maximum[axis]);
+    return value >= low && value <= high;
+  });
+}
+
+function selectedPosition(positions: Float64Array | null, index: number): Float64Array | null {
+  if (!positions || index < 0 || positions.length < (index + 1) * 3) return null;
+  return positions.slice(index * 3, index * 3 + 3);
+}
+
+function numericFrameMetadata(frame: FrameData | null, key: "step" | "time"): number | null {
+  const primary = frame?.header[key];
+  if (typeof primary === "number" && Number.isFinite(primary)) return primary;
+  const scalar = frame?.header.scalars?.[key];
+  return typeof scalar === "number" && Number.isFinite(scalar) ? scalar : null;
 }
 
 
@@ -1459,7 +1581,7 @@ function Readout({ label, value }: { label: string; value: string }) {
   return <div className="readout"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function VectorReadout({ label, values, offset, unit }: { label: string; values: Float32Array; offset: number; unit?: string }) {
+function VectorReadout({ label, values, offset, unit }: { label: string; values: ArrayLike<number>; offset: number; unit?: string }) {
   return (
     <div className="vector-readout">
       <span>{label}</span>
@@ -1537,6 +1659,19 @@ function withUnit(value: string, unit: string | undefined): string {
 
 function atomSymbol(manifest: Manifest, index: number): string {
   return manifest.topology.symbols?.[index] ?? elementSymbols[manifest.topology.atomic_numbers?.[index] ?? 0] ?? "X";
+}
+
+function atomSelectionLabel(manifest: Manifest, selection: AtomSelection): string {
+  const atom = `${atomSymbol(manifest, selection.atom)}${selection.atom + 1}`;
+  const image = selection.image
+    .map((value, axis) => {
+      if (value === 0) return "";
+      const sign = value > 0 ? "+" : "−";
+      const magnitude = Math.abs(value) === 1 ? "" : Math.abs(value);
+      return `${sign}${magnitude}${"abc"[axis]}`;
+    })
+    .join("");
+  return image ? `${atom} (${image})` : atom;
 }
 
 function normalizeName(value: string): string {

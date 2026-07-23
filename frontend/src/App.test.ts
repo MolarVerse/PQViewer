@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   autoProfile,
   filterCommandActions,
+  frameMetadata,
+  measurementPbc,
   profilePresentation,
+  selectionVisibleInImages,
   selectedProfilePresentation,
 } from "./App";
-import type { SceneCapabilities, ScenePresentation } from "./types";
+import type { FrameData, FrameHeader, SceneCapabilities, ScenePresentation } from "./types";
 
 const presentation: ScenePresentation = {
   mode: "spacefill",
@@ -126,3 +129,62 @@ describe("command search", () => {
     expect(filterCommandActions(actions, "density surface")).toEqual([]);
   });
 });
+
+describe("frame metadata", () => {
+  it("reads canonical header values without dropping scalar compatibility", () => {
+    const frame = frameWithHeader({
+      step: 40,
+      time: 1.25,
+      scalars: { step: 39, time: 1 },
+    });
+
+    expect(frameMetadata(frame)).toBe("step 40 · t 1.25");
+  });
+
+  it("reads step and time from legacy scalar-only packets", () => {
+    const frame = frameWithHeader({ scalars: { step: 12, time: 0.5, energy: -2 } });
+
+    expect(frameMetadata(frame)).toBe("step 12 · t 0.5");
+    expect(frame.header.scalars?.energy).toBe(-2);
+  });
+});
+
+describe("measurement periodicity", () => {
+  it("keeps explicit low-dimensional PBC without an invertible cell", () => {
+    expect(measurementPbc(frameWithHeader({ pbc: [true, false, false] }))).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  it("drops selections when their image is no longer displayed", () => {
+    const selection = { atom: 3, image: [1, 0, 0] as [number, number, number] };
+
+    expect(selectionVisibleInImages(
+      selection,
+      [0, 0, 0],
+      [1, 1, 1],
+      [true, true, true],
+    )).toBe(true);
+    expect(selectionVisibleInImages(
+      selection,
+      [0, 0, 0],
+      [0, 0, 0],
+      [true, true, true],
+    )).toBe(false);
+    expect(selectionVisibleInImages(
+      selection,
+      [0, 0, 0],
+      [1, 1, 1],
+      [false, true, true],
+    )).toBe(false);
+  });
+});
+
+function frameWithHeader(header: Partial<FrameHeader>): FrameData {
+  return {
+    header: { arrays: [], ...header },
+    arrays: new Map(),
+  };
+}
