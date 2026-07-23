@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { frameArray, FrameCache, getManifest, normalizeSeries, openFiles } from "./api";
+import { frameArray, FrameCache, getManifest, openFiles } from "./api";
+import { searchCommandActions } from "./commandSearch";
 import { centeredFramePositions, framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
 import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
 import {
@@ -9,10 +10,15 @@ import {
   shortcutLabelsForPlatform,
 } from "./keyboard";
 import type { ViewerShortcutLabels, VimNavigationAction, VimPrefix } from "./keyboard";
-import { TrajectoryPropertyStrip } from "./TrajectoryPropertyStrip";
+import { measureAtomSelection, updateAtomSelection } from "./selection";
+import {
+  advancePlaybackFrame,
+  DEFAULT_PLAYBACK_FPS,
+  playbackIntervalMs,
+} from "./trajectory";
+import type { PlaybackDirection, PlaybackMode } from "./trajectory";
 import type {
   CellOffset,
-  DisplaySeries,
   FrameData,
   Manifest,
   RepresentationMode,
@@ -23,7 +29,7 @@ import type {
 type LoadState = "loading" | "ready" | "error";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
 type WorkbenchTab = "view" | "inspect";
-type IconName = "back" | "close" | "folder" | "image" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
+type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -33,6 +39,7 @@ const defaultPresentation: ScenePresentation = {
   images: { min: [0, 0, 0], max: [0, 0, 0] },
   cell: true,
   forces: true,
+  velocities: false,
   atomScale: 1,
   bondScale: 1,
   color: "element",
@@ -49,9 +56,13 @@ export default function App() {
   const [frameError, setFrameError] = useState("");
   const [frameLoading, setFrameLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [playbackFps, setPlaybackFps] = useState(DEFAULT_PLAYBACK_FPS);
+  const [playbackStride, setPlaybackStride] = useState(1);
+  const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("loop");
+  const [playbackDirection, setPlaybackDirection] = useState<PlaybackDirection>(1);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
   const [profile, setProfile] = useState<SceneProfile>("auto");
-  const [selectedAtom, setSelectedAtom] = useState<number | null>(null);
+  const [selectedAtoms, setSelectedAtoms] = useState<number[]>([]);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -60,6 +71,9 @@ export default function App() {
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
   const [viewSignal, setViewSignal] = useState(0);
   const [rendering, setRendering] = useState(false);
+  const [forceScale, setForceScale] = useState(1);
+  const [velocityScale, setVelocityScale] = useState(1);
+  const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
   const [notice, setNotice] = useState("");
@@ -81,8 +95,9 @@ export default function App() {
     setManifest(value);
     setFrameIndex(0);
     setLoadedFrame(null);
-    setSelectedAtom(null);
+    setSelectedAtoms([]);
     setPlaying(false);
+    setPlaybackDirection(1);
     setSceneInfo(null);
     setLoadState("ready");
     setLoadError("");
@@ -153,11 +168,10 @@ export default function App() {
     };
   }, [frameIndex, manifest, rendering]);
 
-  const series = useMemo(() => normalizeSeries(manifest?.series), [manifest?.series]);
-
   const setFrame = useCallback(
     (value: number) => {
       if (!manifest?.frame_count) return;
+      setPlaybackDirection(1);
       setFrameIndex(Math.max(0, Math.min(manifest.frame_count - 1, Math.round(value))));
     },
     [manifest?.frame_count],
@@ -166,6 +180,7 @@ export default function App() {
   const stepFrame = useCallback(
     (delta: number) => {
       if (!manifest?.frame_count) return;
+      setPlaybackDirection(1);
       setFrameIndex((current) => advanceFrameIndex(current, delta, manifest.frame_count));
     },
     [manifest?.frame_count],
@@ -189,14 +204,20 @@ export default function App() {
     });
   }, [workbenchTab]);
 
-  const selectAtom = useCallback((index: number | null) => {
-    setSelectedAtom(index);
-    if (index !== null) {
-      setWorkbenchTab("inspect");
-    } else {
+  const selectAtom = useCallback((index: number | null, additive = false) => {
+    if (index === null) {
+      setSelectedAtoms([]);
+      setWorkbenchTab((current) => current === "inspect" ? null : current);
+      return;
+    }
+    setSelectedAtoms((current) => updateAtomSelection(current, index, additive ? "toggle" : "replace"));
+  }, []);
+
+  useEffect(() => {
+    if (selectedAtoms.length === 0) {
       setWorkbenchTab((current) => current === "inspect" ? null : current);
     }
-  }, []);
+  }, [selectedAtoms.length]);
 
   const selectView = useCallback((preset: ViewPreset) => {
     setViewPreset(preset);
@@ -247,9 +268,12 @@ export default function App() {
 
   const frame = loadedFrame?.data ?? null;
   const displayedFrameIndex = loadedFrame?.index ?? frameIndex;
+  const selectedAtom = selectedAtoms.at(-1) ?? null;
   const cellAvailable = hasFrameCell(frame);
   const forces = frameArray(frame, ["forces", "force"]);
   const forceAvailable = Boolean(forces && forces.length >= (manifest?.topology.atom_count ?? 0) * 3);
+  const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
+  const velocityAvailable = Boolean(velocities && velocities.length >= (manifest?.topology.atom_count ?? 0) * 3);
   const pbc = framePbc(frame);
   const capabilities = sceneInfo?.capabilities ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
@@ -285,20 +309,37 @@ export default function App() {
       current,
       cellAvailable,
       forceAvailable,
-      series.length > 0,
+      false,
       capabilities,
     ));
-  }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile, series.length]);
+  }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile]);
 
   useEffect(() => {
     if (!playing || rendering || !manifest || manifest.frame_count < 2) return;
     if (frameLoading || loadedFrame?.index !== frameIndex) return;
-    const timer = window.setTimeout(
-      () => setFrameIndex((current) => (current + 1) % manifest.frame_count),
-      100,
-    );
+    const timer = window.setTimeout(() => {
+      const next = advancePlaybackFrame(frameIndex, manifest.frame_count, {
+        mode: playbackMode,
+        direction: playbackDirection,
+        stride: playbackStride,
+      });
+      setFrameIndex(next.frameIndex);
+      setPlaybackDirection(next.direction);
+      if (!next.continuePlaying) setPlaying(false);
+    }, playbackIntervalMs(playbackFps));
     return () => window.clearTimeout(timer);
-  }, [frameIndex, frameLoading, loadedFrame?.index, manifest, playing, rendering]);
+  }, [
+    frameIndex,
+    frameLoading,
+    loadedFrame?.index,
+    manifest,
+    playbackDirection,
+    playbackFps,
+    playbackMode,
+    playbackStride,
+    playing,
+    rendering,
+  ]);
 
   const openSelectedFiles = useCallback(async (selected: File[]) => {
     if (selected.length === 0 || rendering) return;
@@ -337,11 +378,9 @@ export default function App() {
     vimSequenceRef.current = { prefix: null, at: 0 };
     if (commandOpen) setCommandOpen(false);
     else if (shortcutsOpen) setShortcutsOpen(false);
-    else {
-      if (workbenchTab === "inspect") setSelectedAtom(null);
-      if (workbenchTab) closeWorkbench(true);
-    }
-  }, [closeWorkbench, commandOpen, shortcutsOpen, workbenchTab]);
+    else if (workbenchTab) closeWorkbench(true);
+    else if (selectedAtoms.length > 0) setSelectedAtoms([]);
+  }, [closeWorkbench, commandOpen, selectedAtoms.length, shortcutsOpen, workbenchTab]);
 
   const runVimNavigation = useCallback((action: VimNavigationAction) => {
     if (action === "commands") {
@@ -538,10 +577,41 @@ export default function App() {
       ...(capabilities?.water ? [{ id: "water", label: presentation.water === "hide" ? "Show water" : "Hide water", keywords: "solvent", detail: "W", run: run(() => updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" })) }] : []),
       ...(cellAvailable ? [{ id: "cell", label: presentation.cell ? "Hide cell" : "Show cell", keywords: "box periodic pbc", detail: "C", run: run(() => updatePresentation({ cell: !presentation.cell })) }] : []),
       ...(forceAvailable ? [{ id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", keywords: "vectors arrows", detail: "F", run: run(() => updatePresentation({ forces: !presentation.forces })) }] : []),
+      ...(velocityAvailable ? [{ id: "velocities", label: presentation.velocities ? "Hide velocities" : "Show velocities", keywords: "vectors arrows motion speed", run: run(() => updatePresentation({ velocities: !presentation.velocities })) }] : []),
+      ...(cellAvailable ? ([
+        ["atom", "Wrap atoms"],
+        ["molecule", "Keep molecules whole"],
+        ["none", "Original coordinates"],
+      ] as const).map(([wrap, label]) => ({
+        id: `wrap-${wrap}`,
+        label,
+        keywords: "periodic cell boundary coordinates",
+        detail: presentation.wrap === wrap ? "Current" : undefined,
+        run: run(() => updatePresentation({ wrap })),
+      })) : []),
+      ...(selectedAtom !== null ? [{
+        id: "inspect-selection",
+        label: "Inspect selected atom",
+        keywords: "selection properties coordinates",
+        run: run(() => openWorkbench("inspect")),
+      }] : []),
+      ...(selectedAtoms.length > 0 ? [{
+        id: "clear-selection",
+        label: "Clear atom selection",
+        keywords: "deselect atoms measurement",
+        detail: "Esc",
+        run: run(() => setSelectedAtoms([])),
+      }] : []),
       { id: "shortcuts", label: "Keyboard shortcuts", keywords: "help keys vim", detail: "?", run: run(showShortcuts) },
       { id: "vim", label: vimMode ? "Disable Vim navigation" : "Enable Vim navigation", keywords: "keyboard linux hjkl", detail: vimMode ? "On" : "Off", run: run(() => setVimMode((value) => !value)) },
     ];
-    return actions;
+    return actions.map((action) => ({
+      ...action,
+      run: () => {
+        action.run();
+        setRecentCommandIds((current) => [action.id, ...current.filter((id) => id !== action.id)].slice(0, 8));
+      },
+    }));
   }, [
     canPlay,
     canRender,
@@ -562,16 +632,27 @@ export default function App() {
     showShortcuts,
     stepFrame,
     updatePresentation,
+    velocityAvailable,
     viewPreset,
     vimMode,
     workbenchTab,
     workbenchVisible,
+    selectedAtom,
+    selectedAtoms.length,
   ]);
+  const commandContextIds = useMemo(() => [
+    ...(selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
+    ...(canPlay ? ["play", "previous", "next"] : []),
+    "fit",
+    "display",
+    "export",
+  ], [canPlay, selectedAtom]);
   const workspaceClass = [
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
     rendering ? "is-rendering" : "",
-    series.length > 0 ? "timeline-data" : "timeline-compact",
+    canPlay ? "timeline-present" : "timeline-absent",
+    selectedAtoms.length > 0 ? "selection-present" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -618,11 +699,12 @@ export default function App() {
             manifest={manifest}
             frame={frame}
             presentation={presentation}
-            selectedAtom={selectedAtom}
+            selectedAtoms={selectedAtoms}
             resetSignal={resetSignal}
             viewPreset={viewPreset}
             viewSignal={viewSignal}
-            forceScale={1}
+            forceScale={forceScale}
+            velocityScale={velocityScale}
             appearance="light"
             onSelect={selectAtom}
             onSceneInfo={setSceneInfo}
@@ -668,23 +750,24 @@ export default function App() {
               aria-expanded={workbenchVisible && workbenchTab === "view"}
               disabled={rendering || !capabilities}
               onClick={() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view", true)}
-            ><Icon name="sliders" /><span>Display</span></button>
-            <button className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Export"}</button>
+            ><Icon name="sliders" /><span>View</span></button>
+            <button className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
           </div>
         </header>
 
         {manifest && manifest.frame_count > 0 && capabilities && (
           <CanvasControls
             busy={rendering}
+            viewPreset={viewPreset}
             onFit={() => setResetSignal((value) => value + 1)}
+            onView={selectView}
           />
         )}
 
         {manifest && capabilities && <aside ref={workbenchRef} className={workbenchTab === "inspect" ? "workbench atom-card" : "workbench"} id="workbench" aria-labelledby="workbench-title" hidden={!workbenchVisible} tabIndex={-1}>
           <div className="workbench-heading">
-            <strong id="workbench-title">{workbenchTab === "view" ? "Display" : selectedAtom === null ? "Atom" : `${atomSymbol(manifest, selectedAtom)} · ${selectedAtom + 1}`}</strong>
+            <strong id="workbench-title">{workbenchTab === "view" ? "View" : selectedAtom === null ? "Atom" : `${atomSymbol(manifest, selectedAtom)} · ${selectedAtom + 1}`}</strong>
             <button className="icon-button" type="button" disabled={rendering} onClick={() => {
-              if (workbenchTab === "inspect") setSelectedAtom(null);
               closeWorkbench(true);
             }} aria-label="Close"><Icon name="close" /></button>
           </div>
@@ -694,7 +777,12 @@ export default function App() {
               capabilities={capabilities}
               cellAvailable={cellAvailable}
               forceAvailable={forceAvailable}
+              velocityAvailable={velocityAvailable}
+              forceScale={forceScale}
+              velocityScale={velocityScale}
               onPresentation={updatePresentation}
+              onForceScale={setForceScale}
+              onVelocityScale={setVelocityScale}
             />}
             {workbenchTab === "inspect" && <Inspector
               manifest={manifest}
@@ -705,7 +793,17 @@ export default function App() {
           </div>
         </aside>}
 
-        {manifest && manifest.frame_count > 0 && (
+        {manifest && selectedAtoms.length > 0 && (
+          <SelectionBar
+            manifest={manifest}
+            frame={frame}
+            selectedAtoms={selectedAtoms}
+            onClear={() => setSelectedAtoms([])}
+            onDetails={() => openWorkbench("inspect", true)}
+          />
+        )}
+
+        {manifest && manifest.frame_count > 1 && (
           <Timeline
             busy={rendering}
             frameCount={manifest.frame_count}
@@ -714,12 +812,21 @@ export default function App() {
             playing={playing}
             canPlay={canPlay}
             frameError={frameError}
-            series={series}
+            frame={frame}
+            fps={playbackFps}
+            stride={playbackStride}
+            mode={playbackMode}
             onFrame={(index) => {
               setPlaying(false);
               setFrame(index);
             }}
             onPlay={() => canPlay && setPlaying((value) => !value)}
+            onFps={setPlaybackFps}
+            onStride={setPlaybackStride}
+            onMode={(mode) => {
+              setPlaybackMode(mode);
+              setPlaybackDirection(1);
+            }}
           />
         )}
 
@@ -743,7 +850,12 @@ export default function App() {
         )}
         {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status">{notice}</div>}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
-        {commandOpen && <CommandPalette actions={commands} onClose={() => setCommandOpen(false)} />}
+        {commandOpen && <CommandPalette
+          actions={commands}
+          contextIds={commandContextIds}
+          recentIds={recentCommandIds}
+          onClose={() => setCommandOpen(false)}
+        />}
         {shortcutsOpen && <ShortcutSheet
           shortcutLabels={shortcutLabels}
           vimMode={vimMode}
@@ -764,15 +876,19 @@ interface CommandAction {
   run: () => void;
 }
 
-export function filterCommandActions<T extends { label: string; keywords?: string; detail?: string }>(
+export function filterCommandActions<T extends { label: string; keywords?: string; detail?: string; disabled?: boolean }>(
   actions: readonly T[],
   query: string,
 ): T[] {
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [...actions];
-  return actions.filter((action) => words.every((word) => (
-    `${action.label} ${action.keywords ?? ""} ${action.detail ?? ""}`.toLowerCase().includes(word)
-  )));
+  const searchable = actions.map((action, index) => ({
+    id: `command-${index}`,
+    action,
+    label: action.label,
+    keywords: action.keywords,
+    detail: action.detail,
+    disabled: action.disabled,
+  }));
+  return searchCommandActions(searchable, query).map(({ action }) => action);
 }
 
 function useModalFocus<T extends HTMLElement>(
@@ -845,26 +961,36 @@ function restoreFocusWhenAvailable(element: HTMLElement | null) {
   observer.observe(element, { attributes: true, attributeFilter: ["disabled"] });
 }
 
-function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClose: () => void }) {
+function CommandPalette({
+  actions,
+  contextIds,
+  recentIds,
+  onClose,
+}: {
+  actions: CommandAction[];
+  contextIds: string[];
+  recentIds: string[];
+  onClose: () => void;
+}) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const visible = useMemo(() => filterCommandActions(actions, query), [actions, query]);
+  const visible = useMemo(
+    () => searchCommandActions(actions, query, { contextIds, recentIds }),
+    [actions, contextIds, query, recentIds],
+  );
 
   useModalFocus(panelRef, inputRef);
-  useEffect(() => setActive(Math.max(0, visible.findIndex((action) => !action.disabled))), [visible]);
+  useEffect(() => setActive(0), [visible]);
   useEffect(() => {
     optionRefs.current[active]?.scrollIntoView({ block: "nearest" });
   }, [active, visible]);
 
   const move = (direction: number) => {
-    const enabled = visible.map((action, index) => action.disabled ? -1 : index).filter((index) => index >= 0);
-    if (enabled.length === 0) return;
-    const position = enabled.indexOf(active);
-    const next = position < 0 ? 0 : (position + direction + enabled.length) % enabled.length;
-    setActive(enabled[next]);
+    if (visible.length === 0) return;
+    setActive((current) => (current + direction + visible.length) % visible.length);
   };
 
   return <div className="command-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -885,7 +1011,7 @@ function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClos
           else if (event.key === "ArrowUp") { event.preventDefault(); move(-1); }
           else if (event.key === "Enter") {
             event.preventDefault();
-            if (!visible[active]?.disabled) visible[active]?.run();
+            visible[active]?.run();
           }
         }}
       /><kbd>esc</kbd></label>
@@ -898,8 +1024,7 @@ function CommandPalette({ actions, onClose }: { actions: CommandAction[]; onClos
           role="option"
           aria-selected={index === active}
           className={index === active ? "is-active" : ""}
-          disabled={action.disabled}
-          onPointerMove={() => !action.disabled && setActive(index)}
+          onPointerMove={() => setActive(index)}
           onClick={action.run}
         ><span>{action.label}</span>{action.detail && <kbd>{action.detail}</kbd>}</button>)}
         {visible.length === 0 && <p>No commands found</p>}
@@ -936,7 +1061,7 @@ function ShortcutSheet({
       items: [
         ["R", "Fit structure"],
         ["1 / 2 / 3 / 4", "3D / XY / XZ / YZ"],
-        ["V", "Display controls"],
+        ["V", "View controls"],
         ["B", "Bonds / lines"],
         ["C / F / W", "Cell / forces / water"],
       ],
@@ -952,8 +1077,8 @@ function ShortcutSheet({
     },
   ];
   const vimItems: Array<[string, string]> = [
-    ["j/k or l/h", "Next / previous frame"],
-    ["J/K or L/H", "Forward / back ten"],
+    ["l / h", "Next / previous frame"],
+    ["L / H", "Forward / back ten"],
     ["gg / G", "First / last frame"],
     [":", "Search commands"],
     ["Ctrl [", "Close surface"],
@@ -989,31 +1114,96 @@ function ScenePanel({
   capabilities,
   cellAvailable,
   forceAvailable,
+  velocityAvailable,
+  forceScale,
+  velocityScale,
   onPresentation,
+  onForceScale,
+  onVelocityScale,
 }: {
   presentation: ScenePresentation;
   capabilities: SceneCapabilities;
   cellAvailable: boolean;
   forceAvailable: boolean;
+  velocityAvailable: boolean;
+  forceScale: number;
+  velocityScale: number;
   onPresentation: (change: Partial<ScenePresentation>) => void;
+  onForceScale: (scale: number) => void;
+  onVelocityScale: (scale: number) => void;
 }) {
   const modes: RepresentationMode[] = ["ball-stick", "spacefill", "lines", ...(capabilities.ribbon ? ["ribbon" as const] : [])];
+  const imagePreset = presentation.images.min[0] === -1 && presentation.images.max[0] === 1
+    ? "centered"
+    : presentation.images.max.some((value) => value === 1)
+      ? "positive"
+      : "primary";
 
   return (
     <div className="scene-panel">
       <section className="workbench-section">
-        <label className="panel-select-row"><span>Representation</span><select value={presentation.mode} onChange={(event) => onPresentation({ mode: event.target.value as RepresentationMode })}>
-          {modes.map((mode) => <option key={mode} value={mode}>{representationLabel(mode)}</option>)}
-        </select></label>
+        <span className="section-label">Representation</span>
+        <div className="segmented-options representation-options">
+          {modes.map((mode) => <button
+            key={mode}
+            type="button"
+            className={presentation.mode === mode ? "is-active" : ""}
+            aria-pressed={presentation.mode === mode}
+            onClick={() => onPresentation({ mode })}
+          >{representationLabel(mode)}</button>)}
+        </div>
       </section>
 
-      {(capabilities.water || cellAvailable || forceAvailable) && <section className="workbench-section display-toggles">
+      {(capabilities.water || cellAvailable || forceAvailable || velocityAvailable) && <section className="workbench-section display-toggles">
+        <span className="section-label">Overlays</span>
         {capabilities.water && <Toggle label="Water" checked={presentation.water !== "hide"} onChange={(shown) => onPresentation({ water: shown ? "show" : "hide" })} />}
         {cellAvailable && <Toggle label="Cell" checked={presentation.cell} onChange={(cell) => onPresentation({ cell })} />}
         {forceAvailable && <Toggle label="Forces" checked={presentation.forces} onChange={(forces) => onPresentation({ forces })} />}
+        {forceAvailable && presentation.forces && <VectorScale label="Force scale" value={forceScale} onChange={onForceScale} />}
+        {velocityAvailable && <Toggle label="Velocities" checked={presentation.velocities} onChange={(velocities) => onPresentation({ velocities })} />}
+        {velocityAvailable && presentation.velocities && <VectorScale label="Velocity scale" value={velocityScale} onChange={onVelocityScale} />}
+      </section>}
+
+      {cellAvailable && <section className="workbench-section">
+        <span className="section-label">Periodic system</span>
+        <div className="segmented-options">
+          {([
+            ["atom", "Wrap atoms"],
+            ["molecule", "Whole molecules"],
+            ["none", "Original"],
+          ] as const).map(([wrap, label]) => <button
+            key={wrap}
+            type="button"
+            className={presentation.wrap === wrap ? "is-active" : ""}
+            aria-pressed={presentation.wrap === wrap}
+            onClick={() => onPresentation({ wrap })}
+          >{label}</button>)}
+        </div>
+        <span className="section-label section-label-spaced">Images</span>
+        <div className="segmented-options">
+          <button type="button" className={imagePreset === "primary" ? "is-active" : ""} aria-pressed={imagePreset === "primary"} onClick={() => onPresentation({ images: { min: [0, 0, 0], max: [0, 0, 0] } })}>Primary</button>
+          <button type="button" className={imagePreset === "positive" ? "is-active" : ""} aria-pressed={imagePreset === "positive"} onClick={() => onPresentation({ images: { min: [0, 0, 0], max: [1, 1, 1] } })}>+abc</button>
+          <button type="button" className={imagePreset === "centered" ? "is-active" : ""} aria-pressed={imagePreset === "centered"} onClick={() => onPresentation({ images: { min: [-1, -1, -1], max: [1, 1, 1] } })}>±abc</button>
+        </div>
       </section>}
     </div>
   );
+}
+
+function VectorScale({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return <label className="vector-scale-row">
+    <span>{label}</span>
+    <input type="range" min={0.1} max={3} step={0.1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    <output>{value.toFixed(1)}×</output>
+  </label>;
 }
 
 function Toggle({
@@ -1035,19 +1225,80 @@ function Toggle({
 
 function CanvasControls({
   busy,
+  viewPreset,
   onFit,
+  onView,
 }: {
   busy: boolean;
+  viewPreset: ViewPreset;
   onFit: () => void;
+  onView: (view: ViewPreset) => void;
 }) {
   return <div className="canvas-controls" role="toolbar" aria-label="Camera controls">
     <button type="button" disabled={busy} onClick={onFit}>Fit</button>
+    {([
+      ["perspective", "3D"],
+      ["xy", "XY"],
+      ["xz", "XZ"],
+      ["yz", "YZ"],
+    ] as const).map(([view, label]) => <button
+      key={view}
+      type="button"
+      disabled={busy}
+      className={viewPreset === view ? "is-active" : ""}
+      aria-pressed={viewPreset === view}
+      onClick={() => onView(view)}
+    >{label}</button>)}
   </div>;
 }
 
 
 function DropOverlay({ replacing }: { replacing: boolean }) {
   return <div className="drop-overlay" role="status"><div><Icon name="folder" /><strong>{replacing ? "Replace trajectory" : "Open trajectory"}</strong><span>Drop XYZ and PQ companion files</span></div></div>;
+}
+
+function SelectionBar({
+  manifest,
+  frame,
+  selectedAtoms,
+  onClear,
+  onDetails,
+}: {
+  manifest: Manifest;
+  frame: FrameData | null;
+  selectedAtoms: number[];
+  onClear: () => void;
+  onDetails: () => void;
+}) {
+  const validAtoms = selectedAtoms.filter((atom) => atom >= 0 && atom < manifest.topology.atom_count);
+  const positions = centeredFramePositions(frame, manifest.topology.atom_count);
+  const measurement = positions ? measureAtomSelection(positions, validAtoms) : null;
+  const atomLabels = validAtoms.map((atom) => `${atomSymbol(manifest, atom)}${atom + 1}`);
+  let title = validAtoms.length === 1 ? atomLabels[0] : `${validAtoms.length} atoms`;
+  let value = "";
+
+  if (measurement?.ok) {
+    title = `${measurement.kind[0].toUpperCase()}${measurement.kind.slice(1)} · ${atomLabels.join("–")}`;
+    value = `${formatNumber(measurement.value)} ${measurement.unit === "angstrom" ? "Å" : "°"}`;
+  } else if (validAtoms.length === 1 && positions) {
+    const offset = validAtoms[0] * 3;
+    value = [positions[offset], positions[offset + 1], positions[offset + 2]]
+      .map((coordinate) => formatNumber(coordinate))
+      .join("  ");
+  } else if (validAtoms.length > 1) {
+    value = atomLabels.slice(0, 4).join(" · ");
+    if (validAtoms.length > 4) value += ` · +${validAtoms.length - 4}`;
+  }
+
+  return <section className="selection-bar" aria-label="Atom selection">
+    <div className="selection-readout">
+      <strong>{title}</strong>
+      {value && <output>{value}</output>}
+    </div>
+    <span className="selection-hint">Shift-click to measure</span>
+    <button type="button" onClick={onDetails}>Details</button>
+    <button className="icon-button" type="button" onClick={onClear} aria-label="Clear selection"><Icon name="close" /></button>
+  </section>;
 }
 
 function Inspector({
@@ -1094,9 +1345,15 @@ function Timeline({
   playing,
   canPlay,
   frameError,
-  series,
+  frame,
+  fps,
+  stride,
+  mode,
   onFrame,
   onPlay,
+  onFps,
+  onStride,
+  onMode,
 }: {
   busy: boolean;
   frameCount: number;
@@ -1105,20 +1362,30 @@ function Timeline({
   playing: boolean;
   canPlay: boolean;
   frameError: string;
-  series: DisplaySeries[];
+  frame: FrameData | null;
+  fps: number;
+  stride: number;
+  mode: PlaybackMode;
   onFrame: (index: number) => void;
   onPlay: () => void;
+  onFps: (fps: number) => void;
+  onStride: (stride: number) => void;
+  onMode: (mode: PlaybackMode) => void;
 }) {
   const displayedFrame = String(displayedFrameIndex + 1).padStart(String(frameCount).length, "0");
   const requestedFrame = String(frameIndex + 1).padStart(String(frameCount).length, "0");
   const frameLabel = displayedFrameIndex === frameIndex
     ? `${displayedFrame} / ${frameCount}`
     : `${displayedFrame} → ${requestedFrame}`;
+  const metadata = frameMetadata(frame);
 
   return (
-    <section className={`timeline${series.length > 0 ? " has-series" : " is-compact"}${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
+    <section className={`timeline is-compact${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
       <div className="transport-row">
         <div className="transport-buttons">
+          <button type="button" className="transport-button" onClick={() => onFrame(0)} disabled={busy || frameIndex === 0} aria-label="First frame">
+            <Icon name="first" />
+          </button>
           <button type="button" className="transport-button" onClick={() => onFrame(frameIndex - 1)} disabled={busy || frameIndex === 0} aria-label="Previous frame">
             <Icon name="back" />
           </button>
@@ -1127,6 +1394,9 @@ function Timeline({
           </button>
           <button type="button" className="transport-button" onClick={() => onFrame(frameIndex + 1)} disabled={busy || frameIndex === frameCount - 1} aria-label="Next frame">
             <Icon name="next" />
+          </button>
+          <button type="button" className="transport-button" onClick={() => onFrame(frameCount - 1)} disabled={busy || frameIndex === frameCount - 1} aria-label="Last frame">
+            <Icon name="last" />
           </button>
         </div>
         <label className="scrubber">
@@ -1146,16 +1416,42 @@ function Timeline({
             ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
             : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
         >{frameLabel}</output>
+        {metadata && <span className="frame-metadata">{metadata}</span>}
         {frameError && <span className="frame-error" title={frameError}>Frame unavailable</span>}
+        <details className="timeline-options">
+          <summary aria-label="Playback options"><Icon name="more" /></summary>
+          <div>
+            <label><span>Speed</span><select value={fps} onChange={(event) => onFps(Number(event.target.value))}>
+              {[1, 5, 10, 12, 15, 24, 30, 60].map((value) => <option key={value} value={value}>{value} fps</option>)}
+            </select></label>
+            <label><span>Stride</span><select value={stride} onChange={(event) => onStride(Number(event.target.value))}>
+              {[1, 2, 5, 10].map((value) => <option key={value} value={value}>{value} frame{value === 1 ? "" : "s"}</option>)}
+            </select></label>
+            <span className="section-label">Playback</span>
+            <div className="segmented-options">
+              {([
+                ["once", "Once"],
+                ["loop", "Loop"],
+                ["rock", "Rock"],
+              ] as const).map(([value, label]) => <button
+                key={value}
+                type="button"
+                className={mode === value ? "is-active" : ""}
+                aria-pressed={mode === value}
+                onClick={() => onMode(value)}
+              >{label}</button>)}
+            </div>
+          </div>
+        </details>
       </div>
-      {series.length > 0 && <TrajectoryPropertyStrip
-        series={series}
-        frameIndex={displayedFrameIndex}
-        frameCount={frameCount}
-        onFrame={onFrame}
-      />}
     </section>
   );
+}
+
+function frameMetadata(frame: FrameData | null): string {
+  const step = typeof frame?.header.step === "number" ? `step ${formatNumber(frame.header.step)}` : "";
+  const time = typeof frame?.header.time === "number" ? `t ${formatNumber(frame.header.time)}` : "";
+  return [step, time].filter(Boolean).join(" · ");
 }
 
 
@@ -1211,8 +1507,11 @@ function Icon({ name }: { name: IconName }) {
       {name === "sliders" && <><path d="M5 7h5m4 0h5M5 17h3m4 0h7" {...common} /><circle cx="12" cy="7" r="2" {...common} /><circle cx="10" cy="17" r="2" {...common} /></>}
       {name === "play" && <path d="m9 7 7 5-7 5V7Z" fill="currentColor" />}
       {name === "pause" && <><path d="M9 7v10M15 7v10" {...common} strokeWidth="2" /></>}
+      {name === "first" && <><path d="M7.5 7v10" {...common} /><path d="m16 8-5 4 5 4" {...common} /></>}
       {name === "back" && <path d="m14.5 8-5 4 5 4" {...common} />}
       {name === "next" && <path d="m9.5 8 5 4-5 4" {...common} />}
+      {name === "last" && <><path d="M16.5 7v10" {...common} /><path d="m8 8 5 4-5 4" {...common} /></>}
+      {name === "more" && <><circle cx="7" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="17" cy="12" r="1" fill="currentColor" /></>}
       {name === "search" && <><circle cx="10.5" cy="10.5" r="5.5" {...common} /><path d="m14.6 14.6 4 4" {...common} /></>}
       {name === "close" && <path d="m8 8 8 8m0-8-8 8" {...common} />}
       {name === "retry" && <><path d="M18 9a7 7 0 1 0 .5 5" {...common} /><path d="M18 5v4h-4" {...common} /></>}
@@ -1267,12 +1566,11 @@ function representationLabel(mode: RepresentationMode): string {
 
 export function autoProfile(
   capabilities: SceneCapabilities,
-  forceAvailable: boolean,
-  hasSeries: boolean,
+  _forceAvailable: boolean,
+  _hasSeries: boolean,
 ): Exclude<SceneProfile, "auto" | "custom"> {
   if (capabilities.ribbon) return "protein";
   if (capabilities.suggestedProfile === "crystal") return "crystal";
-  if (forceAvailable || hasSeries) return "trajectory";
   return "molecule";
 }
 
@@ -1307,6 +1605,7 @@ export function profilePresentation(
     images: unit,
     cell: false,
     forces: false,
+    velocities: false,
     color: capabilities.ribbon ? "residue" : "element",
   };
   if (profile === "crystal") return {
@@ -1318,6 +1617,7 @@ export function profilePresentation(
     images: unit,
     cell: cellAvailable,
     forces: false,
+    velocities: false,
     color: "element",
   };
   if (profile === "trajectory") return {
@@ -1329,6 +1629,7 @@ export function profilePresentation(
     images: unit,
     cell: cellAvailable,
     forces: forceAvailable,
+    velocities: false,
     color: "element",
   };
   return {
@@ -1340,6 +1641,7 @@ export function profilePresentation(
     images: unit,
     cell: false,
     forces: forceAvailable,
+    velocities: false,
     color: "element",
   };
 }
@@ -1399,6 +1701,7 @@ function initialPresentation(): ScenePresentation {
       images: defaultPresentation.images,
       cell: typeof parsed.cell === "boolean" ? parsed.cell : defaultPresentation.cell,
       forces: typeof parsed.forces === "boolean" ? parsed.forces : defaultPresentation.forces,
+      velocities: typeof parsed.velocities === "boolean" ? parsed.velocities : defaultPresentation.velocities,
       atomScale: defaultPresentation.atomScale,
       bondScale: defaultPresentation.bondScale,
       color: defaultPresentation.color,

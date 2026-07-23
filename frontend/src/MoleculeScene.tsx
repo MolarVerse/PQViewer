@@ -69,13 +69,14 @@ interface MoleculeSceneProps {
   manifest: Manifest;
   frame: FrameData | null;
   presentation: ScenePresentation;
-  selectedAtom: number | null;
+  selectedAtoms: number[];
   resetSignal: number;
   forceScale: number;
+  velocityScale: number;
   appearance: Appearance;
   viewPreset?: ViewPreset;
   viewSignal?: number;
-  onSelect: (index: number | null) => void;
+  onSelect: (index: number | null, additive: boolean) => void;
   onSceneInfo?: (info: RenderedSceneInfo | null) => void;
 }
 
@@ -89,6 +90,8 @@ export interface RenderedSceneInfo {
   imageCount: number;
   forceCount: number;
   forceTotal: number;
+  velocityCount: number;
+  velocityTotal: number;
   capabilities: SceneCapabilities;
 }
 
@@ -111,8 +114,11 @@ interface SceneState {
   bonds: THREE.Object3D | null;
   cell: THREE.LineSegments | null;
   forces: THREE.Group | null;
+  velocities: THREE.Group | null;
   ribbon: THREE.Mesh | null;
-  selection: THREE.Mesh;
+  selection: THREE.Group;
+  selectionGeometry: THREE.RingGeometry;
+  selectionMaterial: THREE.MeshBasicMaterial;
   pickables: THREE.Object3D[];
   instanceToAtom: Uint32Array;
   model: PreparedScene | null;
@@ -133,6 +139,7 @@ interface PublicationSnapshot {
   manifest: Manifest;
   presentation: ScenePresentation;
   forces: THREE.Group | null;
+  velocities: THREE.Group | null;
   camera: THREE.PerspectiveCamera;
   target: THREE.Vector3;
 }
@@ -146,6 +153,7 @@ interface ScenePalette {
   selection: string;
   selectionOpacity: number;
   force: string;
+  velocity: string;
   ribbon: string;
   hemisphereSky: string;
   hemisphereGround: string;
@@ -167,6 +175,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
     selection: "#3DACCB",
     selectionOpacity: 0.34,
     force: "#B8522D",
+    velocity: "#6B62A8",
     ribbon: "#3D879D",
     hemisphereSky: "#ffffff",
     hemisphereGround: "#c6d2d5",
@@ -186,6 +195,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
     selection: "#72d4df",
     selectionOpacity: 0.42,
     force: "#f0a75a",
+    velocity: "#9e98d7",
     ribbon: "#6cb9ca",
     hemisphereSky: "#f5f6f2",
     hemisphereGround: "#17272c",
@@ -236,6 +246,8 @@ function renderedSceneInfo(
     imageCount: model.images.length,
     forceCount: geometry.forceInstances.length,
     forceTotal: geometry.forceTotal,
+    velocityCount: geometry.velocityInstances.length,
+    velocityTotal: geometry.velocityTotal,
     capabilities: buildSceneCapabilities(
       manifest,
       model.waterAtoms.size > 0,
@@ -249,6 +261,8 @@ function sameRenderedSceneInfo(left: RenderedSceneInfo, right: RenderedSceneInfo
   return left.imageCount === right.imageCount
     && left.forceCount === right.forceCount
     && left.forceTotal === right.forceTotal
+    && left.velocityCount === right.velocityCount
+    && left.velocityTotal === right.velocityTotal
     && left.capabilities.water === right.capabilities.water
     && left.capabilities.ribbon === right.capabilities.ribbon
     && left.capabilities.ribbonReason === right.capabilities.ribbonReason
@@ -259,9 +273,10 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   manifest,
   frame,
   presentation,
-  selectedAtom,
+  selectedAtoms,
   resetSignal,
   forceScale,
+  velocityScale,
   appearance,
   viewPreset = "perspective",
   viewSignal = 0,
@@ -323,18 +338,15 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     const rim = new THREE.DirectionalLight(palette.rim, palette.rimIntensity);
     rim.position.set(-8, -2, -5);
     scene.add(rim);
-    const selection = new THREE.Mesh(
-      new THREE.RingGeometry(0.94, 1, 64),
-      new THREE.MeshBasicMaterial({
-        color: palette.selection,
-        transparent: true,
-        opacity: palette.selectionOpacity,
-        side: THREE.DoubleSide,
-        depthTest: false,
-      }),
-    );
-    selection.renderOrder = 10;
-    selection.visible = false;
+    const selection = new THREE.Group();
+    const selectionGeometry = new THREE.RingGeometry(0.94, 1, 64);
+    const selectionMaterial = new THREE.MeshBasicMaterial({
+      color: palette.selection,
+      transparent: true,
+      opacity: palette.selectionOpacity,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
     root.add(selection);
     const state: SceneState = {
       renderer,
@@ -349,8 +361,11 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       bonds: null,
       cell: null,
       forces: null,
+      velocities: null,
       ribbon: null,
       selection,
+      selectionGeometry,
+      selectionMaterial,
       pickables: [],
       instanceToAtom: new Uint32Array(),
       model: null,
@@ -395,13 +410,18 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       );
       raycaster.setFromCamera(pointer, camera);
       const hit = raycaster.intersectObjects(state.pickables, false)[0];
-      selectRef.current(hit ? pickedAtom(hit, state) : null);
+      selectRef.current(
+        hit ? pickedAtom(hit, state) : null,
+        event.shiftKey || event.metaKey || event.ctrlKey,
+      );
     };
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointerup", onPointerUp);
     renderer.setAnimationLoop(() => {
       controls.update();
-      if (selection.visible) selection.quaternion.copy(camera.quaternion);
+      selection.children.forEach((marker) => {
+        if (marker.visible) marker.quaternion.copy(camera.quaternion);
+      });
       renderer.render(scene, camera);
     });
 
@@ -411,7 +431,11 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
       controls.dispose();
+      root.remove(selection);
       disposeObject(root);
+      selection.clear();
+      selectionGeometry.dispose();
+      selectionMaterial.dispose();
       renderer.dispose();
       stateRef.current = null;
     };
@@ -441,7 +465,8 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       return;
     }
     const forces = frameArray(frame, ["forces", "force"]);
-    const frameGeometry = prepareFrameGeometry(model, presentation, forces);
+    const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
+    const frameGeometry = prepareFrameGeometry(model, presentation, forces, velocities);
     const info = renderedSceneInfo(manifest, model, frameGeometry);
     if (
       reportedInfoRef.current?.manifest !== manifest
@@ -458,11 +483,31 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       && state.renderConfigKey === configKey
       && state.frameLayout !== null
       && sameFrameGeometryLayout(state.frameLayout, frameLayout)
-      && updateFrameRenderables(state, model, presentation, forces, forceScale, frameGeometry);
+      && updateFrameRenderables(
+        state,
+        model,
+        presentation,
+        forces,
+        velocities,
+        forceScale,
+        velocityScale,
+        frameGeometry,
+      );
 
     if (!reuse) {
       clearRenderables(state);
-      buildFrameRenderables(state, model, manifest, presentation, appearance, forces, forceScale, frameGeometry);
+      buildFrameRenderables(
+        state,
+        model,
+        manifest,
+        presentation,
+        appearance,
+        forces,
+        velocities,
+        forceScale,
+        velocityScale,
+        frameGeometry,
+      );
     }
     state.model = model;
     state.instanceToAtom = model.instanceToAtom;
@@ -485,6 +530,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     }
   }, [
     forceScale,
+    velocityScale,
     frame,
     manifest,
     presentation,
@@ -496,8 +542,8 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   useEffect(() => {
     const state = stateRef.current;
     if (!state) return;
-    updateSelection(state, selectedAtom);
-  }, [frame, presentation, selectedAtom]);
+    updateSelection(state, selectedAtoms);
+  }, [frame, presentation, selectedAtoms]);
 
   return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" tabIndex={0} />;
 });
@@ -518,6 +564,7 @@ function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
       },
     },
     forces: state.forces?.clone(true) ?? null,
+    velocities: state.velocities?.clone(true) ?? null,
     camera: state.camera.clone(),
     target: state.controls.target.clone(),
   };
@@ -729,6 +776,7 @@ const publicationPalette: ScenePalette = {
   selection: "#3DACCB",
   selectionOpacity: 0,
   force: "#b34c2b",
+  velocity: "#625c9f",
   ribbon: "#347f96",
   hemisphereSky: "#ffffff",
   hemisphereGround: "#d8e0df",
@@ -824,7 +872,8 @@ function buildPublicationScene(
       root.add(cell);
     }
   }
-  if (snapshot.forces) root.add(clonePublicationForces(snapshot.forces, resources));
+  if (snapshot.forces) root.add(clonePublicationVectors(snapshot.forces, publicationPalette.force, resources));
+  if (snapshot.velocities) root.add(clonePublicationVectors(snapshot.velocities, publicationPalette.velocity, resources));
 
   let hasAoGeometry = false;
   root.traverse((object) => {
@@ -930,7 +979,11 @@ function coordinateKey(value: number): string {
   return Math.abs(value) < 5e-7 ? "0" : value.toFixed(6);
 }
 
-function clonePublicationForces(source: THREE.Group, resources: PublicationResources): THREE.Group {
+function clonePublicationVectors(
+  source: THREE.Group,
+  color: string,
+  resources: PublicationResources,
+): THREE.Group {
   const clone = source.clone(true);
   clone.traverse((object) => {
     const renderable = object as THREE.Object3D & { material?: THREE.Material | THREE.Material[] };
@@ -938,7 +991,7 @@ function clonePublicationForces(source: THREE.Group, resources: PublicationResou
     const materials = Array.isArray(renderable.material) ? renderable.material : [renderable.material];
     const copies = materials.map((material) => {
       const copy = material.clone();
-      if ("color" in copy && copy.color instanceof THREE.Color) copy.color.set(publicationPalette.force);
+      if ("color" in copy && copy.color instanceof THREE.Color) copy.color.set(color);
       resources.materials.add(copy);
       return copy;
     });
@@ -1136,10 +1189,8 @@ function applyScenePalette(state: SceneState, palette: ScenePalette): void {
   state.key.intensity = palette.keyIntensity;
   state.rim.color.set(palette.rim);
   state.rim.intensity = palette.rimIntensity;
-  if (state.selection.material instanceof THREE.MeshBasicMaterial) {
-    state.selection.material.color.set(palette.selection);
-    state.selection.material.opacity = palette.selectionOpacity;
-  }
+  state.selectionMaterial.color.set(palette.selection);
+  state.selectionMaterial.opacity = palette.selectionOpacity;
 }
 
 function applyRenderablePalette(
@@ -1172,6 +1223,7 @@ function applyRenderablePalette(
   setMaterialPalette(state.bonds, palette.bond, palette.bondOpacity);
   setMaterialPalette(state.cell, palette.cell, palette.cellOpacity);
   state.forces?.children.forEach((object) => setMaterialPalette(object, palette.force));
+  state.velocities?.children.forEach((object) => setMaterialPalette(object, palette.velocity));
   if (state.ribbon) {
     const colors = state.ribbon.geometry.getAttribute("color") as THREE.BufferAttribute;
     const atoms = state.ribbon.geometry.getAttribute("atomIndex") as THREE.BufferAttribute;
@@ -1199,7 +1251,7 @@ function setMaterialPalette(object: THREE.Object3D | null, color: string, opacit
 }
 
 function clearRenderables(state: SceneState): void {
-  for (const object of [state.atomObject, state.bonds, state.cell, state.forces, state.ribbon]) {
+  for (const object of [state.atomObject, state.bonds, state.cell, state.forces, state.velocities, state.ribbon]) {
     if (!object) continue;
     state.root.remove(object);
     disposeObject(object);
@@ -1208,6 +1260,7 @@ function clearRenderables(state: SceneState): void {
   state.bonds = null;
   state.cell = null;
   state.forces = null;
+  state.velocities = null;
   state.ribbon = null;
   state.pickables = [];
 }
@@ -1219,7 +1272,9 @@ function buildFrameRenderables(
   presentation: ScenePresentation,
   appearance: Appearance,
   forces: Float32Array | null,
+  velocities: Float32Array | null,
   forceScale: number,
+  velocityScale: number,
   frameGeometry: FrameGeometryPlan,
 ): void {
   const palette = scenePalettes[appearance];
@@ -1241,9 +1296,13 @@ function buildFrameRenderables(
   state.cell = presentation.cell ? buildCells(model, palette) : null;
   if (state.cell) state.root.add(state.cell);
   state.forces = presentation.forces
-    ? buildForces(model, forces, forceScale, palette, frameGeometry.forceInstances)
+    ? buildVectors(model, forces, forceScale, palette.force, frameGeometry.forceInstances)
     : null;
   if (state.forces) state.root.add(state.forces);
+  state.velocities = presentation.velocities
+    ? buildVectors(model, velocities, velocityScale, palette.velocity, frameGeometry.velocityInstances)
+    : null;
+  if (state.velocities) state.root.add(state.velocities);
 }
 
 function updateFrameRenderables(
@@ -1251,19 +1310,26 @@ function updateFrameRenderables(
   model: PreparedScene,
   presentation: ScenePresentation,
   forces: Float32Array | null,
+  velocities: Float32Array | null,
   forceScale: number,
+  velocityScale: number,
   frameGeometry: FrameGeometryPlan,
 ): boolean {
   if (!renderablesMatchFrameGeometry(state, frameGeometry)) return false;
-  const arrows = frameGeometry.forceInstances.length > 0
-    ? forceArrows(model, forces, forceScale, frameGeometry.forceInstances)
+  const forceArrows = frameGeometry.forceInstances.length > 0
+    ? vectorArrows(model, forces, forceScale, frameGeometry.forceInstances)
     : [];
-  if (arrows.length !== frameGeometry.forceInstances.length) return false;
+  const velocityArrows = frameGeometry.velocityInstances.length > 0
+    ? vectorArrows(model, velocities, velocityScale, frameGeometry.velocityInstances)
+    : [];
+  if (forceArrows.length !== frameGeometry.forceInstances.length) return false;
+  if (velocityArrows.length !== frameGeometry.velocityInstances.length) return false;
 
   if (state.atomObject) updateAtoms(state.atomObject, model);
   if (state.bonds) updateBonds(state.bonds, frameGeometry.bondSegments);
   if (state.cell) updateCells(state.cell, model);
-  if (state.forces) updateForces(state.forces, arrows);
+  if (state.forces) updateVectors(state.forces, forceArrows);
+  if (state.velocities) updateVectors(state.velocities, velocityArrows);
   return presentation.mode !== "ribbon";
 }
 
@@ -1290,12 +1356,17 @@ function renderablesMatchFrameGeometry(state: SceneState, frameGeometry: FrameGe
   } else if (!state.cell
     || state.cell.geometry.getAttribute("position").count !== frameGeometry.cellLineCount * 2) return false;
 
-  if (frameGeometry.forceInstances.length === 0) return state.forces === null;
-  const [shafts, heads] = state.forces?.children ?? [];
+  return vectorLayoutMatches(state.forces, frameGeometry.forceInstances.length)
+    && vectorLayoutMatches(state.velocities, frameGeometry.velocityInstances.length);
+}
+
+function vectorLayoutMatches(group: THREE.Group | null, count: number): boolean {
+  if (count === 0) return group === null;
+  const [shafts, heads] = group?.children ?? [];
   return shafts instanceof THREE.InstancedMesh
     && heads instanceof THREE.InstancedMesh
-    && shafts.instanceMatrix.count === frameGeometry.forceInstances.length
-    && heads.instanceMatrix.count === frameGeometry.forceInstances.length;
+    && shafts.instanceMatrix.count === count
+    && heads.instanceMatrix.count === count;
 }
 
 function updateAtoms(object: THREE.InstancedMesh | THREE.Points, model: PreparedScene): void {
@@ -1358,6 +1429,7 @@ function renderConfigKey(presentation: ScenePresentation): string {
     presentation.images.max,
     presentation.cell,
     presentation.forces,
+    presentation.velocities,
     presentation.atomScale,
     presentation.bondScale,
     presentation.color,
@@ -1504,65 +1576,65 @@ function appendCellLines(values: number[], basis: CellBasis, offset: CellOffset)
   edges.forEach(([from, to]) => values.push(...corners[from].toArray(), ...corners[to].toArray()));
 }
 
-function buildForces(
+function buildVectors(
   model: PreparedScene,
-  forces: Float32Array | null,
-  forceScale: number,
-  palette: ScenePalette,
-  forceInstances: number[],
+  vectors: Float32Array | null,
+  scaleFactor: number,
+  color: string,
+  instances: number[],
 ): THREE.Group | null {
-  const arrows = forceArrows(model, forces, forceScale, forceInstances);
+  const arrows = vectorArrows(model, vectors, scaleFactor, instances);
   if (arrows.length === 0) return null;
   const group = new THREE.Group();
   const shafts = new THREE.InstancedMesh(
     new THREE.CylinderGeometry(0.018, 0.018, 1, 8, 1, false),
-    new THREE.MeshBasicMaterial({ color: palette.force }),
+    new THREE.MeshBasicMaterial({ color }),
     arrows.length,
   );
   shafts.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   group.add(shafts);
   const heads = new THREE.InstancedMesh(
     new THREE.ConeGeometry(1, 1, 9),
-    new THREE.MeshBasicMaterial({ color: palette.force }),
+    new THREE.MeshBasicMaterial({ color }),
     arrows.length,
   );
   heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   group.add(heads);
-  updateForces(group, arrows);
+  updateVectors(group, arrows);
   return group;
 }
 
-interface ForceArrow {
+interface VectorArrow {
   tail: THREE.Vector3;
   tip: THREE.Vector3;
   direction: THREE.Vector3;
   head: number;
 }
 
-function forceArrows(
+function vectorArrows(
   model: PreparedScene,
-  forces: Float32Array | null,
-  forceScale: number,
-  forceInstances: number[],
-): ForceArrow[] {
-  if (!forces || forces.length < model.count * 3) return [];
-  const magnitudes = forceInstances
+  vectors: Float32Array | null,
+  scaleFactor: number,
+  instances: number[],
+): VectorArrow[] {
+  if (!vectors || vectors.length < model.count * 3) return [];
+  const magnitudes = instances
     .map((instance) => {
       const atom = model.instanceToAtom[instance];
-      return Math.hypot(forces[atom * 3], forces[atom * 3 + 1], forces[atom * 3 + 2]);
+      return Math.hypot(vectors[atom * 3], vectors[atom * 3 + 1], vectors[atom * 3 + 2]);
     })
     .filter((value) => Number.isFinite(value) && value > 1e-12)
     .sort((left, right) => left - right);
   if (magnitudes.length === 0) return [];
   const reference = magnitudes[Math.floor((magnitudes.length - 1) * 0.9)];
-  const scale = (1.45 / reference) * forceScale;
-  const arrows: ForceArrow[] = [];
+  const scale = (1.45 / reference) * scaleFactor;
+  const arrows: VectorArrow[] = [];
   const direction = new THREE.Vector3();
   const atomPosition = new THREE.Vector3();
-  for (const instance of forceInstances) {
+  for (const instance of instances) {
     const atom = model.instanceToAtom[instance];
     const offset = atom * 3;
-    direction.set(forces[offset], forces[offset + 1], forces[offset + 2]);
+    direction.set(vectors[offset], vectors[offset + 1], vectors[offset + 2]);
     const magnitude = direction.length();
     direction.normalize();
     setInstancePosition(atomPosition, model, instance);
@@ -1579,7 +1651,7 @@ function forceArrows(
   return arrows;
 }
 
-function updateForces(group: THREE.Group, arrows: ForceArrow[]): void {
+function updateVectors(group: THREE.Group, arrows: VectorArrow[]): void {
   const [shafts, heads] = group.children;
   if (!(shafts instanceof THREE.InstancedMesh) || !(heads instanceof THREE.InstancedMesh)) return;
   const dummy = new THREE.Object3D();
@@ -1670,20 +1742,32 @@ function buildRibbon(
   );
 }
 
-function updateSelection(state: SceneState, selectedAtom: number | null): void {
+function updateSelection(state: SceneState, selectedAtoms: number[]): void {
   const model = state.model;
-  if (!model || selectedAtom === null || selectedAtom < 0 || selectedAtom >= model.count) {
-    state.selection.visible = false;
+  if (!model) {
+    state.selection.clear();
     return;
   }
-  const instance = state.instanceToAtom.findIndex((atom) => atom === selectedAtom);
-  if (instance < 0) {
-    state.selection.visible = false;
-    return;
+
+  let visible = 0;
+  const selected = new Set(selectedAtoms.filter((atom) => atom >= 0 && atom < model.count));
+  for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
+    const selectedAtom = state.instanceToAtom[instance];
+    if (!selected.has(selectedAtom)) continue;
+    let marker = state.selection.children[visible] as THREE.Mesh | undefined;
+    if (!marker) {
+      marker = new THREE.Mesh(state.selectionGeometry, state.selectionMaterial);
+      marker.renderOrder = 10;
+      state.selection.add(marker);
+    }
+    setInstancePosition(marker.position, model, instance);
+    marker.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
+    marker.visible = true;
+    visible += 1;
   }
-  setInstancePosition(state.selection.position, model, instance);
-  state.selection.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
-  state.selection.visible = true;
+  while (state.selection.children.length > visible) {
+    state.selection.remove(state.selection.children[state.selection.children.length - 1]);
+  }
 }
 
 function pickedAtom(hit: THREE.Intersection, state: SceneState): number | null {
@@ -1746,6 +1830,10 @@ function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | nu
   if (state.forces) {
     state.forces.updateMatrixWorld(true);
     bounds.union(new THREE.Box3().setFromObject(state.forces));
+  }
+  if (state.velocities) {
+    state.velocities.updateMatrixWorld(true);
+    bounds.union(new THREE.Box3().setFromObject(state.velocities));
   }
   if (presentation.cell && model.basis) {
     const cellBounds = new THREE.Box3();
@@ -1826,17 +1914,24 @@ function cameraOrientation(preset: ViewPreset): { direction: THREE.Vector3; up: 
 }
 
 function disposeObject(root: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
   root.traverse((child) => {
     const renderable = child as THREE.Object3D & { geometry?: THREE.BufferGeometry; material?: THREE.Material | THREE.Material[] };
     if (child instanceof THREE.InstancedMesh) child.dispose();
-    renderable.geometry?.dispose();
-    if (renderable.material) disposeMaterial(renderable.material);
+    if (renderable.geometry && !geometries.has(renderable.geometry)) {
+      geometries.add(renderable.geometry);
+      renderable.geometry.dispose();
+    }
+    const entries = Array.isArray(renderable.material)
+      ? renderable.material
+      : renderable.material ? [renderable.material] : [];
+    entries.forEach((material) => {
+      if (materials.has(material)) return;
+      materials.add(material);
+      material.dispose();
+    });
   });
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
-  if (Array.isArray(material)) material.forEach((entry) => entry.dispose());
-  else material.dispose();
 }
 
 const darkElementColors: Record<number, string> = {

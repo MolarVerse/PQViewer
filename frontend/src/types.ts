@@ -95,6 +95,7 @@ export interface ScenePresentation {
   };
   cell: boolean;
   forces: boolean;
+  velocities: boolean;
   atomScale: number;
   bondScale: number;
   color: "element" | "residue" | "chain";

@@ -27,12 +27,6 @@ pqviewer path/to/md.xyz
 Try the included trajectory with `pqviewer examples/water.xyz`.
 Run `pqviewer` without a path to open an empty workspace.
 
-Add a PQ energy file when available:
-
-```bash
-pqviewer path/to/md.xyz --energy path/to/md.en
-```
-
 Same-stem PQ companions are detected automatically; override them explicitly:
 
 ```bash
@@ -51,23 +45,26 @@ pqviewer path/to/md.xyz \
 ```
 
 Files can also be opened together from the interface or dropped on the canvas.
-`Display` contains only the current representation and the controls supported by
-the data: Water, Cell, and Forces. Ribbon appears when residue and backbone
-topology are present. Periodic coordinates follow PQ's centered `−½…+½`
-convention and structures are wrapped automatically. Click an atom to see its
-identity, position, and available per-atom values.
+`View` opens the controls supported by the current data in one click:
+representation, water, cell, force and velocity vectors, periodic wrapping, and
+neighboring images. Ribbon appears when residue and backbone topology are
+present. Periodic coordinates follow PQ's centered `−½…+½` convention.
 
-The compact timeline keeps every frame and provides previous, play/pause, next,
-scrubbing, and the current frame number. When trajectory properties are present,
-the trace below it stays synchronized with the structure; click or drag the trace
-to seek and choose another property from its label.
+Click an atom for a compact readout. Shift-click additional atoms to measure a
+distance, angle, or ordered dihedral; `Details` shows the selected atom's
+position and available per-atom values.
+
+The trajectory bar appears only for multi-frame data. It provides first,
+previous, play/pause, next, last, scrubbing, and the current frame number.
+Playback options contain speed, stride, once, loop, and rock modes. Scalar
+properties do not change the structural view or occupy the timeline.
 
 Search every action with `Cmd/Ctrl+K` or `/`. Press `?` for the complete shortcut
 sheet. `Space` plays or pauses, arrow keys step frames, `Home` and `End` jump to
 the trajectory limits, `R` fits the structure, and `Escape` closes the open card.
-Optional Vim navigation can be enabled from the shortcut sheet.
+Optional Vim navigation adds `h`/`l`, `H`/`L`, `gg`, `G`, `:`, and `Ctrl+[`.
 
-`Export` or `Cmd/Ctrl+Shift+S` immediately writes a publication PNG at
+`Figure` or `Cmd/Ctrl+Shift+S` immediately writes a publication PNG at
 2400 × 1800 px. The export uses the current orientation with a fitted
 orthographic camera, white background, complete periodic boundary bonds,
 adaptive supersampling, restrained ambient occlusion, and explicit sRGB output.
