@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { frameArray, FrameCache, getManifest, openFiles } from "./api";
+import { frameArray, FrameCache, getFrame, getManifest, openFiles } from "./api";
 import { searchCommandActions } from "./commandSearch";
+import { MeasurementPlot } from "./MeasurementPlot";
+import {
+  calculateMeasurementSeries,
+  measurementSeriesCsv,
+  measurementSeriesSvg,
+} from "./measurementSeries";
+import type { MeasurementSeriesProgress } from "./measurementSeries";
 import { framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
 import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
 import {
@@ -68,6 +75,9 @@ export default function App() {
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
   const [selectionPositions, setSelectionPositions] = useState<Float64Array | null>(null);
+  const [minimumImage, setMinimumImage] = useState(true);
+  const [measurementPlotOpen, setMeasurementPlotOpen] = useState(false);
+  const [measurementSeries, setMeasurementSeries] = useState<MeasurementSeriesProgress | null>(null);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -93,6 +103,7 @@ export default function App() {
   const autoProfileKey = useRef("");
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
+  const measurementRequest = useRef(0);
   const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
@@ -102,6 +113,9 @@ export default function App() {
     setLoadedFrame(null);
     setSelectedAtoms([]);
     setSelectionPositions(null);
+    setMinimumImage(true);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
     setPlaying(false);
     setPlaybackDirection(1);
     setSceneInfo(null);
@@ -197,6 +211,8 @@ export default function App() {
   }, []);
 
   const openWorkbench = useCallback((tab: WorkbenchTab, focus = false) => {
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
     setWorkbenchTab(tab);
     if (focus) focusWorkbench();
   }, [focusWorkbench]);
@@ -214,6 +230,8 @@ export default function App() {
     if (selection === null) {
       setSelectedAtoms([]);
       setSelectionPositions(null);
+      setMeasurementPlotOpen(false);
+      setMeasurementSeries(null);
       setWorkbenchTab((current) => current === "inspect" ? null : current);
       return;
     }
@@ -228,6 +246,10 @@ export default function App() {
   useEffect(() => {
     if (selectedAtoms.length === 0) {
       setWorkbenchTab((current) => current === "inspect" ? null : current);
+    }
+    if (selectedAtoms.length < 2 || selectedAtoms.length > 4) {
+      setMeasurementPlotOpen(false);
+      setMeasurementSeries(null);
     }
   }, [selectedAtoms.length]);
 
@@ -290,7 +312,83 @@ export default function App() {
   const capabilities = sceneInfo?.capabilities ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
   const canRender = Boolean(frame && capabilities && !frameLoading);
+  const canPlotMeasurement = canPlay
+    && selectedAtoms.length >= 2
+    && selectedAtoms.length <= 4
+    && selectedAtoms.every(({ atom }) => atom >= 0 && atom < (manifest?.topology.atom_count ?? 0));
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
+  const plotFrameAxis = useMemo(
+    () => measurementPlotOpen && manifest
+      ? Array.from({ length: manifest.frame_count }, (_, index) => index)
+      : [],
+    [manifest, measurementPlotOpen],
+  );
+  const emptyMeasurementValues = useMemo(
+    () => plotFrameAxis.map(() => null),
+    [plotFrameAxis],
+  );
+
+  const closeMeasurementPlot = useCallback((restoreFocus = false) => {
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    if (restoreFocus) requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(".selection-plot-button")?.focus();
+    });
+  }, []);
+
+  const showMeasurementPlot = useCallback(() => {
+    if (!canPlotMeasurement) return;
+    setPlaying(false);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setWorkbenchTab(null);
+    setMeasurementSeries(null);
+    if (!cellAvailable || !pbc.some(Boolean)) setMinimumImage(false);
+    setMeasurementPlotOpen(true);
+  }, [canPlotMeasurement, cellAvailable, pbc[0], pbc[1], pbc[2]]);
+
+  useEffect(() => {
+    const request = measurementRequest.current + 1;
+    measurementRequest.current = request;
+    if (!measurementPlotOpen || !manifest || !canPlotMeasurement) return;
+
+    const controller = new AbortController();
+    setMeasurementSeries(null);
+    void calculateMeasurementSeries({
+      manifest,
+      frameCount: manifest.frame_count,
+      selections: selectedAtoms,
+      wrap: presentation.wrap,
+      minimumImage,
+      signal: controller.signal,
+      loadFrame: getFrame,
+      onProgress: (progress) => {
+        if (measurementRequest.current === request && !controller.signal.aborted) {
+          setMeasurementSeries(progress);
+        }
+      },
+    })
+      .then((series) => {
+        if (measurementRequest.current === request && !controller.signal.aborted) {
+          setMeasurementSeries(series);
+        }
+      })
+      .catch((error: unknown) => {
+        if (measurementRequest.current !== request || controller.signal.aborted) return;
+        setMeasurementPlotOpen(false);
+        setMeasurementSeries(null);
+        setNotice(`Plot unavailable · ${message(error)}`);
+      });
+
+    return () => controller.abort();
+  }, [
+    canPlotMeasurement,
+    manifest,
+    measurementPlotOpen,
+    minimumImage,
+    presentation.wrap,
+    selectedAtoms,
+  ]);
 
   useEffect(() => {
     setSelectedAtoms((current) => {
@@ -413,8 +511,17 @@ export default function App() {
     if (commandOpen) setCommandOpen(false);
     else if (shortcutsOpen) setShortcutsOpen(false);
     else if (workbenchTab) closeWorkbench(true);
+    else if (measurementPlotOpen) closeMeasurementPlot(true);
     else if (selectedAtoms.length > 0) setSelectedAtoms([]);
-  }, [closeWorkbench, commandOpen, selectedAtoms.length, shortcutsOpen, workbenchTab]);
+  }, [
+    closeMeasurementPlot,
+    closeWorkbench,
+    commandOpen,
+    measurementPlotOpen,
+    selectedAtoms.length,
+    shortcutsOpen,
+    workbenchTab,
+  ]);
 
   const runVimNavigation = useCallback((action: VimNavigationAction) => {
     if (action === "commands") {
@@ -623,6 +730,14 @@ export default function App() {
         detail: presentation.wrap === wrap ? "Current" : undefined,
         run: run(() => updatePresentation({ wrap })),
       })) : []),
+      ...(canPlotMeasurement ? [{
+        id: "plot-measurement",
+        label: measurementPlotOpen ? "Hide measurement plot" : "Plot measurement",
+        keywords: "selection trajectory distance angle dihedral graph",
+        run: run(() => measurementPlotOpen
+          ? closeMeasurementPlot(false)
+          : showMeasurementPlot()),
+      }] : []),
       ...(selectedAtom !== null ? [{
         id: "inspect-selection",
         label: "Inspect selected atom",
@@ -648,13 +763,16 @@ export default function App() {
     }));
   }, [
     canPlay,
+    canPlotMeasurement,
     canRender,
     capabilities,
     cellAvailable,
+    closeMeasurementPlot,
     closeWorkbench,
     forceAvailable,
     frameIndex,
     manifest?.frame_count,
+    measurementPlotOpen,
     openWorkbench,
     playing,
     presentation,
@@ -662,6 +780,7 @@ export default function App() {
     setFrame,
     shortcutLabels,
     showOpen,
+    showMeasurementPlot,
     showRender,
     showShortcuts,
     stepFrame,
@@ -676,17 +795,19 @@ export default function App() {
   ]);
   const commandContextIds = useMemo(() => [
     ...(selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
+    ...(canPlotMeasurement ? ["plot-measurement"] : []),
     ...(canPlay ? ["play", "previous", "next"] : []),
     "fit",
     "display",
     "export",
-  ], [canPlay, selectedAtom]);
+  ], [canPlay, canPlotMeasurement, selectedAtom]);
   const workspaceClass = [
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
     rendering ? "is-rendering" : "",
     canPlay ? "timeline-present" : "timeline-absent",
     selectedAtoms.length > 0 ? "selection-present" : "",
+    measurementPlotOpen ? "measurement-plot-open" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -835,11 +956,53 @@ export default function App() {
             frame={frame}
             selectedAtoms={selectedAtoms}
             displayedPositions={selectionPositions}
+            minimumImage={minimumImage}
+            canPlot={canPlotMeasurement}
+            plotOpen={measurementPlotOpen}
+            onMinimumImage={() => setMinimumImage((current) => !current)}
+            onPlot={() => measurementPlotOpen
+              ? closeMeasurementPlot(false)
+              : showMeasurementPlot()}
             onClear={() => {
               setSelectedAtoms([]);
               setSelectionPositions(null);
+              closeMeasurementPlot(false);
             }}
             onDetails={() => openWorkbench("inspect", true)}
+          />
+        )}
+
+        {manifest && measurementPlotOpen && canPlotMeasurement && (
+          <MeasurementPlot
+            title={measurementSeries?.title ?? measurementSelectionTitle(manifest, selectedAtoms)}
+            unit={measurementUnitLabel(
+              measurementSeries?.unit ?? (selectedAtoms.length === 2 ? "angstrom" : "degree"),
+            )}
+            axisLabel={measurementSeries?.axis.label ?? "Frame"}
+            axisUnit={measurementSeries?.axis.unit}
+            xValues={measurementSeries?.xValues ?? plotFrameAxis}
+            values={measurementSeries?.values ?? emptyMeasurementValues}
+            loadedCount={measurementSeries?.loadedCount ?? 0}
+            complete={measurementSeries?.complete ?? false}
+            currentFrame={displayedFrameIndex}
+            onFrame={(index) => {
+              setPlaying(false);
+              setFrame(index);
+            }}
+            onExportCsv={() => {
+              if (!measurementSeries?.complete) return;
+              downloadBlob(
+                new Blob([measurementSeriesCsv(measurementSeries)], { type: "text/csv;charset=utf-8" }),
+                measurementFileName(manifest.name, measurementSeries.kind, "csv"),
+              );
+            }}
+            onExportSvg={() => {
+              if (!measurementSeries?.complete) return;
+              downloadBlob(
+                new Blob([measurementSeriesSvg(measurementSeries)], { type: "image/svg+xml;charset=utf-8" }),
+                measurementFileName(manifest.name, measurementSeries.kind, "svg"),
+              );
+            }}
           />
         )}
 
@@ -1302,6 +1465,11 @@ function SelectionBar({
   frame,
   selectedAtoms,
   displayedPositions,
+  minimumImage,
+  canPlot,
+  plotOpen,
+  onMinimumImage,
+  onPlot,
   onClear,
   onDetails,
 }: {
@@ -1309,10 +1477,14 @@ function SelectionBar({
   frame: FrameData | null;
   selectedAtoms: AtomSelection[];
   displayedPositions: Float64Array | null;
+  minimumImage: boolean;
+  canPlot: boolean;
+  plotOpen: boolean;
+  onMinimumImage: () => void;
+  onPlot: () => void;
   onClear: () => void;
   onDetails: () => void;
 }) {
-  const [minimumImage, setMinimumImage] = useState(true);
   const validSelections = selectedAtoms.filter(
     ({ atom }) => atom >= 0 && atom < manifest.topology.atom_count,
   );
@@ -1367,12 +1539,22 @@ function SelectionBar({
         type="button"
         aria-pressed={minimumImage}
         title="Choose minimum-image or displayed-image geometry"
-        onClick={() => setMinimumImage((current) => !current)}
+        onClick={onMinimumImage}
       >
         {minimumImage ? "Minimum image" : "Displayed images"}
       </button>
     ) : (
       <span className="selection-hint">Shift-click to measure</span>
+    )}
+    {canPlot && (
+      <button
+        className="selection-plot-button"
+        type="button"
+        aria-pressed={plotOpen}
+        onClick={onPlot}
+      >
+        {plotOpen ? "Hide plot" : "Plot"}
+      </button>
     )}
     <button type="button" onClick={onDetails}>Details</button>
     <button className="icon-button" type="button" onClick={onClear} aria-label="Clear selection"><Icon name="close" /></button>
@@ -1787,6 +1969,31 @@ function renderFileName(name: string | undefined, width: number, height: number)
     .replace(/[^a-z0-9._-]+/gi, "-")
     .replace(/^-+|-+$/g, "") || "molecule";
   return `${base}-${width}x${height}.png`;
+}
+
+function measurementSelectionTitle(manifest: Manifest, selections: readonly AtomSelection[]): string {
+  const kind = selections.length === 2
+    ? "Distance"
+    : selections.length === 3
+      ? "Angle"
+      : "Dihedral";
+  return `${kind} · ${selections.map((selection) => atomSelectionLabel(manifest, selection)).join("–")}`;
+}
+
+function measurementUnitLabel(unit: "angstrom" | "degree"): string {
+  return unit === "angstrom" ? "Å" : "°";
+}
+
+function measurementFileName(
+  name: string | undefined,
+  kind: "distance" | "angle" | "dihedral",
+  extension: "csv" | "svg",
+): string {
+  const base = (name ?? "trajectory")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "") || "trajectory";
+  return `${base}-${kind}.${extension}`;
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

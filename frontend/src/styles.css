@@ -4534,3 +4534,256 @@ input[type="range"]::-moz-range-thumb {
   }
 
 }
+
+/* Measurement traces */
+
+.workspace {
+  --measurement-plot-height: 164px;
+}
+
+.measurement-plot-open .selection-bar {
+  z-index: 18;
+  bottom: calc(var(--timeline-height) + var(--measurement-plot-height) + 7px);
+  width: min(760px, calc(100% - 24px));
+  max-width: none;
+  border-radius: 10px 10px 0 0;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.measurement-plot-open .selection-readout {
+  flex: 1 1 auto;
+}
+
+.measurement-plot-open .notice {
+  bottom: calc(var(--timeline-height) + var(--measurement-plot-height) + 70px);
+}
+
+.measurement-plot {
+  position: absolute;
+  z-index: 17;
+  bottom: calc(var(--timeline-height) + 8px);
+  left: 50%;
+  width: min(760px, calc(100% - 24px));
+  height: var(--measurement-plot-height);
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr) 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 9%, transparent);
+  transform: translateX(-50%);
+}
+
+.measurement-plot.is-complete {
+  grid-template-rows: 34px minmax(0, 1fr);
+}
+
+.measurement-plot__header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 5px 3px 13px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.measurement-plot__meta {
+  color: var(--quiet);
+  font-family: var(--numeric);
+  font-size: 8px;
+}
+
+.measurement-plot__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.measurement-plot__actions button {
+  height: 30px;
+  min-width: 40px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.measurement-plot__actions button:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.measurement-plot__actions button:disabled {
+  color: var(--disabled);
+  cursor: default;
+}
+
+.measurement-plot__chart {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: block;
+  cursor: crosshair;
+}
+
+.measurement-plot__chart:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--accent) 65%, transparent);
+  outline-offset: -2px;
+}
+
+.measurement-plot__grid,
+.measurement-plot__axis {
+  stroke: var(--line-soft);
+  stroke-width: 1;
+}
+
+.measurement-plot__axis {
+  stroke: var(--line-strong);
+}
+
+.measurement-plot__trace {
+  stroke: var(--accent);
+  stroke-width: 1.8;
+}
+
+.measurement-plot__trace-point,
+.measurement-plot__cursor-point {
+  fill: var(--accent);
+}
+
+.measurement-plot__cursor {
+  stroke: var(--accent);
+  stroke-width: 1.25;
+  opacity: 0.7;
+}
+
+.measurement-plot__cursor-point {
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.measurement-plot__tick,
+.measurement-plot__axis-label,
+.measurement-plot__unit,
+.measurement-plot__empty {
+  fill: var(--quiet);
+  font-family: var(--numeric);
+  font-size: 13px;
+}
+
+.measurement-plot__axis-label,
+.measurement-plot__unit,
+.measurement-plot__empty {
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.measurement-plot__progress {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  color: var(--quiet);
+  font-family: var(--numeric);
+  font-size: 8px;
+}
+
+.measurement-plot__progress progress {
+  width: 100%;
+  height: 2px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 2px;
+  background: var(--surface-soft);
+  color: var(--accent);
+  appearance: none;
+}
+
+.measurement-plot__progress progress::-webkit-progress-bar {
+  background: var(--surface-soft);
+}
+
+.measurement-plot__progress progress::-webkit-progress-value {
+  background: var(--accent);
+}
+
+.measurement-plot__progress progress::-moz-progress-bar {
+  background: var(--accent);
+}
+
+.selection-bar .selection-plot-button[aria-pressed="true"] {
+  background: var(--accent-soft);
+}
+
+@media (max-width: 520px) {
+  .workspace {
+    --measurement-plot-height: 166px;
+  }
+
+  .measurement-plot,
+  .measurement-plot-open .selection-bar {
+    width: calc(100% - 16px);
+  }
+
+  .measurement-plot {
+    grid-template-rows: 44px minmax(0, 1fr) 18px;
+  }
+
+  .measurement-plot.is-complete {
+    grid-template-rows: 44px minmax(0, 1fr);
+  }
+
+  .measurement-plot__header {
+    padding-left: 10px;
+  }
+
+  .measurement-plot__actions button {
+    width: 44px;
+    height: 44px;
+    padding-inline: 5px;
+  }
+
+  .measurement-plot__tick {
+    font-size: 15px;
+  }
+
+  .measurement-plot__axis-label,
+  .measurement-plot__unit,
+  .measurement-plot__empty {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 380px) {
+  .measurement-plot-open .selection-bar > button:not(.icon-button) {
+    min-width: 48px;
+    padding-inline: 6px;
+  }
+}
+
+@media (max-width: 760px) and (max-height: 520px) {
+  .workspace {
+    --measurement-plot-height: 132px;
+  }
+
+  .measurement-plot {
+    grid-template-rows: 44px minmax(0, 1fr) 14px;
+  }
+
+  .measurement-plot.is-complete {
+    grid-template-rows: 44px minmax(0, 1fr);
+  }
+
+  .measurement-plot__progress {
+    padding-inline: 9px;
+  }
+}
