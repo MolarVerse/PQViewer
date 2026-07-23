@@ -74,6 +74,8 @@ export interface FrameGeometryPlan {
   cellLineCount: number;
   forceInstances: number[];
   forceTotal: number;
+  velocityInstances: number[];
+  velocityTotal: number;
 }
 
 export interface FrameGeometryLayout {
@@ -83,6 +85,7 @@ export interface FrameGeometryLayout {
   bondCount: number;
   cellLineCount: number;
   forceCount: number;
+  velocityCount: number;
 }
 
 export interface ImageLayoutShape {
@@ -308,6 +311,7 @@ export function prepareFrameGeometry(
   model: PreparedScene,
   presentation: ScenePresentation,
   forces: Float32Array | null,
+  velocities: Float32Array | null = null,
 ): FrameGeometryPlan {
   const atomCount = model.instanceToAtom.length;
   const pointAtoms = usesPointAtoms(presentation, atomCount);
@@ -323,6 +327,9 @@ export function prepareFrameGeometry(
   const forceVectors = presentation.forces
     ? activeVectorInstances(model, forces)
     : { instances: [], total: 0 };
+  const velocityVectors = presentation.velocities
+    ? activeVectorInstances(model, velocities)
+    : { instances: [], total: 0 };
   return {
     atomKind,
     atomCount,
@@ -331,6 +338,8 @@ export function prepareFrameGeometry(
     cellLineCount: presentation.cell && model.basis ? model.images.length * 12 : 0,
     forceInstances: forceVectors.instances,
     forceTotal: forceVectors.total,
+    velocityInstances: velocityVectors.instances,
+    velocityTotal: velocityVectors.total,
   };
 }
 
@@ -352,6 +361,7 @@ export function frameGeometryLayout(plan: FrameGeometryPlan): FrameGeometryLayou
     bondCount: plan.bondSegments.length,
     cellLineCount: plan.cellLineCount,
     forceCount: plan.forceInstances.length,
+    velocityCount: plan.velocityInstances.length,
   };
 }
 
@@ -361,7 +371,8 @@ export function sameFrameGeometryLayout(left: FrameGeometryLayout, right: FrameG
     && left.bondKind === right.bondKind
     && left.bondCount === right.bondCount
     && left.cellLineCount === right.cellLineCount
-    && left.forceCount === right.forceCount;
+    && left.forceCount === right.forceCount
+    && left.velocityCount === right.velocityCount;
 }
 
 export function sceneBondSegments(

@@ -15,6 +15,7 @@ const presentation: ScenePresentation = {
   images: { min: [-1, -1, -1], max: [1, 1, 1] },
   cell: false,
   forces: true,
+  velocities: false,
   atomScale: 1,
   bondScale: 1,
   color: "element",
@@ -80,6 +81,16 @@ describe("scene profiles", () => {
       suggestedProfile: "protein",
     };
     expect(autoProfile(capabilities, true, true)).toBe("protein");
+  });
+
+  it("does not let scalar series choose the structural view", () => {
+    const capabilities: SceneCapabilities = {
+      water: false,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      suggestedProfile: "molecule",
+    };
+    expect(autoProfile(capabilities, true, true)).toBe("molecule");
   });
 
   it("keeps periodic trajectories inside PQ's centered cell", () => {

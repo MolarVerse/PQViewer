@@ -43,13 +43,17 @@ describe("trajectory stepping", () => {
 });
 
 describe("Vim navigation", () => {
-  it("maps vertical and horizontal movement", () => {
-    expect(resolveVimNavigation("j", null).action).toBe("next-frame");
+  it("maps horizontal movement", () => {
     expect(resolveVimNavigation("l", null).action).toBe("next-frame");
-    expect(resolveVimNavigation("k", null).action).toBe("previous-frame");
     expect(resolveVimNavigation("h", null).action).toBe("previous-frame");
-    expect(resolveVimNavigation("J", null).action).toBe("next-ten-frames");
+    expect(resolveVimNavigation("L", null).action).toBe("next-ten-frames");
     expect(resolveVimNavigation("H", null).action).toBe("previous-ten-frames");
+  });
+
+  it("leaves vertical keys available for typing", () => {
+    for (const key of ["j", "J", "k", "K"]) {
+      expect(resolveVimNavigation(key, null)).toEqual({ action: null, prefix: null });
+    }
   });
 
   it("requires a complete gg sequence and maps G to the end", () => {

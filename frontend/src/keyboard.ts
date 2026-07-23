@@ -47,10 +47,10 @@ export function resolveVimNavigation(key: string, prefix: VimPrefix): VimNavigat
       : { action: null, prefix: "g" };
   }
   if (key === "G") return { action: "last-frame", prefix: null };
-  if (key === "j" || key === "l") return { action: "next-frame", prefix: null };
-  if (key === "J" || key === "L") return { action: "next-ten-frames", prefix: null };
-  if (key === "k" || key === "h") return { action: "previous-frame", prefix: null };
-  if (key === "K" || key === "H") return { action: "previous-ten-frames", prefix: null };
+  if (key === "l") return { action: "next-frame", prefix: null };
+  if (key === "L") return { action: "next-ten-frames", prefix: null };
+  if (key === "h") return { action: "previous-frame", prefix: null };
+  if (key === "H") return { action: "previous-ten-frames", prefix: null };
   if (key === ":") return { action: "commands", prefix: null };
   return { action: null, prefix: null };
 }

@@ -81,6 +81,7 @@ const basePresentation: ScenePresentation = {
   images: { min: [0, 0, 0], max: [0, 0, 0] },
   cell: true,
   forces: false,
+  velocities: false,
   atomScale: 1,
   bondScale: 1,
   color: "element",
@@ -722,7 +723,7 @@ describe("trajectory geometry reuse", () => {
     )).toBe(true);
   });
 
-  it("requires a rebuild when periodic bond or active-force counts change", () => {
+  it("requires a rebuild when bond or active-vector counts change", () => {
     const topology = manifest([6, 6], [[0, 1]]);
     const cell = [10, 0, 0, 0, 10, 0, 0, 0, 10];
     const inside = prepareScene(topology, frame(
@@ -737,15 +738,20 @@ describe("trajectory geometry reuse", () => {
     ), { ...basePresentation, forces: true })!;
     const bothForces = new Float32Array([1, 0, 0, -1, 0, 0]);
     const oneForce = new Float32Array([1, 0, 0, 0, 0, 0]);
-    const presentation = { ...basePresentation, forces: true };
+    const bothVelocities = new Float32Array([0, 1, 0, 0, -1, 0]);
+    const oneVelocity = new Float32Array([0, 1, 0, 0, 0, 0]);
+    const presentation = { ...basePresentation, forces: true, velocities: true };
 
-    const stable = prepareFrameGeometry(inside, presentation, bothForces);
-    const changedBonds = prepareFrameGeometry(crossing, presentation, bothForces);
-    const changedForces = prepareFrameGeometry(inside, presentation, oneForce);
+    const stable = prepareFrameGeometry(inside, presentation, bothForces, bothVelocities);
+    const changedBonds = prepareFrameGeometry(crossing, presentation, bothForces, bothVelocities);
+    const changedForces = prepareFrameGeometry(inside, presentation, oneForce, bothVelocities);
+    const changedVelocities = prepareFrameGeometry(inside, presentation, bothForces, oneVelocity);
     expect(stable.bondSegments).toHaveLength(1);
     expect(changedBonds.bondSegments).toHaveLength(2);
     expect(stable.forceInstances).toHaveLength(2);
     expect(changedForces.forceInstances).toHaveLength(1);
+    expect(stable.velocityInstances).toHaveLength(2);
+    expect(changedVelocities.velocityInstances).toHaveLength(1);
     expect(sameFrameGeometryLayout(
       frameGeometryLayout(stable),
       frameGeometryLayout(changedBonds),
@@ -753,6 +759,10 @@ describe("trajectory geometry reuse", () => {
     expect(sameFrameGeometryLayout(
       frameGeometryLayout(stable),
       frameGeometryLayout(changedForces),
+    )).toBe(false);
+    expect(sameFrameGeometryLayout(
+      frameGeometryLayout(stable),
+      frameGeometryLayout(changedVelocities),
     )).toBe(false);
   });
 });
