@@ -27,15 +27,20 @@ dependencies = [
 ase = [
     "ase>=3.23,<4",
 ]
+render = [
+    "playwright>=1.52,<2",
+]
 dev = [
     "ase>=3.23,<4",
     "httpx2>=2,<3",
+    "pillow>=11,<13",
     "pytest>=8,<9",
     "pytest-cov>=5,<7",
 ]
 
 [project.scripts]
 pqviewer = "pqviewer.cli:main"
+pqviewer-render = "pqviewer.render_cli:main"
 
 [project.urls]
 Repository = "https://github.com/MolarVerse/PQViewer"

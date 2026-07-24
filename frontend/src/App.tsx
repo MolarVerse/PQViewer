@@ -4,6 +4,7 @@ import {
   frameArray,
   FrameCache,
   getFrame,
+  getInitialRecipe,
   getManifest,
   openFiles,
 } from "./api";
@@ -12,16 +13,37 @@ import { MeasurementPlot } from "./MeasurementPlot";
 import {
   calculateMeasurementSeries,
   measurementSeriesCsv,
+  measurementSeriesPdf,
   measurementSeriesSvg,
 } from "./measurementSeries";
 import type { MeasurementSeriesProgress } from "./measurementSeries";
+import {
+  cloneFigureRecipe,
+  figureFrameFingerprint,
+  figureSourceFromManifest,
+  parseFigureRecipe,
+  parseFigureRecipeJson,
+  recipeMatchesManifestSource,
+  sameFrameKey,
+  stringifyFigureRecipe,
+} from "./figureRecipe";
+import type {
+  FigureAnnotation,
+  FigureOutput,
+  FigureRecipe,
+} from "./figureRecipe";
 import {
   fractionalStructureCenter,
   framePbc,
   hasFrameCell,
   MoleculeScene,
 } from "./MoleculeScene";
-import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
+import type {
+  FigureExportOptions,
+  MoleculeSceneHandle,
+  RenderedSceneInfo,
+  ViewPreset,
+} from "./MoleculeScene";
 import {
   advanceFrameIndex,
   parseVimPreference,
@@ -83,8 +105,37 @@ type PinnedMeasurement = {
   selections: AtomSelection[];
   minimumImage: boolean;
 };
+type FigureBridgeOverrides = Partial<Pick<
+  FigureOutput,
+  "format" | "width" | "height" | "dpi"
+>> & {
+  transparent?: boolean;
+};
+
+declare global {
+  interface Window {
+    pqviewerFigure?: {
+      ready: boolean;
+      error: string | null;
+      export: (overrides?: FigureBridgeOverrides) => Promise<void>;
+    };
+  }
+}
 
 const DATASET_CHANNEL = "pqviewer-dataset";
+const MAX_FIGURE_RECIPE_BYTES = 1_048_576;
+
+const defaultFigureOutput: FigureOutput = {
+  format: "png",
+  width: 2400,
+  height: 1800,
+  dpi: 300,
+  background: { kind: "solid", color: "#ffffff" },
+  projection: "orthographic",
+  fit: true,
+  padding: 0.08,
+  periodicContext: true,
+};
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -138,6 +189,11 @@ export default function App() {
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
   const [viewSignal, setViewSignal] = useState(0);
   const [rendering, setRendering] = useState(false);
+  const [figureSheetOpen, setFigureSheetOpen] = useState(false);
+  const [figureOutput, setFigureOutput] = useState<FigureOutput>(defaultFigureOutput);
+  const [figureAnnotations, setFigureAnnotations] = useState<FigureAnnotation[]>([]);
+  const [recipeApplying, setRecipeApplying] = useState(false);
+  const [figureBridgeError, setFigureBridgeError] = useState("");
   const [forceScale, setForceScale] = useState(1);
   const [velocityScale, setVelocityScale] = useState(1);
   const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
@@ -148,6 +204,7 @@ export default function App() {
   const cache = useRef(new FrameCache());
   const moleculeSceneRef = useRef<MoleculeSceneHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recipeInputRef = useRef<HTMLInputElement>(null);
   const panelButtonRef = useRef<HTMLButtonElement>(null);
   const renderButtonRef = useRef<HTMLButtonElement>(null);
   const workbenchRef = useRef<HTMLElement>(null);
@@ -157,6 +214,8 @@ export default function App() {
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
   const measurementRequest = useRef(0);
+  const recipeRequest = useRef(0);
+  const pendingFigureRecipe = useRef<FigureRecipe | null>(null);
   const nextPinnedMeasurement = useRef(1);
   const selectionAnchorAudit = useRef<{ selections: AtomSelection[] | null; key: string }>({
     selections: null,
@@ -187,6 +246,7 @@ export default function App() {
   const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
+    recipeRequest.current += 1;
     cache.current.clear();
     cache.current = new FrameCache({ datasetGeneration: value.dataset_generation });
     frameCoordinateModeRef.current = "source";
@@ -210,6 +270,12 @@ export default function App() {
     setWorkbenchTab(null);
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setFigureSheetOpen(false);
+    setFigureOutput(cloneFigureOutput(defaultFigureOutput));
+    setFigureAnnotations([]);
+    setRecipeApplying(false);
+    setFigureBridgeError("");
+    pendingFigureRecipe.current = null;
     setSceneInfo(null);
     setPresentation((current) => ({
       ...current,
@@ -222,8 +288,89 @@ export default function App() {
     document.title = `${value.name || "Trajectory"} · PQViewer`;
   }, []);
 
+  const stageFigureRecipe = useCallback((
+    input: FigureRecipe,
+    dataset: Manifest,
+  ) => {
+    const recipe = cloneFigureRecipe(input);
+    if (!recipeMatchesManifestSource(recipe, dataset)) {
+      throw new Error("This figure recipe belongs to a different source");
+    }
+    if (recipe.frame.index >= dataset.frame_count) {
+      throw new Error("The saved frame is outside this trajectory");
+    }
+    if (recipe.scene.selection.atoms.some(
+      ({ atom }) => atom >= dataset.topology.atom_count,
+    )) {
+      throw new Error("The saved selection is outside this structure");
+    }
+    if (recipe.annotations.some(
+      (annotation) => annotation.kind === "atom-label"
+        && annotation.atom.atom >= dataset.topology.atom_count,
+    )) {
+      throw new Error("The saved atom labels are outside this structure");
+    }
+    const request = recipeRequest.current + 1;
+    recipeRequest.current = request;
+    pendingFigureRecipe.current = null;
+    setRecipeApplying(true);
+    setFigureBridgeError("");
+    void getFrame(
+      recipe.frame.index,
+      undefined,
+      dataset.dataset_generation,
+      recipe.scene.presentation.wrap === "unwrapped"
+        ? "unwrapped"
+        : "source",
+    )
+      .then((candidate) => {
+        if (recipeRequest.current !== request) return;
+        if (!sameFrameKey(candidate.header.frame_key, recipe.frame.key)) {
+          throw new Error("The saved frame no longer matches this trajectory");
+        }
+        if (
+          figureFrameFingerprint(dataset, candidate)
+          !== recipe.frame.fingerprint
+        ) {
+          throw new Error("The saved frame content changed");
+        }
+        setPlaying(false);
+        setPlaybackOptionsOpen(false);
+        setMeasurementPlotOpen(false);
+        setMeasurementSeries(null);
+        setWorkbenchTab(null);
+        setCommandOpen(false);
+        setShortcutsOpen(false);
+        setFigureSheetOpen(false);
+        setProfile("custom");
+        autoProfileKey.current = `${dataset.name}:${dataset.topology.atom_count}`;
+        setPresentation(recipe.scene.presentation);
+        setSelectedAtoms(cloneSelections(recipe.scene.selection.atoms));
+        setSelectionIntent(recipe.scene.selection.intent);
+        setMinimumImage(recipe.scene.selection.minimumImage);
+        setForceScale(recipe.scene.vectors.forceScale);
+        setVelocityScale(recipe.scene.vectors.velocityScale);
+        setFigureOutput(cloneFigureOutput(recipe.output));
+        setFigureAnnotations(cloneFigureRecipe(recipe).annotations);
+        setFrameError("");
+        setFrameIndex(recipe.frame.index);
+        pendingFigureRecipe.current = recipe;
+      })
+      .catch((error: unknown) => {
+        if (recipeRequest.current !== request) return;
+        const detail = message(error);
+        setRecipeApplying(false);
+        setFigureBridgeError(detail);
+        setNotice({
+          message: `Figure recipe unavailable · ${detail}`,
+          tone: "error",
+        });
+      });
+  }, []);
+
   const reloadChangedDataset = useCallback(() => {
     if (datasetReloadPending.current) return;
+    recipeRequest.current += 1;
     datasetReloadPending.current = true;
     manifestGeneration.current = "";
     cache.current.clear();
@@ -247,6 +394,11 @@ export default function App() {
     setWorkbenchTab(null);
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setFigureSheetOpen(false);
+    setFigureAnnotations([]);
+    setRecipeApplying(false);
+    setFigureBridgeError("");
+    pendingFigureRecipe.current = null;
     setSceneInfo(null);
     setLoadState("loading");
     setLoadError("");
@@ -348,10 +500,22 @@ export default function App() {
     let active = true;
     setLoadState("loading");
     setLoadError("");
-    getManifest()
-      .then((value) => {
+    Promise.all([
+      getManifest(),
+      getInitialRecipe(),
+    ])
+      .then(([value, initialRecipe]) => {
         if (!active) return;
         activateManifest(value);
+        if (initialRecipe !== null) {
+          try {
+            stageFigureRecipe(parseFigureRecipe(initialRecipe), value);
+          } catch (error) {
+            const detail = message(error);
+            setFigureBridgeError(detail);
+            setNotice({ message: `Figure recipe unavailable · ${detail}`, tone: "error" });
+          }
+        }
       })
       .catch((error: unknown) => {
         if (!active) return;
@@ -361,7 +525,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [activateManifest, requestKey]);
+  }, [activateManifest, requestKey, stageFigureRecipe]);
 
   useEffect(() => {
     if (!manifest || frameCoordinateModeRef.current === frameCoordinateMode) return;
@@ -429,6 +593,79 @@ export default function App() {
     };
   }, [frameCoordinateMode, frameIndex, manifest, reloadChangedDataset, rendering]);
 
+  useEffect(() => {
+    const recipe = pendingFigureRecipe.current;
+    if (
+      !recipe
+      || !manifest
+      || !loadedFrame
+      || loadedFrame.index !== recipe.frame.index
+      || frameLoading
+    ) {
+      return;
+    }
+    if (!sameFrameKey(loadedFrame.data.header.frame_key, recipe.frame.key)) {
+      pendingFigureRecipe.current = null;
+      setRecipeApplying(false);
+      setFigureBridgeError("The saved frame no longer matches this trajectory");
+      setNotice({
+        message: "Figure recipe unavailable · saved frame changed",
+        tone: "error",
+      });
+      return;
+    }
+    if (
+      figureFrameFingerprint(manifest, loadedFrame.data)
+      !== recipe.frame.fingerprint
+    ) {
+      pendingFigureRecipe.current = null;
+      setRecipeApplying(false);
+      setFigureBridgeError("The saved frame content changed");
+      setNotice({
+        message: "Figure recipe unavailable · saved frame changed",
+        tone: "error",
+      });
+      return;
+    }
+    let cancelled = false;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        if (cancelled || pendingFigureRecipe.current !== recipe) return;
+        try {
+          const scene = moleculeSceneRef.current;
+          if (!scene) throw new Error("The molecular scene is not ready");
+          scene.restoreCamera(recipe.camera);
+          pendingFigureRecipe.current = null;
+          setRecipeApplying(false);
+          setFigureBridgeError("");
+          if (!isHeadlessFigureMode()) {
+            setNotice({ message: "Figure recipe restored", tone: "status" });
+          }
+        } catch (error) {
+          pendingFigureRecipe.current = null;
+          setRecipeApplying(false);
+          const detail = message(error);
+          setFigureBridgeError(detail);
+          setNotice({ message: `Figure recipe unavailable · ${detail}`, tone: "error" });
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [
+    frameLoading,
+    loadedFrame,
+    manifest,
+    presentation,
+    forceScale,
+    velocityScale,
+  ]);
+
   const setFrame = useCallback(
     (value: number) => {
       if (!manifest?.frame_count) return;
@@ -453,6 +690,7 @@ export default function App() {
 
   const openWorkbench = useCallback((tab: WorkbenchTab, focus = false) => {
     setPlaybackOptionsOpen(false);
+    setFigureSheetOpen(false);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
     setWorkbenchTab(tab);
@@ -535,6 +773,7 @@ export default function App() {
     if (rendering) return;
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     fileInputRef.current?.click();
@@ -544,6 +783,7 @@ export default function App() {
     if (rendering) return;
     setPlaying(false);
     setShortcutsOpen(false);
+    setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setCommandOpen(true);
   }, [rendering]);
@@ -551,17 +791,22 @@ export default function App() {
   const showShortcuts = useCallback(() => {
     if (rendering) return;
     setCommandOpen(false);
+    setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setShortcutsOpen(true);
   }, [rendering]);
 
-  const exportPng = useCallback(async (options: PngExportOptions) => {
+  const exportFigure = useCallback(async (
+    options: FigureExportOptions,
+    propagateError = false,
+  ) => {
     const scene = moleculeSceneRef.current;
-    if (!scene || rendering) return;
+    if (!scene || rendering) return null;
     if (frameLoading) {
       setNotice({ message: "Wait for the current frame to finish loading.", tone: "status" });
-      return;
+      return null;
     }
+    const format = options.format ?? "png";
     const activeElement = document.activeElement;
     const focusOrigin = activeElement
       && activeElement !== document.body
@@ -570,16 +815,22 @@ export default function App() {
       : null;
     setPlaying(false);
     setRendering(true);
-    setNotice({ message: "Exporting PNG…", tone: "status" });
+    setNotice({ message: `Exporting ${format === "tiff" ? "TIFF" : "PNG"}…`, tone: "status" });
     try {
-      const blob = await scene.exportPng(options);
-      downloadBlob(blob, renderFileName(manifest?.name, options.width, options.height));
+      const blob = await scene.exportFigure(options);
+      downloadBlob(
+        blob,
+        figureFileName(manifest?.name, options.width, options.height, format),
+      );
       setNotice({
         message: `Exported ${options.width.toLocaleString()} × ${options.height.toLocaleString()} px`,
         tone: "status",
       });
+      return blob;
     } catch (error) {
       setNotice({ message: `Export failed · ${message(error)}`, tone: "error" });
+      if (propagateError) throw error;
+      return null;
     } finally {
       setRendering(false);
       requestAnimationFrame(() => restoreFocusWhenAvailable(
@@ -683,7 +934,16 @@ export default function App() {
   ]);
   const capabilities = sceneInfo?.capabilities ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
-  const canRender = Boolean(frame && capabilities && !frameLoading);
+  const loadedCoordinateMode = frame?.header.coordinates === "unwrapped"
+    ? "unwrapped"
+    : "source";
+  const canRender = Boolean(
+    frame
+    && capabilities
+    && !frameLoading
+    && !recipeApplying
+    && loadedCoordinateMode === frameCoordinateMode
+  );
   const canPlotMeasurement = canPlay
     && selectionIntent === "measurement"
     && selectedAtoms.length >= 2
@@ -838,6 +1098,7 @@ export default function App() {
     setPlaying(false);
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     setMeasurementSeries(null);
@@ -903,12 +1164,276 @@ export default function App() {
     setShortcutsOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
-    void exportPng({
+    void exportFigure({
       width: 2400,
       height: 1800,
+      format: "png",
+      dpi: 300,
+      background: { kind: "solid", color: "#ffffff" },
       periodicContext: usesPeriodicFigureContext(presentation, pbc),
     });
-  }, [canRender, exportPng, pbc, presentation.mode, presentation.wrap, rendering]);
+  }, [canRender, exportFigure, pbc, presentation.mode, presentation.wrap, rendering]);
+
+  const showFigureSheet = useCallback(() => {
+    if (!canRender || rendering) return;
+    setPlaying(false);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setFigureOutput((current) => ({
+      ...current,
+      periodicContext: usesPeriodicFigureContext(presentation, pbc),
+    }));
+    setFigureSheetOpen(true);
+  }, [canRender, pbc, presentation, rendering]);
+
+  const exportConfiguredFigure = useCallback(() => {
+    if (!canRender || rendering) return;
+    setFigureSheetOpen(false);
+    void exportFigure({
+      ...cloneFigureOutput(figureOutput),
+      transparent: figureOutput.background.kind === "transparent",
+      annotations: cloneFigureAnnotations(figureAnnotations),
+    });
+  }, [
+    canRender,
+    exportFigure,
+    figureAnnotations,
+    figureOutput,
+    rendering,
+  ]);
+
+  const currentFigureRecipe = useCallback((): FigureRecipe => {
+    const scene = moleculeSceneRef.current;
+    if (
+      !manifest
+      || !loadedFrame
+      || loadedFrame.index !== frameIndex
+      || (
+        loadedFrame.data.header.coordinates === "unwrapped"
+          ? "unwrapped"
+          : "source"
+      ) !== frameCoordinateMode
+      || !scene
+    ) {
+      throw new Error("The current frame is not ready");
+    }
+    const source = figureSourceFromManifest(manifest);
+    if (source.path.includes("pqviewer-upload-")) {
+      throw new Error("Open the source from disk before saving a reusable recipe");
+    }
+    const key = loadedFrame.data.header.frame_key;
+    if (!key) throw new Error("The current frame has no stable source key");
+    return parseFigureRecipe({
+      schema: "pqviewer.figure",
+      schema_version: 1,
+      source,
+      frame: {
+        index: loadedFrame.index,
+        key,
+        fingerprint: figureFrameFingerprint(manifest, loadedFrame.data),
+      },
+      scene: {
+        presentation,
+        selection: {
+          atoms: cloneSelections(selectedAtoms),
+          intent: selectionIntent,
+          minimumImage,
+        },
+        vectors: {
+          forceScale,
+          velocityScale,
+        },
+      },
+      camera: scene.captureCamera(),
+      output: cloneFigureOutput(figureOutput),
+      annotations: cloneFigureAnnotations(figureAnnotations),
+    });
+  }, [
+    figureAnnotations,
+    figureOutput,
+    forceScale,
+    frameIndex,
+    loadedFrame,
+    manifest,
+    minimumImage,
+    presentation,
+    selectedAtoms,
+    selectionIntent,
+    velocityScale,
+  ]);
+
+  const saveFigureRecipe = useCallback(() => {
+    try {
+      const recipe = currentFigureRecipe();
+      downloadBlob(
+        new Blob([stringifyFigureRecipe(recipe)], {
+          type: "application/json;charset=utf-8",
+        }),
+        figureRecipeFileName(manifest?.name),
+      );
+      setNotice({ message: "Figure recipe saved", tone: "status" });
+    } catch (error) {
+      setNotice({ message: `Recipe unavailable · ${message(error)}`, tone: "error" });
+    }
+  }, [currentFigureRecipe, manifest?.name]);
+
+  const showRecipeOpen = useCallback(() => {
+    if (!manifest || rendering) return;
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    recipeInputRef.current?.click();
+  }, [manifest, rendering]);
+
+  const openFigureRecipeFile = useCallback(async (file: File) => {
+    if (!manifest) return;
+    try {
+      if (file.size > MAX_FIGURE_RECIPE_BYTES) {
+        throw new Error("Figure recipe is too large");
+      }
+      const recipe = parseFigureRecipeJson(await file.text());
+      stageFigureRecipe(recipe, manifest);
+    } catch (error) {
+      const detail = message(error);
+      setFigureBridgeError(detail);
+      setNotice({ message: `Recipe unavailable · ${detail}`, tone: "error" });
+    }
+  }, [manifest, stageFigureRecipe]);
+
+  const atomLabelsEnabled = figureAnnotations.some(
+    (annotation) => annotation.kind === "atom-label",
+  );
+  const elementLegendEnabled = figureAnnotations.some(
+    (annotation) => annotation.kind === "legend"
+      && annotation.content === "elements",
+  );
+  const scaleBar = figureAnnotations.find(
+    (annotation): annotation is Extract<FigureAnnotation, { kind: "scale-bar" }> => (
+      annotation.kind === "scale-bar"
+    ),
+  ) ?? null;
+
+  const setAtomLabelsEnabled = useCallback((enabled: boolean) => {
+    setFigureAnnotations((current) => [
+      ...current.filter((annotation) => annotation.kind !== "atom-label"),
+      ...(enabled ? selectedAtoms.map((atom) => ({
+        kind: "atom-label" as const,
+        atom: { atom: atom.atom, image: [...atom.image] as CellOffset },
+      })) : []),
+    ]);
+  }, [selectedAtoms]);
+
+  const setElementLegendEnabled = useCallback((enabled: boolean) => {
+    setFigureAnnotations((current) => [
+      ...current.filter((annotation) => (
+        annotation.kind !== "legend" || annotation.content !== "elements"
+      )),
+      ...(enabled ? [{
+        kind: "legend" as const,
+        content: "elements" as const,
+        position: "top-right" as const,
+      }] : []),
+    ]);
+  }, []);
+
+  const setScaleBarEnabled = useCallback((enabled: boolean) => {
+    setFigureAnnotations((current) => [
+      ...current.filter((annotation) => annotation.kind !== "scale-bar"),
+      ...(enabled ? [{
+        kind: "scale-bar" as const,
+        length: 5,
+        unit: "angstrom" as const,
+        position: "bottom-left" as const,
+      }] : []),
+    ]);
+  }, []);
+
+  const setScaleBarLength = useCallback((length: number) => {
+    if (!Number.isFinite(length) || length <= 0) return;
+    setFigureAnnotations((current) => current.map((annotation) => (
+      annotation.kind === "scale-bar"
+        ? { ...annotation, length }
+        : annotation
+    )));
+  }, []);
+
+  const updateFigureOutput = useCallback((change: Partial<FigureOutput>) => {
+    setFigureOutput((current) => ({
+      ...current,
+      ...change,
+      background: change.background ?? current.background,
+    }));
+    if (change.projection === "perspective") {
+      setFigureAnnotations((current) => current.filter(
+        (annotation) => annotation.kind !== "scale-bar",
+      ));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!atomLabelsEnabled) return;
+    setFigureAnnotations((current) => {
+      const selected = new Map(selectedAtoms.map((atom) => [
+        atomSelectionKey(atom),
+        atom,
+      ]));
+      const retained = new Set<string>();
+      const next = current.filter((annotation) => {
+        if (annotation.kind !== "atom-label") return true;
+        const key = atomSelectionKey(annotation.atom);
+        if (!selected.has(key) || retained.has(key)) return false;
+        retained.add(key);
+        return true;
+      });
+      for (const atom of selectedAtoms) {
+        const key = atomSelectionKey(atom);
+        if (retained.has(key)) continue;
+        next.push({
+          kind: "atom-label",
+          atom: { atom: atom.atom, image: [...atom.image] as CellOffset },
+        });
+      }
+      return next;
+    });
+  }, [atomLabelsEnabled, selectedAtoms]);
+
+  useEffect(() => {
+    const bridge = {
+      ready: canRender && !recipeApplying && !rendering && !figureBridgeError,
+      error: figureBridgeError || null,
+      export: async (overrides: FigureBridgeOverrides = {}) => {
+        if (figureBridgeError) throw new Error(figureBridgeError);
+        if (!canRender || recipeApplying) {
+          throw new Error("The saved figure is not ready");
+        }
+        const background = overrides.transparent === undefined
+          ? figureOutput.background
+          : overrides.transparent
+            ? { kind: "transparent" as const }
+            : { kind: "solid" as const, color: "#ffffff" };
+        await exportFigure({
+          ...cloneFigureOutput(figureOutput),
+          ...overrides,
+          background,
+          transparent: background.kind === "transparent",
+          annotations: cloneFigureAnnotations(figureAnnotations),
+        }, true);
+      },
+    };
+    window.pqviewerFigure = bridge;
+    return () => {
+      if (window.pqviewerFigure === bridge) delete window.pqviewerFigure;
+    };
+  }, [
+    canRender,
+    exportFigure,
+    figureAnnotations,
+    figureBridgeError,
+    figureOutput,
+    recipeApplying,
+    rendering,
+  ]);
 
   const updatePresentation = useCallback((change: Partial<ScenePresentation>) => {
     setPresentation((current) => ({ ...current, ...change }));
@@ -1041,6 +1566,8 @@ export default function App() {
       setCommandOpen(false);
     } else if (shortcutsOpen) {
       setShortcutsOpen(false);
+    } else if (figureSheetOpen) {
+      setFigureSheetOpen(false);
     } else if (playbackOptionsOpen) {
       setPlaybackOptionsOpen(false);
       requestAnimationFrame(() => {
@@ -1060,6 +1587,7 @@ export default function App() {
     closeMeasurementPlot,
     closeWorkbench,
     commandOpen,
+    figureSheetOpen,
     measurementPlotOpen,
     playbackOptionsOpen,
     selectedAtoms.length,
@@ -1261,6 +1789,9 @@ export default function App() {
       })),
       { id: "display", label: workbenchVisible && workbenchTab === "view" ? "Hide display controls" : "Show display controls", keywords: "view representation settings", detail: "V", disabled: !capabilities, run: run(() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view")) },
       { id: "export", label: "Export figure", keywords: "render image png publication", detail: shortcutLabels.export, disabled: !canRender, run: run(showRender) },
+      { id: "figure-options", label: "Figure options", keywords: "render image tiff dpi transparent labels legend scale", disabled: !canRender, run: run(showFigureSheet) },
+      { id: "figure-save-recipe", label: "Save figure recipe", keywords: "reproducible view camera scene json", disabled: !canRender, run: run(saveFigureRecipe) },
+      { id: "figure-open-recipe", label: "Open figure recipe", keywords: "restore reproducible view camera scene json", disabled: !manifest, run: run(showRecipeOpen) },
       ...(["ball-stick", "spacefill", "lines"] as RepresentationMode[]).map((mode) => ({
         id: `mode-${mode}`,
         label: `Representation · ${representationLabel(mode)}`,
@@ -1469,7 +2000,10 @@ export default function App() {
     setFrame,
     shortcutLabels,
     showOpen,
+    saveFigureRecipe,
+    showFigureSheet,
     showMeasurementPlot,
+    showRecipeOpen,
     showRender,
     showShortcuts,
     stepFrame,
@@ -1494,6 +2028,7 @@ export default function App() {
     "fit",
     "display",
     "export",
+    "figure-options",
   ], [
     canPlay,
     canPlotMeasurement,
@@ -1508,6 +2043,7 @@ export default function App() {
     rendering ? "is-rendering" : "",
     canPlay ? "timeline-present" : "timeline-absent",
     selectedAtoms.length > 0 ? "selection-present" : "",
+    figureSheetOpen ? "figure-sheet-open" : "",
     measurementPlotOpen ? "measurement-plot-open" : "",
     playbackOptionsOpen ? "playback-options-open" : "",
   ].filter(Boolean).join(" ");
@@ -1545,6 +2081,19 @@ export default function App() {
         onChange={(event) => {
           if (rendering) return;
           void openSelectedFiles([...(event.currentTarget.files ?? [])]);
+          event.currentTarget.value = "";
+        }}
+      />
+      <input
+        ref={recipeInputRef}
+        className="sr-only file-input"
+        type="file"
+        accept=".pqfigure.json,.pqv.json,application/json"
+        tabIndex={-1}
+        disabled={rendering}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file && !rendering) void openFigureRecipeFile(file);
           event.currentTarget.value = "";
         }}
       />
@@ -1592,7 +2141,18 @@ export default function App() {
               disabled={rendering || !capabilities}
               onClick={() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view", true)}
             ><Icon name="sliders" /><span>View</span></button>
-            <button ref={renderButtonRef} className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
+            <div className="figure-control">
+              <button ref={renderButtonRef} className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
+              <button
+                className="figure-options-button"
+                type="button"
+                aria-label="Figure options"
+                aria-controls="figure-sheet"
+                aria-expanded={figureSheetOpen}
+                disabled={!canRender || rendering}
+                onClick={() => figureSheetOpen ? setFigureSheetOpen(false) : showFigureSheet()}
+              ><Icon name="more" /></button>
+            </div>
           </div>
         </header>
 
@@ -1762,6 +2322,18 @@ export default function App() {
                 measurementFileName(manifest.name, measurementSeries.kind, "svg"),
               );
             }}
+            onExportPdf={() => {
+              if (!measurementSeries?.complete) return;
+              const pdf = measurementSeriesPdf(measurementSeries);
+              const bytes = pdf.buffer.slice(
+                pdf.byteOffset,
+                pdf.byteOffset + pdf.byteLength,
+              ) as ArrayBuffer;
+              downloadBlob(
+                new Blob([bytes], { type: "application/pdf" }),
+                measurementFileName(manifest.name, measurementSeries.kind, "pdf"),
+              );
+            }}
           />
         )}
 
@@ -1833,6 +2405,25 @@ export default function App() {
               </button>
             )}
           </div>
+        )}
+        {figureSheetOpen && (
+          <FigureSheet
+            output={figureOutput}
+            selectedCount={selectedAtoms.length}
+            atomLabels={atomLabelsEnabled}
+            elementLegend={elementLegendEnabled}
+            scaleBar={scaleBar}
+            busy={rendering}
+            onOutput={updateFigureOutput}
+            onAtomLabels={setAtomLabelsEnabled}
+            onElementLegend={setElementLegendEnabled}
+            onScaleBar={setScaleBarEnabled}
+            onScaleBarLength={setScaleBarLength}
+            onExport={exportConfiguredFigure}
+            onSaveRecipe={saveFigureRecipe}
+            onOpenRecipe={showRecipeOpen}
+            onClose={() => setFigureSheetOpen(false)}
+          />
         )}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
         {commandOpen && <CommandPalette
@@ -1945,6 +2536,239 @@ function restoreFocusWhenAvailable(element: FocusTarget | null) {
   });
   const timeout = window.setTimeout(() => observer.disconnect(), 30_000);
   observer.observe(element, { attributes: true, attributeFilter: ["disabled"] });
+}
+
+function FigureSheet({
+  output,
+  selectedCount,
+  atomLabels,
+  elementLegend,
+  scaleBar,
+  busy,
+  onOutput,
+  onAtomLabels,
+  onElementLegend,
+  onScaleBar,
+  onScaleBarLength,
+  onExport,
+  onSaveRecipe,
+  onOpenRecipe,
+  onClose,
+}: {
+  output: FigureOutput;
+  selectedCount: number;
+  atomLabels: boolean;
+  elementLegend: boolean;
+  scaleBar: Extract<FigureAnnotation, { kind: "scale-bar" }> | null;
+  busy: boolean;
+  onOutput: (change: Partial<FigureOutput>) => void;
+  onAtomLabels: (enabled: boolean) => void;
+  onElementLegend: (enabled: boolean) => void;
+  onScaleBar: (enabled: boolean) => void;
+  onScaleBarLength: (length: number) => void;
+  onExport: () => void;
+  onSaveRecipe: () => void;
+  onOpenRecipe: () => void;
+  onClose: () => void;
+}) {
+  const panelRef = useRef<HTMLElement>(null);
+  useModalFocus(panelRef);
+  const presets = [
+    { label: "Landscape", width: 2400, height: 1800 },
+    { label: "Square", width: 2400, height: 2400 },
+    { label: "Wide", width: 3200, height: 1800 },
+  ];
+  return (
+    <div
+      className="figure-sheet-backdrop"
+      onPointerDown={(event) => event.target === event.currentTarget && onClose()}
+    >
+    <aside
+      ref={panelRef}
+      className="figure-sheet export-sheet"
+      id="figure-sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Figure options"
+      tabIndex={-1}
+    >
+      <header className="export-heading">
+        <div>
+          <strong>Figure</strong>
+          <span>{output.width.toLocaleString()} × {output.height.toLocaleString()} px · {formatNumber(output.dpi)} DPI</span>
+        </div>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="Close figure options"><Icon name="close" /></button>
+      </header>
+      <div className="export-body">
+        <section className="figure-section">
+          <span className="figure-section-label">Size</span>
+          <div
+            className="figure-presets"
+            role="group"
+            aria-label="Figure size preset"
+          >
+            {presets.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                className={output.width === preset.width && output.height === preset.height ? "is-active" : ""}
+                aria-pressed={output.width === preset.width && output.height === preset.height}
+                onClick={() => onOutput({ width: preset.width, height: preset.height })}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <div className="figure-number-grid">
+            <label>
+              <span>Width</span>
+              <input
+                type="number"
+                min="1"
+                max="8192"
+                step="1"
+                value={output.width}
+                onChange={(event) => onOutput({ width: Number(event.currentTarget.value) })}
+              />
+            </label>
+            <label>
+              <span>Height</span>
+              <input
+                type="number"
+                min="1"
+                max="8192"
+                step="1"
+                value={output.height}
+                onChange={(event) => onOutput({ height: Number(event.currentTarget.value) })}
+              />
+            </label>
+            <label>
+              <span>DPI</span>
+              <input
+                type="number"
+                min="1"
+                max="2400"
+                step="1"
+                value={output.dpi}
+                onChange={(event) => onOutput({ dpi: Number(event.currentTarget.value) })}
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="figure-section">
+          <span className="figure-section-label">File</span>
+          <div className="figure-choice-row" role="group" aria-label="Figure format">
+            {(["png", "tiff"] as const).map((format) => (
+              <button
+                key={format}
+                type="button"
+                className={output.format === format ? "is-active" : ""}
+                aria-pressed={output.format === format}
+                onClick={() => onOutput({ format })}
+              >
+                {format === "png" ? "PNG" : "TIFF"}
+              </button>
+            ))}
+          </div>
+          <div className="figure-choice-row" role="group" aria-label="Figure background">
+            <button
+              type="button"
+              className={output.background.kind === "solid" ? "is-active" : ""}
+              aria-pressed={output.background.kind === "solid"}
+              onClick={() => onOutput({ background: { kind: "solid", color: "#ffffff" } })}
+            >
+              White
+            </button>
+            <button
+              type="button"
+              className={output.background.kind === "transparent" ? "is-active" : ""}
+              aria-pressed={output.background.kind === "transparent"}
+              onClick={() => onOutput({ background: { kind: "transparent" } })}
+            >
+              Transparent
+            </button>
+          </div>
+        </section>
+
+        <section className="figure-section">
+          <span className="figure-section-label">Camera</span>
+          <div className="figure-choice-row" role="group" aria-label="Figure projection">
+            {(["orthographic", "perspective"] as const).map((projection) => (
+              <button
+                key={projection}
+                type="button"
+                className={output.projection === projection ? "is-active" : ""}
+                aria-pressed={output.projection === projection}
+                onClick={() => onOutput({ projection })}
+              >
+                {projection === "orthographic" ? "Orthographic" : "Perspective"}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="figure-section">
+          <span className="figure-section-label">Annotations</span>
+          <label className="figure-toggle">
+            <span><strong>Selected atom labels</strong><small>{selectedCount > 0 ? `${selectedCount} selected` : "Select atoms first"}</small></span>
+            <input
+              type="checkbox"
+              checked={atomLabels}
+              disabled={selectedCount === 0}
+              onChange={(event) => onAtomLabels(event.currentTarget.checked)}
+            />
+          </label>
+          <label className="figure-toggle">
+            <span><strong>Element legend</strong><small>Visible elements</small></span>
+            <input
+              type="checkbox"
+              checked={elementLegend}
+              onChange={(event) => onElementLegend(event.currentTarget.checked)}
+            />
+          </label>
+          <label className="figure-toggle">
+            <span><strong>Scale bar</strong><small>Orthographic figures</small></span>
+            <input
+              type="checkbox"
+              checked={Boolean(scaleBar)}
+              disabled={output.projection !== "orthographic"}
+              onChange={(event) => onScaleBar(event.currentTarget.checked)}
+            />
+          </label>
+          {scaleBar && (
+            <label className="figure-scale-length">
+              <span>Length</span>
+              <input
+                type="number"
+                min="0.0001"
+                step="any"
+                value={scaleBar.length}
+                onChange={(event) => onScaleBarLength(Number(event.currentTarget.value))}
+              />
+              <span>Å</span>
+            </label>
+          )}
+        </section>
+
+        <section className="figure-section figure-recipe-actions">
+          <span className="figure-section-label">Recipe</span>
+          <p>Save this source, frame, scene, and camera as one reproducible view.</p>
+          <div>
+            <button type="button" onClick={onOpenRecipe}>Open</button>
+            <button type="button" onClick={onSaveRecipe}>Save</button>
+          </div>
+        </section>
+      </div>
+      <footer className="export-footer">
+        <button type="button" onClick={onClose}>Cancel</button>
+        <button className="primary" type="button" disabled={busy} onClick={onExport}>
+          {busy ? "Exporting…" : `Export ${output.format === "tiff" ? "TIFF" : "PNG"}`}
+        </button>
+      </footer>
+    </aside>
+    </div>
+  );
 }
 
 function CommandPalette({
@@ -3317,12 +4141,61 @@ export function profilePresentation(
   };
 }
 
-function renderFileName(name: string | undefined, width: number, height: number): string {
-  const base = (name ?? "molecule")
+function figureFileName(
+  name: string | undefined,
+  width: number,
+  height: number,
+  format: "png" | "tiff",
+): string {
+  return `${safeFileBase(name, "molecule")}-${width}x${height}.${format}`;
+}
+
+function figureRecipeFileName(name: string | undefined): string {
+  return `${safeFileBase(name, "molecule")}.pqfigure.json`;
+}
+
+function safeFileBase(name: string | undefined, fallback: string): string {
+  return (name ?? fallback)
     .replace(/\.[^.]+$/, "")
     .replace(/[^a-z0-9._-]+/gi, "-")
-    .replace(/^-+|-+$/g, "") || "molecule";
-  return `${base}-${width}x${height}.png`;
+    .replace(/^-+|-+$/g, "") || fallback;
+}
+
+function cloneFigureOutput(output: FigureOutput): FigureOutput {
+  return {
+    ...output,
+    background: output.background.kind === "transparent"
+      ? { kind: "transparent" }
+      : { kind: "solid", color: output.background.color },
+  };
+}
+
+function cloneFigureAnnotations(
+  annotations: readonly FigureAnnotation[],
+): FigureAnnotation[] {
+  return annotations.map((annotation) => {
+    if (annotation.kind === "atom-label") {
+      return {
+        ...annotation,
+        atom: {
+          atom: annotation.atom.atom,
+          image: [...annotation.atom.image] as CellOffset,
+        },
+        ...(annotation.offset
+          ? { offset: [...annotation.offset] as [number, number] }
+          : {}),
+      };
+    }
+    return { ...annotation };
+  });
+}
+
+function atomSelectionKey(selection: AtomSelection): string {
+  return `${selection.atom}:${selection.image.join(",")}`;
+}
+
+function isHeadlessFigureMode(): boolean {
+  return new URLSearchParams(window.location.search).get("headless") === "1";
 }
 
 function measurementSelectionTitle(manifest: Manifest, selections: readonly AtomSelection[]): string {
@@ -3341,13 +4214,9 @@ function measurementUnitLabel(unit: "angstrom" | "degree"): string {
 function measurementFileName(
   name: string | undefined,
   kind: "distance" | "angle" | "dihedral",
-  extension: "csv" | "svg",
+  extension: "csv" | "svg" | "pdf",
 ): string {
-  const base = (name ?? "trajectory")
-    .replace(/\.[^.]+$/, "")
-    .replace(/[^a-z0-9._-]+/gi, "-")
-    .replace(/^-+|-+$/g, "") || "trajectory";
-  return `${base}-${kind}.${extension}`;
+  return `${safeFileBase(name, "trajectory")}-${kind}.${extension}`;
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

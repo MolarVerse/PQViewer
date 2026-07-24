@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { PDFDocument } from "pdf-lib";
 import { DatasetChangedError } from "./api";
 import {
   calculateMeasurementSeries,
   measurementSeriesCsv,
+  measurementSeriesPdf,
   measurementSeriesSvg,
 } from "./measurementSeries";
 import type {
@@ -525,6 +527,48 @@ describe("measurement series exports", () => {
     expect(path.match(/L/g)).toHaveLength(2);
   });
 
+  it("writes a valid vector PDF with exact page dimensions and metadata", async () => {
+    const bytes = measurementSeriesPdf(series, { width: 720, height: 432 });
+    const pdf = new TextDecoder().decode(bytes);
+    const parsed = await PDFDocument.load(bytes);
+
+    expect(pdf.startsWith("%PDF-1.4\n%PQV1\n")).toBe(true);
+    expect(pdf.endsWith("%%EOF\n")).toBe(true);
+    expect(pdf).toContain("/MediaBox [0 0 720 432]");
+    expect(pdf).toContain("/BaseFont /Helvetica");
+    expect(pdf).toContain("/BaseFont /Helvetica-Bold");
+    expect(pdf).toContain("/Title <FEFF00440069007300740061006E00630065002000B70020004300312013004F0032>");
+    expect(pdf).toContain("(Distance \\267 C1\\226O2) Tj");
+    expect(pdf).toContain("(Time [fs]) Tj");
+    expect(pdf).toContain("(Distance [\\305]) Tj");
+    expect(pdf).not.toContain("/Subtype /Image");
+    expect(pdf).not.toMatch(/NaN|Infinity/);
+    expect(parsed.getPageCount()).toBe(1);
+    expect(parsed.getPage(0).getSize()).toEqual({
+      width: 720,
+      height: 432,
+    });
+
+    const startXref = Number(pdf.match(/startxref\n(\d+)\n%%EOF/)?.[1]);
+    expect(pdf.slice(startXref)).toMatch(/^xref\n/);
+    const xrefRows = pdf.slice(startXref).split("\n").slice(3, 10);
+    xrefRows.forEach((row, index) => {
+      const offset = Number(row.slice(0, 10));
+      expect(pdf.slice(offset)).toMatch(new RegExp(`^${index + 1} 0 obj\\n`));
+    });
+  });
+
+  it("keeps PDF trace gaps as separate vector subpaths", () => {
+    const pdf = new TextDecoder().decode(measurementSeriesPdf(series));
+    const trace = pdf.match(
+      /0\.075 0\.498 0\.471 RG\n1\.7 w\n1 J 1 j\n([\s\S]*?)\nS/,
+    )?.[1] ?? "";
+
+    expect(trace.match(/ m/g)).toHaveLength(2);
+    expect(trace.match(/ l/g)).toBeNull();
+    expect(pdf).toMatch(/ c\n/);
+  });
+
   it("renders an explicit empty state and rejects invalid dimensions", () => {
     const empty = measurementSeriesSvg({
       ...series,
@@ -536,6 +580,16 @@ describe("measurement series exports", () => {
     expect(empty).toContain("No valid measurements");
     expect(() => measurementSeriesSvg(series, { width: 0 })).toThrow(
       "SVG width must be a positive integer",
+    );
+    const emptyPdf = new TextDecoder().decode(measurementSeriesPdf({
+      ...series,
+      xValues: [1, 2],
+      values: [null, null],
+      loadedCount: 2,
+    }));
+    expect(emptyPdf).toContain("(No valid measurements) Tj");
+    expect(() => measurementSeriesPdf(series, { width: 0 })).toThrow(
+      "PDF width must be a positive integer",
     );
   });
 });

@@ -57,6 +57,13 @@ export interface MeasurementSeriesSvgOptions {
   height?: number;
 }
 
+export interface MeasurementSeriesPdfOptions {
+  /** Page width in PDF points. */
+  width?: number;
+  /** Page height in PDF points. */
+  height?: number;
+}
+
 const MAX_COUNT_PROGRESS_UPDATES = 60;
 const MAX_LARGE_COUNT_PROGRESS_UPDATES = 20;
 
@@ -259,6 +266,132 @@ export function measurementSeriesSvg(
     `<text x="24" y="${margin.top + plotHeight / 2}" transform="rotate(-90 24 ${margin.top + plotHeight / 2})" text-anchor="middle" fill="#293633" font-family="Arial, Helvetica, sans-serif" font-size="14">${escapeXml(yLabel)}</text>`,
     "</svg>",
   ].join("");
+}
+
+export function measurementSeriesPdf(
+  series: MeasurementSeries,
+  options: MeasurementSeriesPdfOptions = {},
+): Uint8Array {
+  const width = positivePdfDimension(options.width ?? 720, "width");
+  const height = positivePdfDimension(options.height ?? 432, "height");
+  const margin = {
+    top: 52,
+    right: 30,
+    bottom: 54,
+    left: 62,
+  };
+  const plotWidth = Math.max(1, width - margin.left - margin.right);
+  const plotHeight = Math.max(1, height - margin.top - margin.bottom);
+  const points = finiteSeriesPoints(series);
+  const xDomain = expandedDomain(points.map(({ x }) => x));
+  const yDomain = expandedDomain(points.map(({ y }) => y));
+  const xMap = (value: number) => (
+    margin.left + (value - xDomain[0]) / (xDomain[1] - xDomain[0]) * plotWidth
+  );
+  const yMap = (value: number) => (
+    margin.top + (1 - (value - yDomain[0]) / (yDomain[1] - yDomain[0])) * plotHeight
+  );
+  const xTicks = ticks(xDomain[0], xDomain[1], 5);
+  const yTicks = ticks(yDomain[0], yDomain[1], 5);
+  const xLabel = withUnit(series.axis.label, series.axis.unit);
+  const yLabel = withUnit(titleCase(series.kind), displayUnit(series.unit));
+  const status = series.complete
+    ? `${series.values.filter((value) => value !== null).length} valid frames`
+    : `${series.loadedCount} frames loaded`;
+  const commands: string[] = [
+    "1 1 1 rg",
+    `0 0 ${pdfNumber(width)} ${pdfNumber(height)} re f`,
+  ];
+
+  for (const value of yTicks) {
+    const y = height - yMap(value);
+    commands.push(
+      "0.886 0.91 0.902 RG",
+      "0.6 w",
+      `${pdfNumber(margin.left)} ${pdfNumber(y)} m ${pdfNumber(width - margin.right)} ${pdfNumber(y)} l S`,
+      pdfText(tickNumber(value), margin.left - 8, y - 3.2, {
+        align: "right",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+  for (const value of xTicks) {
+    const x = xMap(value);
+    commands.push(
+      "0.929 0.945 0.941 RG",
+      "0.6 w",
+      `${pdfNumber(x)} ${pdfNumber(height - margin.top)} m ${pdfNumber(x)} ${pdfNumber(margin.bottom)} l S`,
+      pdfText(tickNumber(value), x, margin.bottom - 17, {
+        align: "center",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+
+  commands.push(
+    "0.518 0.565 0.553 RG",
+    "0.8 w",
+    `${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} m ${pdfNumber(width - margin.right)} ${pdfNumber(margin.bottom)} l S`,
+    `${pdfNumber(margin.left)} ${pdfNumber(height - margin.top)} m ${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} l S`,
+  );
+  const trace = pdfSeriesPath(series, xMap, yMap, height);
+  if (trace) {
+    commands.push(
+      "0.075 0.498 0.471 RG",
+      "1.7 w",
+      "1 J 1 j",
+      trace,
+      "S",
+    );
+    for (const marker of isolatedPdfMarkers(series, xMap, yMap, height)) {
+      commands.push("0.075 0.498 0.471 rg", pdfCircle(marker.x, marker.y, 2), "f");
+    }
+  } else {
+    commands.push(pdfText(
+      "No valid measurements",
+      margin.left + plotWidth * 0.5,
+      margin.bottom + plotHeight * 0.5,
+      {
+        align: "center",
+        color: [0.482, 0.529, 0.518],
+        size: 10,
+      },
+    ));
+  }
+  commands.push(
+    pdfText(series.title, margin.left, height - 27, {
+      color: [0.09, 0.137, 0.129],
+      font: "F2",
+      size: 15,
+    }),
+    pdfText(status, margin.left, height - 42, {
+      color: [0.392, 0.439, 0.427],
+      size: 8.5,
+    }),
+    pdfText(xLabel, margin.left + plotWidth * 0.5, 17, {
+      align: "center",
+      color: [0.161, 0.212, 0.2],
+      size: 9,
+    }),
+    pdfVerticalText(
+      yLabel,
+      18,
+      margin.bottom + plotHeight * 0.5,
+      {
+        color: [0.161, 0.212, 0.2],
+        size: 9,
+      },
+    ),
+  );
+
+  return buildVectorPdf(
+    width,
+    height,
+    commands.filter(Boolean).join("\n"),
+    series.title,
+  );
 }
 
 function measureFrame(
@@ -621,6 +754,228 @@ function positiveDimension(value: number, label: string): number {
     throw new RangeError(`SVG ${label} must be a positive integer`);
   }
   return value;
+}
+
+function positivePdfDimension(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 14_400) {
+    throw new RangeError(`PDF ${label} must be a positive integer no larger than 14400 points`);
+  }
+  return value;
+}
+
+function pdfSeriesPath(
+  series: MeasurementSeries,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+  height: number,
+): string {
+  const count = Math.min(series.xValues.length, series.values.length);
+  const commands: string[] = [];
+  let open = false;
+  let previousValue: number | null = null;
+  for (let index = 0; index < count; index += 1) {
+    const x = series.xValues[index];
+    const y = series.values[index];
+    if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      open = false;
+      previousValue = null;
+      continue;
+    }
+    if (
+      series.unit === "degree"
+      && previousValue !== null
+      && Math.abs(y - previousValue) > 180
+    ) {
+      open = false;
+    }
+    commands.push(
+      `${pdfNumber(xMap(x))} ${pdfNumber(height - yMap(y))} ${open ? "l" : "m"}`,
+    );
+    open = true;
+    previousValue = y;
+  }
+  return commands.join("\n");
+}
+
+function isolatedPdfMarkers(
+  series: MeasurementSeries,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+  height: number,
+): Array<{ x: number; y: number }> {
+  const count = Math.min(series.xValues.length, series.values.length);
+  const markers: Array<{ x: number; y: number }> = [];
+  const valid = (index: number) => {
+    if (index < 0 || index >= count) return false;
+    return Number.isFinite(series.xValues[index])
+      && typeof series.values[index] === "number"
+      && Number.isFinite(series.values[index]);
+  };
+  for (let index = 0; index < count; index += 1) {
+    if (
+      !valid(index)
+      || connectedMeasurementSamples(series, index - 1, index)
+      || connectedMeasurementSamples(series, index, index + 1)
+    ) {
+      continue;
+    }
+    markers.push({
+      x: xMap(series.xValues[index]),
+      y: height - yMap(series.values[index]!),
+    });
+  }
+  return markers;
+}
+
+function pdfCircle(x: number, y: number, radius: number): string {
+  const control = radius * 0.5522847498;
+  return [
+    `${pdfNumber(x + radius)} ${pdfNumber(y)} m`,
+    `${pdfNumber(x + radius)} ${pdfNumber(y + control)} ${pdfNumber(x + control)} ${pdfNumber(y + radius)} ${pdfNumber(x)} ${pdfNumber(y + radius)} c`,
+    `${pdfNumber(x - control)} ${pdfNumber(y + radius)} ${pdfNumber(x - radius)} ${pdfNumber(y + control)} ${pdfNumber(x - radius)} ${pdfNumber(y)} c`,
+    `${pdfNumber(x - radius)} ${pdfNumber(y - control)} ${pdfNumber(x - control)} ${pdfNumber(y - radius)} ${pdfNumber(x)} ${pdfNumber(y - radius)} c`,
+    `${pdfNumber(x + control)} ${pdfNumber(y - radius)} ${pdfNumber(x + radius)} ${pdfNumber(y - control)} ${pdfNumber(x + radius)} ${pdfNumber(y)} c`,
+    "h",
+  ].join("\n");
+}
+
+interface PdfTextOptions {
+  align?: "left" | "center" | "right";
+  color: [number, number, number];
+  font?: "F1" | "F2";
+  size: number;
+}
+
+function pdfText(
+  text: string,
+  x: number,
+  y: number,
+  options: PdfTextOptions,
+): string {
+  const width = estimatedPdfTextWidth(text, options.size);
+  const origin = options.align === "center"
+    ? x - width * 0.5
+    : options.align === "right"
+      ? x - width
+      : x;
+  const [red, green, blue] = options.color;
+  return [
+    "BT",
+    `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} rg`,
+    `/${options.font ?? "F1"} ${pdfNumber(options.size)} Tf`,
+    `1 0 0 1 ${pdfNumber(origin)} ${pdfNumber(y)} Tm`,
+    `${pdfLiteral(text)} Tj`,
+    "ET",
+  ].join("\n");
+}
+
+function pdfVerticalText(
+  text: string,
+  x: number,
+  centerY: number,
+  options: PdfTextOptions,
+): string {
+  const origin = centerY - estimatedPdfTextWidth(text, options.size) * 0.5;
+  const [red, green, blue] = options.color;
+  return [
+    "BT",
+    `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} rg`,
+    `/${options.font ?? "F1"} ${pdfNumber(options.size)} Tf`,
+    `0 1 -1 0 ${pdfNumber(x)} ${pdfNumber(origin)} Tm`,
+    `${pdfLiteral(text)} Tj`,
+    "ET",
+  ].join("\n");
+}
+
+function estimatedPdfTextWidth(text: string, size: number): number {
+  let units = 0;
+  for (const character of text) {
+    units += /[ilI1.,:;|]/.test(character)
+      ? 0.27
+      : /[MW@%]/.test(character)
+        ? 0.84
+        : character === " " ? 0.28 : 0.53;
+  }
+  return units * size;
+}
+
+function buildVectorPdf(
+  width: number,
+  height: number,
+  content: string,
+  title: string,
+): Uint8Array {
+  const contentBytes = new TextEncoder().encode(`${content}\n`);
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfNumber(width)} ${pdfNumber(height)}] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>`,
+    `<< /Length ${contentBytes.length} >>\nstream\n${content}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    `<< /Title ${pdfUnicodeString(title)} /Creator (PQViewer) /Producer (PQViewer) >>`,
+  ];
+  let document = "%PDF-1.4\n%PQV1\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(new TextEncoder().encode(document).length);
+    document += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xref = new TextEncoder().encode(document).length;
+  document += `xref\n0 ${objects.length + 1}\n`;
+  document += "0000000000 65535 f \n";
+  for (const offset of offsets.slice(1)) {
+    document += `${offset.toString().padStart(10, "0")} 00000 n \n`;
+  }
+  document += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 7 0 R >>\n`;
+  document += `startxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(document);
+}
+
+function pdfLiteral(value: string): string {
+  const bytes: number[] = [];
+  for (const character of value) bytes.push(winAnsiByte(character));
+  return `(${bytes.map((byte) => {
+    if (byte === 0x28 || byte === 0x29 || byte === 0x5c) {
+      return `\\${String.fromCharCode(byte)}`;
+    }
+    if (byte < 0x20 || byte > 0x7e) {
+      return `\\${byte.toString(8).padStart(3, "0")}`;
+    }
+    return String.fromCharCode(byte);
+  }).join("")})`;
+}
+
+function pdfUnicodeString(value: string): string {
+  let encoded = "FEFF";
+  for (let index = 0; index < value.length; index += 1) {
+    encoded += value.charCodeAt(index).toString(16).padStart(4, "0").toUpperCase();
+  }
+  return `<${encoded}>`;
+}
+
+function winAnsiByte(character: string): number {
+  const code = character.codePointAt(0) ?? 0x3f;
+  if (code <= 0xff) return code;
+  return new Map<number, number>([
+    [0x2013, 0x96],
+    [0x2014, 0x97],
+    [0x2018, 0x91],
+    [0x2019, 0x92],
+    [0x201c, 0x93],
+    [0x201d, 0x94],
+    [0x2022, 0x95],
+    [0x2026, 0x85],
+    [0x20ac, 0x80],
+    [0x2122, 0x99],
+    [0x2212, 0x2d],
+  ]).get(code) ?? 0x3f;
+}
+
+function pdfNumber(value: number): string {
+  if (!Number.isFinite(value)) throw new Error("PDF contains a non-finite number");
+  const rounded = Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(3));
+  return rounded.toString();
 }
 
 const elementSymbols = [

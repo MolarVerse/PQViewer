@@ -15,6 +15,16 @@ export async function getManifest(): Promise<Manifest> {
   return manifest;
 }
 
+export async function getInitialRecipe(): Promise<unknown> {
+  const response = await fetch("/api/initial-recipe", {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(await responseMessage(response, "Could not load the figure recipe"));
+  }
+  return response.json();
+}
+
 export async function openFiles(files: File[], signal?: AbortSignal): Promise<Manifest> {
   if (files.length === 0) throw new Error("Choose at least one trajectory file");
   const body = new FormData();

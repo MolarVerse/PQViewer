@@ -26,7 +26,7 @@ export interface PngExportLimits {
 }
 
 export const DEFAULT_PNG_EXPORT_PADDING = 0.08;
-export const MAX_PNG_EXPORT_PIXELS = 24_000_000;
+export const MAX_PNG_EXPORT_PIXELS = 12_000_000;
 
 export function resolvePngExportOptions(
   options: PngExportOptions,

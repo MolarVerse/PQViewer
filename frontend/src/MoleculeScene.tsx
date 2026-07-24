@@ -2,8 +2,13 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { frameArray } from "./api";
+import type {
+  FigureAnnotation,
+  FigureBackground,
+  FigureCorner,
+} from "./figureRecipe";
 import {
-  encodeRgbaPng,
+  flipRgbaRowsInPlace,
   hasVisiblePngContent,
   MAX_PNG_EXPORT_PIXELS,
   pngExportAoScale,
@@ -11,7 +16,9 @@ import {
   resolvePngExportOptions,
 } from "./scene/pngExport";
 import type { PngExportLimits, PngExportOptions, ResolvedPngExportOptions } from "./scene/pngExport";
+import { encodeFigurePng, encodeFigureTiff } from "./scene/figureEncoding";
 import { publicationCamera, publicationContextUsesPoints } from "./scene/publication";
+import { loadPublicationFont } from "./scene/publicationFont";
 import {
   backboneResidues,
   cellImageCorners,
@@ -136,8 +143,35 @@ interface MoleculeSceneProps {
 
 export type ViewPreset = "perspective" | "xy" | "xz" | "yz";
 
+export interface SceneCameraState {
+  position: [number, number, number];
+  target: [number, number, number];
+  up: [number, number, number];
+  fov: number;
+  zoom: number;
+  near: number;
+  far: number;
+}
+
 export interface MoleculeSceneHandle {
   exportPng: (options: PngExportOptions) => Promise<Blob>;
+  exportFigure: (options: FigureExportOptions) => Promise<Blob>;
+  captureCamera: () => SceneCameraState;
+  restoreCamera: (camera: SceneCameraState) => void;
+}
+
+export interface FigureExportOptions extends PngExportOptions {
+  format?: "png" | "tiff";
+  dpi?: number;
+  background?: FigureBackground;
+  annotations?: readonly FigureAnnotation[];
+}
+
+interface ResolvedFigureExportOptions extends ResolvedPngExportOptions {
+  format: "png" | "tiff";
+  dpi: number;
+  background: FigureBackground;
+  annotations: readonly FigureAnnotation[];
 }
 
 export interface RenderedSceneInfo {
@@ -202,6 +236,7 @@ interface SceneState {
   lastViewSignal: number;
   lastFittedAspect: number;
   fitContext: FitContext | null;
+  cameraMode: "fit" | "manual";
 }
 
 interface PublicationSnapshot {
@@ -405,16 +440,41 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
 
   useImperativeHandle(ref, () => ({
     exportPng: async (options) => {
-      if (exportActiveRef.current) throw new Error("A PNG export is already in progress");
+      if (exportActiveRef.current) throw new Error("A figure export is already in progress");
       const state = stateRef.current;
       if (!state?.model) throw new Error("The molecular scene is not ready to export");
       const snapshot = capturePublicationSnapshot(state);
       exportActiveRef.current = true;
       try {
-        return await exportScenePng(state.renderer, snapshot, options);
+        return await exportSceneFigure(state.renderer, snapshot, {
+          ...options,
+          format: "png",
+        });
       } finally {
         exportActiveRef.current = false;
       }
+    },
+    exportFigure: async (options) => {
+      if (exportActiveRef.current) throw new Error("A figure export is already in progress");
+      const state = stateRef.current;
+      if (!state?.model) throw new Error("The molecular scene is not ready to export");
+      const snapshot = capturePublicationSnapshot(state);
+      exportActiveRef.current = true;
+      try {
+        return await exportSceneFigure(state.renderer, snapshot, options);
+      } finally {
+        exportActiveRef.current = false;
+      }
+    },
+    captureCamera: () => {
+      const state = stateRef.current;
+      if (!state) throw new Error("The molecular scene is not ready");
+      return captureCameraState(state.camera, state.controls.target);
+    },
+    restoreCamera: (camera) => {
+      const state = stateRef.current;
+      if (!state) throw new Error("The molecular scene is not ready");
+      restoreCameraState(state, camera);
     },
   }), []);
 
@@ -523,8 +583,13 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       lastViewSignal: viewSignal,
       lastFittedAspect: 1,
       fitContext: null,
+      cameraMode: "fit",
     };
     stateRef.current = state;
+    const markCameraManual = () => {
+      state.cameraMode = "manual";
+    };
+    controls.addEventListener("start", markCameraManual);
 
     let renderWidth = 0;
     let renderHeight = 0;
@@ -540,7 +605,11 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       renderer.setDrawingBufferSize(width, height, pixelRatio);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      if (state.fitContext && Math.abs(Math.log(camera.aspect / state.lastFittedAspect)) > 0.06) {
+      if (
+        state.cameraMode === "fit"
+        && state.fitContext
+        && Math.abs(Math.log(camera.aspect / state.lastFittedAspect)) > 0.06
+      ) {
         fitCamera(state, state.fitContext);
       }
     };
@@ -750,6 +819,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       canvas.removeEventListener("blur", onBlur);
       canvas.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keydown", onWindowKeyDown);
+      controls.removeEventListener("start", markCameraManual);
       controls.dispose();
       root.remove(selection);
       root.remove(selectionPoints);
@@ -959,9 +1029,13 @@ function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
   };
 }
 
-async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: PublicationSnapshot, options: PngExportOptions): Promise<Blob> {
+async function exportSceneFigure(
+  renderer: THREE.WebGLRenderer,
+  snapshot: PublicationSnapshot,
+  options: FigureExportOptions,
+): Promise<Blob> {
   const gl = renderer.getContext();
-  if (gl.isContextLost()) throw new Error("PNG export is unavailable because the WebGL context was lost");
+  if (gl.isContextLost()) throw new Error("Figure export is unavailable because the WebGL context was lost");
   const [
     { GTAOPass },
     { OutputPass },
@@ -977,7 +1051,7 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
     import("three/examples/jsm/lines/LineSegments2.js"),
     import("three/examples/jsm/lines/LineSegmentsGeometry.js"),
   ]);
-  const resolved = resolvePngExportOptions(options, rendererPngLimits(renderer, gl));
+  const resolved = resolveFigureExportOptions(options, rendererPngLimits(renderer, gl));
   const publication = buildPublicationScene(snapshot, resolved, { LineMaterial, LineSegments2, LineSegmentsGeometry });
   const camera = publicationCamera(
     publication.root,
@@ -1038,7 +1112,7 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
     : null;
   const outputPass = new OutputPass();
   outputPass.renderToScreen = false;
-  configurePublicationOutput(outputPass, resolved.transparent);
+  configurePublicationOutput(outputPass, resolved.background);
 
   const previousTarget = renderer.getRenderTarget();
   const previousCubeFace = renderer.getActiveCubeFace();
@@ -1087,6 +1161,11 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
     renderer.readRenderTargetPixels(outputTarget, 0, 0, resolved.width, resolved.height, pixels);
     const error = gl.getError();
     if (error !== gl.NO_ERROR) throw new Error(webGlExportError(error, gl));
+    if (!hasVisiblePngContent(pixels, resolved.transparent)) {
+      throw new Error("the rendered image was blank");
+    }
+    flipRgbaRowsInPlace(pixels, resolved.width, resolved.height);
+    await applyFigureAnnotations(pixels, publication, camera, snapshot, resolved);
   } catch (error) {
     renderError = error;
   } finally {
@@ -1115,12 +1194,371 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
 
   if (renderError) {
     const detail = renderError instanceof Error ? renderError.message : "unknown rendering error";
-    throw new Error(`PNG export failed: ${detail}`);
+    throw new Error(`Figure export failed: ${detail}`);
   }
-  if (!hasVisiblePngContent(pixels, resolved.transparent)) {
-    throw new Error("PNG export failed because the rendered image was blank");
+  return resolved.format === "tiff"
+    ? encodeFigureTiff(pixels, resolved)
+    : encodeFigurePng(pixels, resolved);
+}
+
+function resolveFigureExportOptions(
+  options: FigureExportOptions,
+  limits: PngExportLimits,
+): ResolvedFigureExportOptions {
+  const background = options.background ?? (
+    options.transparent
+      ? { kind: "transparent" as const }
+      : { kind: "solid" as const, color: "#ffffff" }
+  );
+  if (
+    background.kind === "solid"
+    && !/^#[0-9a-f]{6}$/i.test(background.color)
+  ) {
+    throw new Error("Figure background must use #RRGGBB");
   }
-  return encodeRgbaPng(pixels, resolved.width, resolved.height);
+  const dpi = options.dpi ?? 300;
+  if (!Number.isFinite(dpi) || dpi <= 0 || dpi > 1_000_000) {
+    throw new Error("Figure DPI must be between 0 and 1,000,000");
+  }
+  const base = resolvePngExportOptions({
+    ...options,
+    transparent: background.kind === "transparent",
+  }, limits);
+  return {
+    ...base,
+    format: options.format ?? "png",
+    dpi,
+    background,
+    annotations: options.annotations ?? [],
+  };
+}
+
+async function applyFigureAnnotations(
+  pixels: Uint8Array,
+  publication: PublicationScene,
+  camera: THREE.Camera,
+  snapshot: PublicationSnapshot,
+  options: ResolvedFigureExportOptions,
+): Promise<void> {
+  if (options.annotations.length === 0) return;
+  if (typeof document === "undefined") {
+    throw new Error("Figure annotations require a browser canvas");
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = options.width;
+  canvas.height = options.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Figure annotations are unavailable");
+  const image = context.createImageData(options.width, options.height);
+  image.data.set(pixels);
+  context.putImageData(image, 0, 0);
+
+  const fontSize = Math.max(
+    12,
+    Math.min(34, Math.round(Math.min(options.width, options.height) / 70)),
+  );
+  const margin = Math.max(16, Math.round(fontSize * 1.25));
+  context.font = await loadPublicationFont(
+    fontSize,
+    figureAnnotationFontSample(snapshot, options.annotations),
+  );
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  for (const annotation of options.annotations) {
+    if (annotation.kind === "atom-label") {
+      const position = annotationAtomPosition(snapshot.model, annotation.atom);
+      if (!position) {
+        throw new Error("A figure atom label is outside the rendered scene");
+      }
+      const screen = projectFigurePoint(
+        position,
+        camera,
+        options.width,
+        options.height,
+      );
+      if (!screen || screen.depth < -1 || screen.depth > 1) continue;
+      const label = annotation.text
+        ?? defaultAtomLabel(snapshot.manifest, annotation.atom.atom);
+      const offset = annotation.offset ?? [fontSize * 0.72, -fontSize * 0.72];
+      drawHaloText(
+        context,
+        label,
+        screen.x + offset[0],
+        screen.y + offset[1],
+        fontSize,
+        "left",
+      );
+      continue;
+    }
+    if (annotation.kind === "legend") {
+      drawFigureLegend(
+        context,
+        figureLegendEntries(snapshot, annotation.content),
+        annotation.position,
+        options.width,
+        options.height,
+        fontSize,
+        margin,
+      );
+      continue;
+    }
+    drawFigureScaleBar(
+      context,
+      publication.root,
+      camera,
+      annotation.length,
+      annotation.unit,
+      annotation.position,
+      options.width,
+      options.height,
+      fontSize,
+      margin,
+    );
+  }
+  pixels.set(context.getImageData(0, 0, options.width, options.height).data);
+}
+
+function figureAnnotationFontSample(
+  snapshot: PublicationSnapshot,
+  annotations: readonly FigureAnnotation[],
+): string {
+  const labels = ["PQ", "Å", "nm"];
+  for (const annotation of annotations) {
+    if (annotation.kind === "atom-label") {
+      labels.push(
+        annotation.text
+        ?? defaultAtomLabel(snapshot.manifest, annotation.atom.atom),
+      );
+      continue;
+    }
+    if (annotation.kind === "legend") {
+      labels.push(...figureLegendEntries(snapshot, annotation.content).map(({ label }) => label));
+      continue;
+    }
+    labels.push(formatAnnotationNumber(annotation.length));
+  }
+  return labels.join(" ");
+}
+
+function annotationAtomPosition(
+  model: PreparedScene,
+  selection: AtomSelection,
+): THREE.Vector3 | null {
+  const point = new THREE.Vector3();
+  for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
+    if (
+      selectionMatchesInstance(
+        model.instanceToAtom,
+        model.instanceImages,
+        instance,
+        selection,
+        model.baseImages,
+      )
+    ) {
+      return setInstancePosition(point, model, instance).clone();
+    }
+  }
+  return null;
+}
+
+function projectFigurePoint(
+  position: THREE.Vector3,
+  camera: THREE.Camera,
+  width: number,
+  height: number,
+): { x: number; y: number; depth: number } | null {
+  const projected = position.clone().project(camera);
+  if (![projected.x, projected.y, projected.z].every(Number.isFinite)) return null;
+  return {
+    x: (projected.x + 1) * width * 0.5,
+    y: (1 - projected.y) * height * 0.5,
+    depth: projected.z,
+  };
+}
+
+function defaultAtomLabel(manifest: Manifest, atom: number): string {
+  const symbol = manifest.topology.symbols?.[atom]
+    ?? manifest.topology.atom_names?.[atom]
+    ?? "Atom";
+  return `${symbol}${atom + 1}`;
+}
+
+interface FigureLegendEntry {
+  color: string;
+  label: string;
+}
+
+function figureLegendEntries(
+  snapshot: PublicationSnapshot,
+  content: Extract<FigureAnnotation, { kind: "legend" }>["content"],
+): FigureLegendEntry[] {
+  if (content === "forces") {
+    return [{ color: publicationPalette.force, label: "Forces" }];
+  }
+  if (content === "velocities") {
+    return [{ color: publicationPalette.velocity, label: "Velocities" }];
+  }
+  const { manifest, model, presentation } = snapshot;
+  const atoms = [...new Set(model.instanceToAtom)];
+  if (content === "residues") {
+    const residueIndices = manifest.topology.atom_residue_index;
+    const residues = manifest.topology.residues;
+    if (!residueIndices || !residues) return [];
+    const firstAtoms = new Map<number, number>();
+    for (const atom of atoms) {
+      const residue = residueIndices[atom];
+      if (Number.isInteger(residue) && !firstAtoms.has(residue)) {
+        firstAtoms.set(residue, atom);
+      }
+    }
+    return [...firstAtoms.entries()].slice(0, 12).map(([residue, atom]) => ({
+      color: `#${atomColor(manifest, atom, model.atomicNumbers[atom], "residue", "light")
+        .getHexString(THREE.SRGBColorSpace)}`,
+      label: residues[residue]?.name?.trim() || `Residue ${residue + 1}`,
+    }));
+  }
+  const firstAtoms = new Map<number, number>();
+  for (const atom of atoms) {
+    const atomicNumber = model.atomicNumbers[atom];
+    if (!firstAtoms.has(atomicNumber)) firstAtoms.set(atomicNumber, atom);
+  }
+  return [...firstAtoms.entries()]
+    .sort(([left], [right]) => left - right)
+    .slice(0, 16)
+    .map(([atomicNumber, atom]) => ({
+      color: `#${atomColor(manifest, atom, atomicNumber, presentation.color, "light")
+        .getHexString(THREE.SRGBColorSpace)}`,
+      label: manifest.topology.symbols?.[atom] ?? `Z ${atomicNumber}`,
+    }));
+}
+
+function drawFigureLegend(
+  context: CanvasRenderingContext2D,
+  entries: readonly FigureLegendEntry[],
+  position: Extract<FigureAnnotation, { kind: "legend" }>["position"],
+  width: number,
+  height: number,
+  fontSize: number,
+  margin: number,
+): void {
+  if (entries.length === 0) return;
+  const gap = Math.max(6, Math.round(fontSize * 0.45));
+  const dot = Math.max(8, Math.round(fontSize * 0.72));
+  const rowHeight = Math.round(fontSize * 1.4);
+  const boxWidth = Math.max(...entries.map(({ label }) => context.measureText(label).width))
+    + dot + gap + fontSize;
+  const boxHeight = entries.length * rowHeight + fontSize;
+  const { x, y } = figureCornerBox(position, width, height, boxWidth, boxHeight, margin);
+  context.save();
+  context.fillStyle = "rgba(255, 255, 255, 0.88)";
+  context.fillRect(x, y, boxWidth, boxHeight);
+  entries.forEach((entry, index) => {
+    const centerY = y + fontSize * 0.5 + rowHeight * (index + 0.5);
+    context.fillStyle = entry.color;
+    context.beginPath();
+    context.arc(x + fontSize, centerY, dot * 0.5, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = "#17302e";
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(entry.label, x + fontSize + dot * 0.5 + gap, centerY);
+  });
+  context.restore();
+}
+
+function drawFigureScaleBar(
+  context: CanvasRenderingContext2D,
+  root: THREE.Object3D,
+  camera: THREE.Camera,
+  length: number,
+  unit: "angstrom" | "nanometer",
+  position: FigureCorner,
+  width: number,
+  height: number,
+  fontSize: number,
+  margin: number,
+): void {
+  if (!(camera instanceof THREE.OrthographicCamera)) {
+    throw new Error("Scale bars require orthographic projection");
+  }
+  const angstrom = unit === "nanometer" ? length * 10 : length;
+  const center = new THREE.Box3().setFromObject(root).getCenter(new THREE.Vector3());
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+  const start = projectFigurePoint(center, camera, width, height);
+  const end = projectFigurePoint(
+    center.clone().addScaledVector(right, angstrom),
+    camera,
+    width,
+    height,
+  );
+  if (!start || !end) throw new Error("Scale bar could not be projected");
+  const pixelLength = Math.hypot(end.x - start.x, end.y - start.y);
+  if (!Number.isFinite(pixelLength) || pixelLength < 8 || pixelLength > width * 0.7) {
+    throw new Error("Scale bar length does not fit the figure");
+  }
+  const boxWidth = pixelLength + fontSize * 1.5;
+  const boxHeight = fontSize * 2.6;
+  const corner = figureCornerBox(position, width, height, boxWidth, boxHeight, margin);
+  const lineY = corner.y + fontSize * 0.78;
+  const lineX = corner.x + fontSize * 0.75;
+  context.save();
+  context.strokeStyle = "#17302e";
+  context.fillStyle = "#17302e";
+  context.lineWidth = Math.max(2, Math.round(fontSize * 0.12));
+  context.beginPath();
+  context.moveTo(lineX, lineY);
+  context.lineTo(lineX + pixelLength, lineY);
+  context.moveTo(lineX, lineY - fontSize * 0.22);
+  context.lineTo(lineX, lineY + fontSize * 0.22);
+  context.moveTo(lineX + pixelLength, lineY - fontSize * 0.22);
+  context.lineTo(lineX + pixelLength, lineY + fontSize * 0.22);
+  context.stroke();
+  context.textAlign = "center";
+  context.textBaseline = "top";
+  context.fillText(
+    `${formatAnnotationNumber(length)} ${unit === "nanometer" ? "nm" : "Å"}`,
+    lineX + pixelLength * 0.5,
+    lineY + fontSize * 0.45,
+  );
+  context.restore();
+}
+
+function figureCornerBox(
+  position: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+  width: number,
+  height: number,
+  boxWidth: number,
+  boxHeight: number,
+  margin: number,
+): { x: number; y: number } {
+  return {
+    x: position.endsWith("right") ? width - margin - boxWidth : margin,
+    y: position.startsWith("bottom") ? height - margin - boxHeight : margin,
+  };
+}
+
+function drawHaloText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  align: CanvasTextAlign,
+): void {
+  context.save();
+  context.textAlign = align;
+  context.textBaseline = "middle";
+  context.strokeStyle = "rgba(255, 255, 255, 0.94)";
+  context.lineWidth = Math.max(3, fontSize * 0.28);
+  context.strokeText(text, x, y);
+  context.fillStyle = "#17302e";
+  context.fillText(text, x, y);
+  context.restore();
+}
+
+function formatAnnotationNumber(value: number): string {
+  return Number(value.toPrecision(5)).toString();
 }
 
 function rendererPngLimits(
@@ -1503,6 +1941,9 @@ function publicationGtaoPass(
   const bounds = new THREE.Box3().setFromObject(root);
   const radius = THREE.MathUtils.clamp(bounds.getSize(new THREE.Vector3()).length() * 0.018, 0.18, 0.55);
   const pass = new GtaoPass(scene, camera, width, height);
+  pass.pdNoiseTexture.dispose();
+  pass.pdNoiseTexture = publicationNoiseTexture();
+  pass.pdMaterial.uniforms.tNoise.value = pass.pdNoiseTexture;
   pass.renderToScreen = false;
   pass.blendIntensity = 0.38;
   pass.setSceneClipBox(bounds);
@@ -1519,21 +1960,46 @@ function publicationGtaoPass(
   return pass;
 }
 
+function publicationNoiseTexture(size = 64): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4);
+  let state = 0x6d2b79f5;
+  for (let index = 0; index < data.length; index += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    data[index] = state >>> 24;
+  }
+  const texture = new THREE.DataTexture(
+    data,
+    size,
+    size,
+    THREE.RGBAFormat,
+    THREE.UnsignedByteType,
+  );
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 function configurePublicationOutput(
   pass: InstanceType<typeof import("three/examples/jsm/postprocessing/OutputPass.js").OutputPass>,
-  transparent: boolean,
+  background: FigureBackground,
 ): void {
   const sample = "gl_FragColor = texture2D( tDiffuse, vUv );";
   const source = pass.material.fragmentShader;
   const fragmentShader = source
-    .replace("uniform sampler2D tDiffuse;", "uniform sampler2D tDiffuse;\nuniform float publicationTransparent;")
+    .replace(
+      "uniform sampler2D tDiffuse;",
+      "uniform sampler2D tDiffuse;\nuniform float publicationTransparent;\nuniform vec3 publicationBackground;",
+    )
     .replace(sample, `${sample}
       float publicationCoverage = gl_FragColor.a;
       gl_FragColor.rgb = publicationCoverage > 0.000001
         ? gl_FragColor.rgb / publicationCoverage
         : vec3( 0.0 );`)
     .replace("// color space", `if ( publicationTransparent < 0.5 ) {
-        gl_FragColor.rgb = gl_FragColor.rgb * publicationCoverage + vec3( 1.0 ) * ( 1.0 - publicationCoverage );
+        gl_FragColor.rgb = gl_FragColor.rgb * publicationCoverage + publicationBackground * ( 1.0 - publicationCoverage );
         gl_FragColor.a = 1.0;
       }
 
@@ -1542,7 +2008,14 @@ function configurePublicationOutput(
     throw new Error("Publication output shader is incompatible");
   }
   pass.material.fragmentShader = fragmentShader;
-  pass.material.uniforms.publicationTransparent = { value: transparent ? 1 : 0 };
+  pass.material.uniforms.publicationTransparent = {
+    value: background.kind === "transparent" ? 1 : 0,
+  };
+  pass.material.uniforms.publicationBackground = {
+    value: new THREE.Color(
+      background.kind === "solid" ? background.color : "#000000",
+    ),
+  };
   pass.material.needsUpdate = true;
 }
 
@@ -2580,6 +3053,55 @@ function fitCamera(state: SceneState, context: FitContext): void {
   state.controls.target.copy(center);
   state.controls.update();
   state.lastFittedAspect = state.camera.aspect;
+  state.cameraMode = "fit";
+}
+
+export function captureCameraState(
+  camera: THREE.PerspectiveCamera,
+  target: THREE.Vector3,
+): SceneCameraState {
+  return {
+    position: camera.position.toArray(),
+    target: target.toArray(),
+    up: camera.up.toArray(),
+    fov: camera.fov,
+    zoom: camera.zoom,
+    near: camera.near,
+    far: camera.far,
+  };
+}
+
+function restoreCameraState(state: SceneState, value: SceneCameraState): void {
+  const numbers = [
+    ...value.position,
+    ...value.target,
+    ...value.up,
+    value.fov,
+    value.zoom,
+    value.near,
+    value.far,
+  ];
+  if (
+    numbers.some((entry) => !Number.isFinite(entry))
+    || value.fov <= 0
+    || value.fov >= 180
+    || value.zoom <= 0
+    || value.near <= 0
+    || value.far <= value.near
+  ) {
+    throw new Error("The saved camera is invalid");
+  }
+  clearOrbitMotion(state.controls);
+  state.camera.position.fromArray(value.position);
+  state.camera.up.fromArray(value.up).normalize();
+  state.camera.fov = value.fov;
+  state.camera.zoom = value.zoom;
+  state.camera.near = value.near;
+  state.camera.far = value.far;
+  state.controls.target.fromArray(value.target);
+  state.camera.updateProjectionMatrix();
+  state.controls.update();
+  state.cameraMode = "manual";
 }
 
 export function clearOrbitMotion(controls: OrbitControls): void {

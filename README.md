@@ -101,7 +101,8 @@ Click an atom for a compact readout. Shift-click additional atoms to measure a
 distance, angle, or ordered dihedral. On touch screens, tap atoms in order and
 tap a selected atom again to remove it. Periodic measurements use the exact
 minimum image by default; switch to displayed images when inspecting replicas.
-`Plot` follows the measurement across the trajectory and exports CSV or SVG.
+`Plot` follows the measurement across the trajectory and exports CSV, SVG, or
+vector PDF.
 `Details` shows the selected atom's position and available per-atom values.
 
 The trajectory bar appears only for multi-frame data. It provides first,
@@ -120,6 +121,20 @@ orthographic camera, white background, complete periodic boundary bonds,
 adaptive supersampling, restrained ambient occlusion, and explicit sRGB output.
 Dense scenes stay responsive by switching large atom and bond sets to lighter
 rendering paths.
+
+The adjacent options button exposes exact dimensions and DPI, PNG or TIFF,
+white or transparent backgrounds, projection, atom labels, legends, and a
+scale bar. Save a `.pqfigure.json` recipe to reproduce the source, frame,
+camera, selection, periodic view, appearance, and output settings.
+
+Install the optional renderer to create the same figure without opening the
+interface:
+
+```bash
+python -m pip install 'pqanalysis-viewer[render]'
+python -m playwright install chromium
+pqviewer render view.pqfigure.json -o figure.tiff
+```
 
 The viewer runs locally and opens in the default browser. Use `--no-open` for
 remote or scripted use.

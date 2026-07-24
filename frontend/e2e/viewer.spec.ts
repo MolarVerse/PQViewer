@@ -78,6 +78,175 @@ function changedPixelCount(bytes: Buffer): number {
   return changed;
 }
 
+function littleEndianTiffTag(bytes: Buffer, tag: number): {
+  type: number;
+  count: number;
+  value: number;
+} | null {
+  expect(bytes.subarray(0, 4).toString("hex")).toBe("49492a00");
+  const ifdOffset = bytes.readUInt32LE(4);
+  const count = bytes.readUInt16LE(ifdOffset);
+  for (let index = 0; index < count; index += 1) {
+    const offset = ifdOffset + 2 + index * 12;
+    if (bytes.readUInt16LE(offset) !== tag) continue;
+    return {
+      type: bytes.readUInt16LE(offset + 2),
+      count: bytes.readUInt32LE(offset + 4),
+      value: bytes.readUInt32LE(offset + 8),
+    };
+  }
+  return null;
+}
+
+test("restores a figure recipe and exports an exact TIFF", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  await page.getByRole("button", { name: "Last frame" }).click();
+  const unwrappedResponse = page.waitForResponse(
+    (response) => response.url().includes("/api/frames/1")
+      && response.url().includes("coordinates=unwrapped"),
+  );
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "unwrapped coordinates",
+  );
+  await page.keyboard.press("Enter");
+  expect((await unwrappedResponse).ok()).toBe(true);
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toContainText("O");
+
+  const figureOptionsButton = page.getByRole("button", {
+    name: "Figure options",
+    exact: true,
+  });
+  await figureOptionsButton.click();
+  const sheet = page.getByRole("dialog", { name: "Figure options" });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole("button", { name: "TIFF" }).click();
+  await sheet.getByRole("button", { name: "Transparent" }).click();
+  await sheet.getByRole("spinbutton", { name: "Width" }).fill("1200");
+  await sheet.getByRole("spinbutton", { name: "Height" }).fill("900");
+  await sheet.getByRole("spinbutton", { name: "DPI" }).fill("600");
+  await sheet.getByRole("checkbox", { name: /Selected atom labels/ }).check();
+  await sheet.getByRole("checkbox", { name: /Element legend/ }).check();
+  await sheet.getByRole("checkbox", { name: /Scale bar/ }).check();
+
+  const firstRecipeDownload = page.waitForEvent("download");
+  await sheet.getByRole("button", { name: "Save", exact: true }).click();
+  const firstRecipePath = await (await firstRecipeDownload).path();
+  expect(firstRecipePath).not.toBeNull();
+  const firstRecipe = JSON.parse((await readFile(firstRecipePath!)).toString("utf8"));
+  expect(firstRecipe.schema).toBe("pqviewer.figure");
+  expect(firstRecipe.schema_version).toBe(1);
+  expect(firstRecipe.frame.index).toBe(1);
+  expect(firstRecipe.frame.fingerprint).toMatch(/^frame-v1:[0-9a-f]{16}$/);
+  expect(firstRecipe.scene.presentation.wrap).toBe("unwrapped");
+  expect(firstRecipe.output).toMatchObject({
+    format: "tiff",
+    width: 1200,
+    height: 900,
+    dpi: 600,
+    background: { kind: "transparent" },
+  });
+  expect(firstRecipe.annotations.map((item: { kind: string }) => item.kind)).toEqual([
+    "atom-label",
+    "legend",
+    "scale-bar",
+  ]);
+
+  await sheet.getByRole("button", { name: "Close figure options" }).click();
+  await page.getByRole("button", { name: "First frame" }).click();
+  await page.getByRole("button", { name: "Clear selection" }).click();
+
+  const recipeChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("open figure recipe");
+  await page.keyboard.press("Enter");
+  await (await recipeChooser).setFiles(firstRecipePath!);
+  await expect(page.locator(".notice")).toContainText("Figure recipe restored");
+  await expect(page.locator(".frame-counter")).toHaveAttribute("aria-label", "Frame 2 of 2");
+  await expect(page.locator(".selection-readout strong")).toContainText("O");
+
+  await figureOptionsButton.click();
+  await expect(sheet.getByRole("button", { name: "TIFF", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(sheet.getByRole("spinbutton", { name: "Width" })).toHaveValue("1200");
+  const secondRecipeDownload = page.waitForEvent("download");
+  await sheet.getByRole("button", { name: "Save", exact: true }).click();
+  const secondRecipePath = await (await secondRecipeDownload).path();
+  expect(secondRecipePath).not.toBeNull();
+  const secondRecipe = JSON.parse((await readFile(secondRecipePath!)).toString("utf8"));
+  expect(secondRecipe.frame).toEqual(firstRecipe.frame);
+  expect(secondRecipe.scene).toEqual(firstRecipe.scene);
+  expect(secondRecipe.camera).toEqual(firstRecipe.camera);
+  expect(secondRecipe.output).toEqual(firstRecipe.output);
+  expect(secondRecipe.annotations).toEqual(firstRecipe.annotations);
+
+  const tiffDownload = page.waitForEvent("download");
+  await sheet.getByRole("button", { name: "Export TIFF" }).click();
+  const tiffPath = await (await tiffDownload).path();
+  expect(tiffPath).not.toBeNull();
+  const tiff = await readFile(tiffPath!);
+  expect(tiff.length).toBeGreaterThan(10_000);
+  expect(littleEndianTiffTag(tiff, 256)?.value).toBe(1200);
+  expect(littleEndianTiffTag(tiff, 257)?.value).toBe(900);
+  expect(littleEndianTiffTag(tiff, 296)?.value & 0xffff).toBe(2);
+  expect(littleEndianTiffTag(tiff, 338)?.value & 0xffff).toBe(2);
+  expect(littleEndianTiffTag(tiff, 34675)?.count).toBeGreaterThan(500);
+  const resolution = littleEndianTiffTag(tiff, 282);
+  expect(resolution).not.toBeNull();
+  expect(tiff.readUInt32LE(resolution!.value) / tiff.readUInt32LE(resolution!.value + 4)).toBe(600);
+
+  const rejectedRecipe = structuredClone(firstRecipe);
+  rejectedRecipe.frame.fingerprint = "frame-v1:0000000000000000";
+  rejectedRecipe.scene.presentation.mode = "spacefill";
+  rejectedRecipe.scene.selection.atoms = [];
+  const rejectedChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "open figure recipe",
+  );
+  await page.keyboard.press("Enter");
+  await (await rejectedChooser).setFiles({
+    name: "changed.pqfigure.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(rejectedRecipe)),
+  });
+  await expect(page.locator(".notice")).toContainText(
+    "saved frame content changed",
+  );
+  await expect(page.locator(".frame-counter")).toHaveAttribute(
+    "aria-label",
+    "Frame 2 of 2",
+  );
+  await expect(page.locator(".selection-readout strong")).toContainText("O");
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await expect(page.getByRole("button", { name: "Ball + stick" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+
+  const invalidLabelRecipe = structuredClone(firstRecipe);
+  invalidLabelRecipe.annotations[0].atom.atom = 99;
+  const invalidLabelChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "open figure recipe",
+  );
+  await page.keyboard.press("Enter");
+  await (await invalidLabelChooser).setFiles({
+    name: "invalid-label.pqfigure.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(invalidLabelRecipe)),
+  });
+  await expect(page.locator(".notice")).toContainText(
+    "saved atom labels are outside this structure",
+  );
+  await expect(page.locator(".selection-readout strong")).toContainText("O");
+  expect(errors).toEqual([]);
+});
+
 test("opens a trajectory in the packaged viewer", async ({ page }) => {
   const errors = collectBrowserErrors(page);
   await openPeriodicFixture(page);
@@ -168,6 +337,19 @@ test("supports pointer and keyboard measurement with linked playback", async ({ 
 
   await expect(page.locator(".selection-readout strong")).toContainText("Distance");
   await expect(page.locator(".selection-readout output")).toContainText("Å");
+
+  await page.getByRole("button", { name: "Plot", exact: true }).click();
+  const plot = page.getByRole("region", { name: /trajectory plot/ });
+  await expect(plot.getByRole("button", { name: "PDF" })).toBeEnabled();
+  const pdfDownload = page.waitForEvent("download");
+  await plot.getByRole("button", { name: "PDF" }).click();
+  const pdfPath = await (await pdfDownload).path();
+  expect(pdfPath).not.toBeNull();
+  const pdf = await readFile(pdfPath!);
+  expect(pdf.subarray(0, 8).toString()).toBe("%PDF-1.4");
+  expect(pdf.subarray(-8).toString()).toContain("%%EOF");
+  expect(pdf.toString("latin1")).toContain("xref");
+  await page.getByRole("button", { name: "Hide plot" }).click();
 
   const bounds = await canvas.boundingBox();
   expect(bounds).not.toBeNull();
@@ -525,6 +707,48 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )).toBeLessThanOrEqual(1);
   await page.getByRole("button", { name: "Hide display controls" }).click();
+
+  const compactFigureOptionsButton = page.getByRole("button", {
+    name: "Figure options",
+    exact: true,
+  });
+  await compactFigureOptionsButton.click();
+  const figureSheet = page.getByRole("dialog", { name: "Figure options" });
+  await expect(figureSheet).toBeVisible();
+  expect(await page.locator(".topbar").evaluate((element) => (
+    (element as HTMLElement).inert
+  ))).toBe(true);
+  await expect(
+    figureSheet.getByRole("button", { name: "Landscape" }),
+  ).toHaveAttribute("aria-pressed", "true");
+  const figureSheetBox = await figureSheet.boundingBox();
+  expect(figureSheetBox).not.toBeNull();
+  expect(figureSheetBox!.x).toBeGreaterThanOrEqual(0);
+  expect(figureSheetBox!.x + figureSheetBox!.width).toBeLessThanOrEqual(320);
+  for (const control of [
+    figureSheet.getByRole("button", { name: "PNG", exact: true }),
+    figureSheet.getByRole("button", { name: "Transparent" }),
+    figureSheet.getByRole("button", { name: "Export PNG" }),
+  ]) {
+    const controlBox = await control.boundingBox();
+    expect(controlBox?.height).toBeGreaterThanOrEqual(40);
+  }
+  const figureOptionsBox = await compactFigureOptionsButton.boundingBox();
+  expect(figureOptionsBox?.height).toBeGreaterThanOrEqual(40);
+  const figureBodyBox = await figureSheet.locator(".export-body").boundingBox();
+  const dpiBox = await figureSheet.getByRole("spinbutton", {
+    name: "DPI",
+  }).boundingBox();
+  expect(figureBodyBox).not.toBeNull();
+  expect(dpiBox).not.toBeNull();
+  expect(dpiBox!.y + dpiBox!.height).toBeLessThanOrEqual(
+    figureBodyBox!.y + figureBodyBox!.height,
+  );
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )).toBeLessThanOrEqual(1);
+  await page.keyboard.press("Escape");
+  await expect(compactFigureOptionsButton).toBeFocused();
 
   await page.getByRole("button", { name: "Search commands" }).click();
   await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
