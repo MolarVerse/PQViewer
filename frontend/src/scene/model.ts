@@ -47,6 +47,7 @@ export interface PreparedScene {
   count: number;
   atomicNumbers: number[];
   positions: Float32Array;
+  baseImages: Int32Array;
   basis: CellBasis | null;
   pbc: Pbc;
   bonds: Array<[number, number]>;
@@ -64,6 +65,7 @@ export interface PreparedTopology {
   atomicNumbers: number[];
   bonds: Array<[number, number]>;
   waterAtoms: Set<number>;
+  moleculeGroups: Array<[number, number[]]>;
 }
 
 export interface FrameGeometryPlan {
@@ -136,8 +138,9 @@ export function prepareScene(
   const positions = presentation.wrap === "none"
     ? new Float32Array(source.subarray(0, count * 3))
     : presentation.wrap === "molecule"
-      ? wrapMolecules(source, count, basis, pbc, moleculeGroups(manifest, count, bonds), bonds)
+      ? wrapMolecules(source, count, basis, pbc, topology.moleculeGroups, bonds)
       : bondPositions;
+  const baseImages = displayedBaseImages(source, positions, count, basis, pbc);
   const visibleAtoms = visibleAtomIndices(atomicNumbers, waterAtoms, presentation);
   const images = periodicImageOffsets(presentation.images.min, presentation.images.max, pbc, visibleAtoms.length);
   const { instanceToAtom, instanceImages } = instanceMapping(visibleAtoms, images);
@@ -147,6 +150,7 @@ export function prepareScene(
     count,
     atomicNumbers,
     positions,
+    baseImages,
     basis,
     pbc,
     bonds,
@@ -179,6 +183,7 @@ export function prepareTopology(manifest: Manifest, frame: FrameData | null): Pr
     atomicNumbers,
     bonds,
     waterAtoms: detectWaterAtoms(manifest, frame, bonds),
+    moleculeGroups: moleculeGroups(manifest, count, bonds),
   };
 }
 
@@ -611,9 +616,9 @@ export function periodicBondSegments(
     const toTime = times[index + 1];
     const middle = start.clone().addScaledVector(delta, (fromTime + toTime) * 0.5);
     const shift = new THREE.Vector3(
-      pbc[0] ? Math.floor(middle.x + 0.5) : 0,
-      pbc[1] ? Math.floor(middle.y + 0.5) : 0,
-      pbc[2] ? Math.floor(middle.z + 0.5) : 0,
+      pbc[0] ? centeredLatticeShift(middle.x) : 0,
+      pbc[1] ? centeredLatticeShift(middle.y) : 0,
+      pbc[2] ? centeredLatticeShift(middle.z) : 0,
     );
     const from = toCartesian(start.clone().addScaledVector(delta, fromTime).sub(shift), basis);
     const to = toCartesian(start.clone().addScaledVector(delta, toTime).sub(shift), basis);
@@ -735,9 +740,9 @@ function wrapMolecules(
     atoms.forEach((atom) => centroid.add(unwrapped.get(atom)!));
     centroid.multiplyScalar(1 / atoms.length);
     const shift = new THREE.Vector3(
-      pbc[0] ? Math.floor(centroid.x + 0.5) : 0,
-      pbc[1] ? Math.floor(centroid.y + 0.5) : 0,
-      pbc[2] ? Math.floor(centroid.z + 0.5) : 0,
+      pbc[0] ? centeredLatticeShift(centroid.x) : 0,
+      pbc[1] ? centeredLatticeShift(centroid.y) : 0,
+      pbc[2] ? centeredLatticeShift(centroid.z) : 0,
     );
     atoms.forEach((atom) => toCartesian(unwrapped.get(atom)!.clone().sub(shift), basis).toArray(result, atom * 3));
   }
@@ -745,9 +750,9 @@ function wrapMolecules(
     if (grouped.has(atom)) continue;
     point.fromArray(source, atom * 3);
     const fractional = toFractional(point, basis);
-    if (pbc[0]) fractional.x -= Math.floor(fractional.x + 0.5);
-    if (pbc[1]) fractional.y -= Math.floor(fractional.y + 0.5);
-    if (pbc[2]) fractional.z -= Math.floor(fractional.z + 0.5);
+    if (pbc[0]) fractional.x -= centeredLatticeShift(fractional.x);
+    if (pbc[1]) fractional.y -= centeredLatticeShift(fractional.y);
+    if (pbc[2]) fractional.z -= centeredLatticeShift(fractional.z);
     toCartesian(fractional, basis).toArray(result, atom * 3);
   }
   return result;
@@ -769,10 +774,36 @@ function wrapPositions(source: Float32Array, count: number, basis: CellBasis | n
   for (let index = 0; index < count; index += 1) {
     point.fromArray(source, index * 3);
     const fractional = toFractional(point, basis);
-    if (pbc[0]) fractional.x -= Math.floor(fractional.x + 0.5);
-    if (pbc[1]) fractional.y -= Math.floor(fractional.y + 0.5);
-    if (pbc[2]) fractional.z -= Math.floor(fractional.z + 0.5);
+    if (pbc[0]) fractional.x -= centeredLatticeShift(fractional.x);
+    if (pbc[1]) fractional.y -= centeredLatticeShift(fractional.y);
+    if (pbc[2]) fractional.z -= centeredLatticeShift(fractional.z);
     toCartesian(fractional, basis).toArray(result, index * 3);
+  }
+  return result;
+}
+
+export function displayedBaseImages(
+  source: ArrayLike<number>,
+  displayed: ArrayLike<number>,
+  count: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): Int32Array {
+  const result = new Int32Array(Math.max(0, count) * 3);
+  if (!basis || !pbc.some(Boolean)) return result;
+  const delta = new THREE.Vector3();
+  for (let atom = 0; atom < count; atom += 1) {
+    const offset = atom * 3;
+    delta.set(
+      displayed[offset] - source[offset],
+      displayed[offset + 1] - source[offset + 1],
+      displayed[offset + 2] - source[offset + 2],
+    );
+    for (let axis = 0; axis < 3; axis += 1) {
+      result[offset + axis] = pbc[axis]
+        ? Math.round(delta.dot(basis.reciprocal[axis]))
+        : 0;
+    }
   }
   return result;
 }
@@ -964,11 +995,16 @@ function toCartesian(fractional: THREE.Vector3, basis: CellBasis): THREE.Vector3
     .addScaledVector(basis.vectors[2], fractional.z);
 }
 
+function centeredLatticeShift(value: number): number {
+  const tolerance = 1e-7 * Math.max(1, Math.abs(value));
+  return Math.floor(value + 0.5 + tolerance);
+}
+
 function minimumImageFraction(delta: THREE.Vector3, basis: CellBasis, pbc: Pbc): THREE.Vector3 {
   const base = delta.clone();
-  if (pbc[0]) base.x -= Math.floor(base.x + 0.5);
-  if (pbc[1]) base.y -= Math.floor(base.y + 0.5);
-  if (pbc[2]) base.z -= Math.floor(base.z + 0.5);
+  if (pbc[0]) base.x -= centeredLatticeShift(base.x);
+  if (pbc[1]) base.y -= centeredLatticeShift(base.y);
+  if (pbc[2]) base.z -= centeredLatticeShift(base.z);
   const axes = ([0, 1, 2] as const).filter((axis) => pbc[axis]);
   if (axes.length === 0) return base;
 

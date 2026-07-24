@@ -124,6 +124,19 @@ output {
   cursor: grabbing;
 }
 
+.molecule-canvas.is-box-selecting {
+  cursor: crosshair;
+}
+
+.selection-marquee {
+  position: absolute;
+  z-index: 15;
+  pointer-events: none;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
 .icon {
   width: 20px;
   height: 20px;
@@ -5030,5 +5043,307 @@ input[type="range"]::-moz-range-thumb {
     top: calc(var(--header-height) + 8px);
     bottom: auto;
     max-height: calc(100% - var(--header-height) - var(--timeline-height) - 16px);
+  }
+}
+
+/* Scientific selection */
+
+.selection-tools {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.selection-tools > summary {
+  min-width: 54px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  padding: 0 9px;
+  border-radius: 5px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+.selection-tools > summary::-webkit-details-marker {
+  display: none;
+}
+
+.selection-tools > summary:hover,
+.selection-tools[open] > summary {
+  background: var(--accent-soft);
+}
+
+.selection-tools-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  width: min(300px, calc(100vw - 20px));
+  max-height: min(520px, calc(100svh - var(--header-height) - var(--header-height) - var(--timeline-height) - 28px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.selection-tools-popover > section {
+  display: grid;
+  gap: 8px;
+  padding: 11px;
+}
+
+.selection-tools-popover > section + section {
+  border-top: 1px solid var(--line);
+}
+
+.selection-tools-popover label,
+.selection-tools-popover section > span {
+  color: var(--quiet);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.selection-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.selection-scope-grid button,
+.selection-input-row button,
+.saved-selections button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.selection-scope-grid button:hover:not(:disabled),
+.selection-input-row button:hover:not(:disabled),
+.saved-selections button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+}
+
+.selection-scope-grid button:disabled,
+.selection-input-row button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.selection-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.selection-input-row.is-name {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.selection-input-row input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 11px var(--numeric);
+}
+
+.selection-input-row input:focus {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft);
+}
+
+.selection-input-row > span {
+  color: var(--muted);
+  font: 10px var(--numeric);
+}
+
+.selection-input-row button {
+  padding-inline: 10px;
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.saved-selections {
+  max-height: 178px;
+  overflow: auto;
+}
+
+.saved-selections > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 5px;
+}
+
+.saved-selections > div > button:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 9px;
+  text-align: left;
+}
+
+.saved-selections button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-selections button small {
+  color: var(--quiet);
+  font: 9px var(--numeric);
+}
+
+.saved-selections > div > button:last-child {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: var(--quiet);
+}
+
+.saved-selections .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.pinned-measurements {
+  position: absolute;
+  z-index: 13;
+  top: calc(var(--header-height) + 12px);
+  left: 12px;
+  max-width: min(360px, calc(100% - 150px));
+  display: grid;
+  gap: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.pinned-measurements > div {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.pinned-measurements .selection-chip {
+  position: static;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 8px 0 0 8px;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.pinned-measurements .selection-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pinned-measurements .selection-chip[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+  background: var(--accent-soft);
+}
+
+.pinned-measurement-remove {
+  width: 30px;
+  flex: 0 0 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: var(--surface);
+  color: var(--quiet);
+  cursor: pointer;
+}
+
+.pinned-measurement-remove:hover {
+  color: var(--text);
+}
+
+.pinned-measurement-remove .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.selection-summary-panel .readout-section {
+  padding-top: 4px;
+}
+
+.command-results button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+@media (max-width: 760px) {
+  .selection-bar {
+    width: calc(100% - 16px);
+  }
+
+  .selection-tools {
+    position: static;
+  }
+
+  .selection-tools > summary {
+    height: 44px;
+  }
+
+  .selection-tools-popover {
+    right: 8px;
+    left: 8px;
+    width: auto;
+  }
+
+  .selection-scope-grid button,
+  .selection-input-row button,
+  .saved-selections button {
+    min-height: 38px;
+  }
+
+  .selection-input-row input {
+    height: 40px;
+  }
+
+  .pinned-measurements {
+    top: calc(var(--header-height) + 60px);
+    left: 8px;
+    max-width: calc(100% - 16px);
+    max-height: 132px;
+  }
+
+  .pinned-measurements .selection-chip {
+    height: 40px;
+  }
+}
+
+@media (max-width: 520px) {
+  .selection-bar .measurement-mode {
+    display: none;
+  }
+
+  .selection-readout {
+    min-width: 80px;
+  }
+
+  .selection-tools > summary {
+    min-width: 48px;
+    padding-inline: 7px;
   }
 }
