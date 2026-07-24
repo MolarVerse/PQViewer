@@ -375,6 +375,161 @@ test("supports pointer and keyboard measurement with linked playback", async ({ 
   expect(errors).toEqual([]);
 });
 
+test("links frame marks, atom tracking, and PQAnalysis pair plots", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  await page.keyboard.press("m");
+  await expect(page.locator(".trajectory-marker.is-bookmark")).toHaveCount(1);
+
+  const options = page.locator('summary[aria-label="Playback options"]');
+  await options.click();
+  await page.getByRole("button", { name: "Set as reference" }).click();
+  await expect(page.locator(".trajectory-marker.is-reference")).toHaveCount(1);
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("O2");
+
+  const firstPositions = page.waitForResponse(
+    (response) => response.url().endsWith("/api/positions")
+      && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Track", exact: true }).click();
+  expect((await firstPositions).ok()).toBe(true);
+  await expect(page.getByRole("button", { name: "Stop", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+
+  const trailPositions = page.waitForResponse(
+    (response) => response.url().endsWith("/api/positions")
+      && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Next frame" }).click();
+  expect((await trailPositions).ok()).toBe(true);
+
+  const displacementPositions = page.waitForResponse(
+    (response) => response.url().endsWith("/api/positions")
+      && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "displacement from reference",
+  );
+  await page.keyboard.press("Enter");
+  expect((await displacementPositions).ok()).toBe(true);
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "pair distribution",
+  );
+  await page.keyboard.press("Enter");
+  const setup = page.getByRole("dialog", { name: "Pair analysis" });
+  await expect(setup).toBeVisible();
+  await expect(setup.locator("select").first()).toBeFocused();
+  await expect(setup.getByText("PQAnalysis · full periodic cells")).toBeVisible();
+
+  const analysisResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/analysis/rdf")
+      && response.request().method() === "POST",
+  );
+  await setup.getByRole("button", { name: "Run", exact: true }).click();
+  const response = await analysisResponse;
+  expect(response.ok()).toBe(true);
+  const payload = await response.json();
+  expect(payload.radius_centers.length).toBe(payload.g_r.length);
+  expect(payload.coordination_radius.length).toBe(payload.coordination.length);
+
+  const rdfPlot = page.getByRole("region", {
+    name: /Pair distribution .* trajectory plot/,
+  });
+  await expect(rdfPlot).toBeVisible();
+  await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("2 frames");
+  await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("Δr");
+  await expect(rdfPlot.getByRole("img", { name: /Pair distribution/ })).toBeVisible();
+  await rdfPlot.getByRole("button", { name: "N(r)", exact: true }).click();
+  const coordinationPlot = page.getByRole("region", {
+    name: /Coordination .* trajectory plot/,
+  });
+  await expect(coordinationPlot).toBeVisible();
+
+  const csvDownload = page.waitForEvent("download");
+  await coordinationPlot.getByRole("button", { name: "CSV" }).click();
+  const csvPath = await (await csvDownload).path();
+  expect(csvPath).not.toBeNull();
+  expect((await readFile(csvPath!, "utf8")).split("\n")[0]).toContain("Radius");
+  expect(errors).toEqual([]);
+});
+
+test("plots supplied frame properties on demand", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const chooser = await chooserPromise;
+  const openPromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/open")
+      && response.request().method() === "POST",
+  );
+  await chooser.setFiles([
+    {
+      name: "study.xyz",
+      mimeType: "chemical/x-xyz",
+      buffer: await readFile(periodicFixture),
+    },
+    {
+      name: "study.en",
+      mimeType: "text/plain",
+      buffer: Buffer.from("0 -1.5\n1 -1.0\n"),
+    },
+    {
+      name: "study.info",
+      mimeType: "text/plain",
+      buffer: Buffer.from(
+        "--------------------------------\n"
+        + "| PQ info file |\n"
+        + "--------------------------------\n"
+        + "| SIMULATION-TIME 0.0 ps E(TOT) -1.5 kcal/mol |\n"
+        + "--------------------------------\n\n",
+      ),
+    },
+  ]);
+  expect((await openPromise).ok()).toBe(true);
+  await expect(page).toHaveTitle("study.xyz · PQViewer");
+
+  await page.locator('summary[aria-label="Playback options"]').click();
+  await page.getByRole("button", { name: "E(TOT)", exact: true }).click();
+  const plot = page.getByRole("region", { name: "E(TOT) trajectory plot" });
+  await expect(plot).toBeVisible();
+  const chart = plot.getByRole("slider", { name: "E(TOT) frame" });
+  await chart.press("End");
+  await expect(page.locator(".frame-counter")).toHaveAttribute(
+    "aria-label",
+    "Frame 2 of 2",
+  );
+
+  const csvDownload = page.waitForEvent("download");
+  await plot.getByRole("button", { name: "CSV" }).click();
+  const csvPath = await (await csvDownload).path();
+  expect(csvPath).not.toBeNull();
+  const csv = await readFile(csvPath!, "utf8");
+  expect(csv).toContain("E(TOT) [kcal/mol]");
+  expect(csv).toContain("-1.5");
+  expect(csv).toContain("-1");
+
+  const canvas = page.locator("canvas");
+  await canvas.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Plot", exact: true }).click();
+  await expect(plot).toBeHidden();
+  await expect(page.getByRole("region", { name: /Distance .* trajectory plot/ }))
+    .toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("supports scientific selection, saved sets, and pinned measurements", async ({ page }) => {
   const errors = collectBrowserErrors(page);
   await openPeriodicFixture(page);
@@ -424,6 +579,9 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await expect(page.locator(".selection-readout output")).toContainText("0.4 Å");
 
   await page.getByRole("button", { name: "Pin", exact: true }).click();
+  const pinSummary = page.locator(".pinned-measurements > summary");
+  await expect(pinSummary).toHaveText("Measurements · 1");
+  await pinSummary.click();
   const pin = page.locator(".pinned-measurements .selection-chip");
   await expect(pin).toContainText("0.4 Å");
   await expect(pin).toHaveAttribute("aria-pressed", "true");
@@ -435,6 +593,7 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await expect(pin).toContainText("0.6083 Å");
 
   await page.getByRole("button", { name: "Clear selection" }).click();
+  await pinSummary.click();
   await expect(pin).toBeVisible();
   await pin.click();
   await expect(page.locator(".selection-readout strong")).toContainText("Distance");
@@ -693,6 +852,35 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   await expect(page.locator(".topbar")).toHaveScreenshot("mobile-topbar.png");
   await expect(page.locator(".timeline")).toHaveScreenshot("mobile-timeline.png");
 
+  const trajectoryOptions = page.locator('summary[aria-label="Playback options"]');
+  await trajectoryOptions.click();
+  const trajectoryMenu = page.locator(".timeline-options > div");
+  await expect(trajectoryMenu.getByRole("button", {
+    name: "Pair distribution",
+  })).toBeVisible();
+  const trajectoryMenuBox = await trajectoryMenu.boundingBox();
+  expect(trajectoryMenuBox).not.toBeNull();
+  expect(trajectoryMenuBox!.x).toBeGreaterThanOrEqual(0);
+  expect(trajectoryMenuBox!.x + trajectoryMenuBox!.width).toBeLessThanOrEqual(320);
+  expect(trajectoryMenuBox!.y).toBeGreaterThanOrEqual(0);
+  await trajectoryOptions.click();
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "pair distribution",
+  );
+  await page.keyboard.press("Enter");
+  const rdfSetup = page.getByRole("dialog", { name: "Pair analysis" });
+  const rdfSetupBox = await rdfSetup.boundingBox();
+  expect(rdfSetupBox).not.toBeNull();
+  expect(rdfSetupBox!.x).toBeGreaterThanOrEqual(0);
+  expect(rdfSetupBox!.x + rdfSetupBox!.width).toBeLessThanOrEqual(320);
+  expect(rdfSetupBox!.y).toBeGreaterThanOrEqual(0);
+  expect(rdfSetupBox!.y + rdfSetupBox!.height).toBeLessThanOrEqual(568);
+  const runAnalysis = rdfSetup.getByRole("button", { name: "Run", exact: true });
+  expect((await runAnalysis.boundingBox())!.height).toBeGreaterThanOrEqual(40);
+  await rdfSetup.getByRole("button", { name: "Close", exact: true }).click();
+
   await page.getByRole("button", { name: "Show display controls" }).click();
   const workbenchBody = page.locator(".workbench-body");
   await workbenchBody.evaluate((element) => {
@@ -781,7 +969,11 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   for (let index = 0; index < 8; index += 1) {
     await page.getByRole("button", { name: "Pin", exact: true }).click();
   }
-  await expect(page.locator(".pinned-measurements > div")).toHaveCount(8);
+  const measurementSummary = page.locator(".pinned-measurements > summary");
+  await expect(measurementSummary).toHaveText("Measurements · 8");
+  await measurementSummary.click();
+  await expect(page.locator(".pinned-measurements__list > div")).toHaveCount(8);
+  await measurementSummary.click();
   const pinsBox = await page.locator(".pinned-measurements").boundingBox();
   const currentSelectionBox = await page.locator(".selection-bar").boundingBox();
   expect(pinsBox).not.toBeNull();
@@ -790,5 +982,84 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   expect(await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   )).toBeLessThanOrEqual(1);
+
+  await page.getByRole("button", { name: "Plot", exact: true }).click();
+  const compactPlot = page.getByRole("region", { name: /Distance .* trajectory plot/ });
+  const exportMenu = compactPlot.locator(".measurement-plot__export-menu > summary");
+  await expect(exportMenu).toBeVisible();
+  await exportMenu.click();
+  const svgExport = compactPlot.getByRole("button", { name: "SVG", exact: true });
+  await expect(svgExport).toBeVisible();
+  expect((await svgExport.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+  const compactPlotBox = await compactPlot.boundingBox();
+  const exportPanelBox = await compactPlot.locator(
+    ".measurement-plot__export-menu > div",
+  ).boundingBox();
+  expect(compactPlotBox).not.toBeNull();
+  expect(exportPanelBox).not.toBeNull();
+  expect(exportPanelBox!.y + exportPanelBox!.height).toBeLessThanOrEqual(
+    compactPlotBox!.y + compactPlotBox!.height,
+  );
+  await page.getByRole("button", { name: "Hide plot", exact: true }).click();
+  expect(errors).toEqual([]);
+});
+
+test("keeps study sheets reachable in short landscape", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await page.setViewportSize({ width: 568, height: 320 });
+  await openPeriodicFixture(page);
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "pair distribution",
+  );
+  await page.keyboard.press("Enter");
+  const setup = page.getByRole("dialog", { name: "Pair analysis" });
+  await setup.getByText("Advanced", { exact: true }).click();
+  const setupBox = await setup.boundingBox();
+  const closeBox = await setup.getByRole("button", { name: "Close" }).boundingBox();
+  const setupBody = setup.locator(".rdf-sheet__body");
+  expect(await setupBody.evaluate((element) => (
+    element.scrollHeight > element.clientHeight
+  ))).toBe(true);
+  await setupBody.evaluate((element) => { element.scrollTop = 0; });
+  const fromBox = await setup.locator("select").first().boundingBox();
+  expect(setupBox).not.toBeNull();
+  expect(closeBox).not.toBeNull();
+  expect(fromBox).not.toBeNull();
+  expect(setupBox!.y).toBeGreaterThanOrEqual(0);
+  expect(setupBox!.y + setupBox!.height).toBeLessThanOrEqual(320);
+  expect(closeBox!.y).toBeGreaterThanOrEqual(setupBox!.y);
+  expect(fromBox!.y).toBeGreaterThanOrEqual(setupBox!.y);
+  await setupBody.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  const rMaxBox = await setup.getByLabel("r max · Å").boundingBox();
+  expect(rMaxBox).not.toBeNull();
+  expect(rMaxBox!.y + rMaxBox!.height).toBeLessThanOrEqual(
+    setupBox!.y + setupBox!.height,
+  );
+  await setup.getByRole("button", { name: "Close" }).click();
+
+  const canvas = page.locator("canvas");
+  await canvas.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  for (let index = 0; index < 8; index += 1) {
+    await page.getByRole("button", { name: "Pin", exact: true }).click();
+  }
+  await page.locator(".pinned-measurements > summary").click();
+  const pinnedPanel = page.getByRole("region", { name: "Pinned measurements" });
+  const lastPin = page.locator(".pinned-measurements__list > div").last();
+  await lastPin.scrollIntoViewIfNeeded();
+  const panelBox = await pinnedPanel.boundingBox();
+  const lastPinBox = await lastPin.boundingBox();
+  expect(panelBox).not.toBeNull();
+  expect(lastPinBox).not.toBeNull();
+  expect(panelBox!.y).toBeGreaterThanOrEqual(0);
+  expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(320);
+  expect(lastPinBox!.y).toBeGreaterThanOrEqual(panelBox!.y);
+  expect(lastPinBox!.y + lastPinBox!.height).toBeLessThanOrEqual(
+    panelBox!.y + panelBox!.height,
+  );
   expect(errors).toEqual([]);
 });

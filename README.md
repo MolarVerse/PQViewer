@@ -102,17 +102,23 @@ distance, angle, or ordered dihedral. On touch screens, tap atoms in order and
 tap a selected atom again to remove it. Periodic measurements use the exact
 minimum image by default; switch to displayed images when inspecting replicas.
 `Plot` follows the measurement across the trajectory and exports CSV, SVG, or
-vector PDF.
+vector PDF. `Pin` keeps up to eight measurements in one collapsed list;
+compatible pins can be compared in a single multi-line plot.
 `Details` shows the selected atom's position and available per-atom values.
 
 The trajectory bar appears only for multi-frame data. It provides first,
 previous, play/pause, next, last, scrubbing, and the current frame number.
-Playback options contain speed, stride, once, loop, and rock modes. Scalar
-properties do not change the structural view or occupy the timeline.
+Its menu keeps frame bookmarks, one reference frame, supplied scalar-property
+plots, and playback options together without changing the structural view.
+`Track` draws the previous 50 positions for selected atoms. Set a reference
+frame to inspect displacement vectors. For fully periodic file-backed
+trajectories, pair distribution and coordination plots run through PQAnalysis
+and export CSV, SVG, or vector PDF.
 
 Search every action with `Cmd/Ctrl+K` or `/`. Press `?` for the complete shortcut
 sheet. `Space` plays or pauses, arrow keys step frames, `Home` and `End` jump to
-the trajectory limits, `R` fits the structure, and `Escape` closes the open card.
+the trajectory limits, `M` bookmarks the current frame, `R` fits the structure,
+and `Escape` closes the open card.
 Optional Vim navigation adds `h`/`l`, `H`/`L`, `gg`, `G`, `:`, and `Ctrl+[`.
 
 `Figure` or `Cmd/Ctrl+Shift+S` immediately writes a publication PNG at

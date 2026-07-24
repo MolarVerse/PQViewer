@@ -11,9 +11,11 @@ import type { MeasurementKind, MeasurementSuccess } from "./selection";
 import type {
   AtomSelection,
   FrameData,
+  FrameKey,
   Manifest,
   ScenePresentation,
 } from "./types";
+import type { PlotShelfData } from "./trajectoryStudy";
 
 export type MeasurementAxisKind = "time" | "step" | "frame";
 
@@ -30,11 +32,44 @@ export interface MeasurementSeries {
   readonly axis: MeasurementSeriesAxis;
   readonly xValues: readonly number[];
   readonly values: readonly (number | null)[];
+  readonly frameIndices?: readonly number[];
+  readonly frameKeys?: readonly (FrameKey | null)[];
   readonly loadedCount: number;
   readonly complete: boolean;
 }
 
 export type MeasurementSeriesProgress = MeasurementSeries;
+
+export interface MeasurementComparisonDefinition {
+  readonly id: string;
+  readonly label?: string;
+  readonly selections: readonly AtomSelection[];
+  readonly minimumImage: boolean;
+}
+
+export interface MeasurementComparisonLine {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: MeasurementKind;
+  readonly unit: MeasurementSuccess["unit"];
+  readonly selections: readonly AtomSelection[];
+  readonly minimumImage: boolean;
+  readonly values: readonly (number | null)[];
+}
+
+export interface MeasurementComparison {
+  readonly title: string;
+  readonly unit: MeasurementSuccess["unit"];
+  readonly axis: MeasurementSeriesAxis;
+  readonly xValues: readonly number[];
+  readonly frameIndices: readonly number[];
+  readonly frameKeys: readonly (FrameKey | null)[];
+  readonly lines: readonly MeasurementComparisonLine[];
+  readonly loadedCount: number;
+  readonly complete: boolean;
+}
+
+export type MeasurementComparisonProgress = MeasurementComparison;
 
 export type MeasurementFrameLoader = (
   index: number,
@@ -52,6 +87,17 @@ export interface CalculateMeasurementSeriesOptions {
   onProgress?: (progress: MeasurementSeriesProgress) => void;
 }
 
+export interface CalculateMeasurementComparisonOptions {
+  manifest: Manifest;
+  frameCount: number;
+  definitions: readonly MeasurementComparisonDefinition[];
+  wrap: ScenePresentation["wrap"];
+  signal: AbortSignal;
+  loadFrame: MeasurementFrameLoader;
+  title?: string;
+  onProgress?: (progress: MeasurementComparisonProgress) => void;
+}
+
 export interface MeasurementSeriesSvgOptions {
   width?: number;
   height?: number;
@@ -66,6 +112,7 @@ export interface MeasurementSeriesPdfOptions {
 
 const MAX_COUNT_PROGRESS_UPDATES = 60;
 const MAX_LARGE_COUNT_PROGRESS_UPDATES = 20;
+const MAX_COMPARISON_DEFINITIONS = 8;
 
 export async function calculateMeasurementSeries({
   manifest,
@@ -90,6 +137,10 @@ export async function calculateMeasurementSeries({
   const values = Array<number | null>(frameCount).fill(null);
   const times = Array<number | null>(frameCount).fill(null);
   const steps = Array<number | null>(frameCount).fill(null);
+  const frameIndices = Object.freeze(
+    Array.from({ length: frameCount }, (_, index) => index),
+  );
+  const frameKeys = Array<FrameKey | null>(frameCount).fill(null);
   const frameValues = Object.freeze(oneBasedFrames(frameCount));
   const timeUnits = new Set<string>();
   let loadedCount = 0;
@@ -108,6 +159,8 @@ export async function calculateMeasurementSeries({
       frameAxis(),
       frameValues,
       values,
+      frameIndices,
+      frameKeys,
       0,
       false,
     ));
@@ -123,6 +176,7 @@ export async function calculateMeasurementSeries({
       throwIfAborted(signal);
       times[index] = numericMetadata(frame, "time");
       steps[index] = numericMetadata(frame, "step");
+      frameKeys[index] = cloneFrameKey(frame.header.frame_key);
       const timeUnit = metadataUnit(frame, "time");
       if (timeUnit) timeUnits.add(timeUnit);
 
@@ -163,6 +217,8 @@ export async function calculateMeasurementSeries({
           frameAxis(),
           frameValues,
           values,
+          frameIndices,
+          frameKeys,
           loadedCount,
           false,
         ));
@@ -180,9 +236,141 @@ export async function calculateMeasurementSeries({
     axis,
     xValues,
     values,
+    frameIndices,
+    frameKeys,
     loadedCount,
     true,
   );
+  onProgress?.(result);
+  return result;
+}
+
+export async function calculateMeasurementComparison({
+  manifest,
+  frameCount,
+  definitions,
+  wrap,
+  signal,
+  loadFrame,
+  title,
+  onProgress,
+}: CalculateMeasurementComparisonOptions): Promise<MeasurementComparison> {
+  validateComparisonRequest(manifest, frameCount, definitions, wrap);
+  throwIfAborted(signal);
+
+  const prepared = definitions.map((definition) => {
+    const selections = definition.selections.map(({ atom, image }) => ({
+      atom,
+      image: [...image] as AtomSelection["image"],
+    }));
+    const kind = measurementKind(selections.length);
+    return {
+      id: definition.id.trim(),
+      label: definition.label?.trim() || measurementTitle(manifest, selections, kind),
+      selections,
+      minimumImage: definition.minimumImage,
+      kind,
+      unit: measurementUnit(kind),
+      values: Array<number | null>(frameCount).fill(null),
+    };
+  });
+  const unit = prepared[0].unit;
+  if (prepared.some((definition) => definition.unit !== unit)) {
+    throw new TypeError("Compared measurements must use the same unit");
+  }
+
+  const comparisonTitle = title?.trim() || (
+    prepared.length === 1 ? prepared[0].label : "Measurement comparison"
+  );
+  const times = Array<number | null>(frameCount).fill(null);
+  const steps = Array<number | null>(frameCount).fill(null);
+  const frameIndices = Object.freeze(
+    Array.from({ length: frameCount }, (_, index) => index),
+  );
+  const frameKeys = Array<FrameKey | null>(frameCount).fill(null);
+  const frameValues = Object.freeze(oneBasedFrames(frameCount));
+  const timeUnits = new Set<string>();
+  let loadedCount = 0;
+  let lastProgressCount = 0;
+  let consecutiveLoadFailures = 0;
+  const maximumProgressUpdates = frameCount >= 10_000
+    ? MAX_LARGE_COUNT_PROGRESS_UPDATES
+    : MAX_COUNT_PROGRESS_UPDATES;
+  const progressStep = Math.max(1, Math.ceil(frameCount / maximumProgressUpdates));
+
+  const emit = (
+    axis: MeasurementSeriesAxis,
+    xValues: readonly number[],
+    complete: boolean,
+  ) => comparisonSnapshot(
+    comparisonTitle,
+    unit,
+    axis,
+    xValues,
+    frameIndices,
+    frameKeys,
+    prepared,
+    loadedCount,
+    complete,
+  );
+
+  onProgress?.(emit(frameAxis(), frameValues, false));
+
+  for (let index = 0; index < frameCount; index += 1) {
+    throwIfAborted(signal);
+    let frameLoaded = false;
+    try {
+      const frame = await loadFrame(index, signal);
+      frameLoaded = true;
+      consecutiveLoadFailures = 0;
+      throwIfAborted(signal);
+      times[index] = numericMetadata(frame, "time");
+      steps[index] = numericMetadata(frame, "step");
+      frameKeys[index] = cloneFrameKey(frame.header.frame_key);
+      const timeUnit = metadataUnit(frame, "time");
+      if (timeUnit) timeUnits.add(timeUnit);
+
+      const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+      const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+      const basis = createCellBasis(cell);
+      const pbc = resolvePbc(frame, basis);
+      for (const definition of prepared) {
+        definition.values[index] = positions
+          ? measureFrame(
+              frame,
+              positions,
+              pbc,
+              definition.selections,
+              definition.minimumImage,
+            )
+          : null;
+      }
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw abortReason(signal, error);
+      if (error instanceof DatasetChangedError) throw error;
+      if (!frameLoaded) {
+        consecutiveLoadFailures += 1;
+        if (consecutiveLoadFailures >= 3) {
+          throw new Error("Trajectory frames could not be loaded", { cause: error });
+        }
+      }
+      for (const definition of prepared) definition.values[index] = null;
+    }
+
+    loadedCount = index + 1;
+    if (
+      onProgress
+      && loadedCount < frameCount
+      && (loadedCount === 1 || loadedCount - lastProgressCount >= progressStep)
+    ) {
+      onProgress(emit(frameAxis(), frameValues, false));
+      lastProgressCount = loadedCount;
+    }
+  }
+
+  throwIfAborted(signal);
+  const { axis, xValues } = resolveAxis(times, steps, timeUnits);
+  const result = emit(axis, xValues, true);
   onProgress?.(result);
   return result;
 }
@@ -199,6 +387,308 @@ export function measurementSeriesCsv(series: MeasurementSeries): string {
     ]);
   }
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+export function measurementComparisonPlotData(
+  comparison: MeasurementComparison,
+  requestId: number,
+): PlotShelfData {
+  const kinds = new Set(comparison.lines.map(({ kind }) => kind));
+  return Object.freeze({
+    requestId,
+    kind: comparison.lines.length > 1 ? "comparison" : "measurement",
+    title: comparison.title,
+    xLabel: comparison.axis.label,
+    xUnit: comparison.axis.unit,
+    yLabel: kinds.size === 1
+      ? titleCase(comparison.lines[0].kind)
+      : "Measurement",
+    yUnit: displayUnit(comparison.unit),
+    xValues: comparison.xValues,
+    frameIndices: comparison.frameIndices,
+    frameKeys: comparison.frameKeys,
+    lines: Object.freeze(comparison.lines.map((line, index) => Object.freeze({
+      id: line.id,
+      label: line.label,
+      values: line.values,
+      color: PLOT_COLORS[index % PLOT_COLORS.length],
+      selection: line.selections,
+      minimumImage: line.minimumImage,
+      discontinuity: line.unit === "degree" ? 180 : undefined,
+    }))),
+    loadedCount: comparison.loadedCount,
+    totalCount: comparison.frameIndices.length,
+    complete: comparison.complete,
+  });
+}
+
+export function plotShelfCsv(plot: PlotShelfData): string {
+  validatePlotShelf(plot);
+  const frameIndices = plot.frameIndices?.length === plot.xValues.length
+    ? plot.frameIndices
+    : undefined;
+  const frameKeys = plot.frameKeys?.length === plot.xValues.length
+    ? plot.frameKeys
+    : undefined;
+  const rows: string[][] = [[
+    ...(frameIndices ? ["Frame index"] : []),
+    ...(frameKeys ? ["Source", "Segment index", "Source frame index"] : []),
+    withUnit(plot.xLabel, plot.xUnit),
+    ...plot.lines.map((line) => withUnit(line.label, plot.yUnit)),
+  ]];
+  for (let index = 0; index < plot.xValues.length; index += 1) {
+    const key = frameKeys?.[index];
+    rows.push([
+      ...(frameIndices ? [csvNumber(frameIndices[index], 15)] : []),
+      ...(frameKeys ? [
+        key?.source_id ?? "",
+        csvNumber(key?.segment_index, 15),
+        csvNumber(key?.source_index, 15),
+      ] : []),
+      csvNumber(plot.xValues[index], 15),
+      ...plot.lines.map((line) => csvNumber(line.values[index], 10)),
+    ]);
+  }
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+export function plotShelfSvg(
+  plot: PlotShelfData,
+  options: MeasurementSeriesSvgOptions = {},
+): string {
+  validatePlotShelf(plot);
+  const width = positiveDimension(options.width ?? 1200, "width");
+  const height = positiveDimension(options.height ?? 720, "height");
+  const legendRows = Math.ceil(plot.lines.length / 2);
+  const margin = {
+    top: 82 + legendRows * 22,
+    right: 48,
+    bottom: 86,
+    left: 96,
+  };
+  const plotWidth = Math.max(1, width - margin.left - margin.right);
+  const plotHeight = Math.max(1, height - margin.top - margin.bottom);
+  const xDomain = expandedDomain(plot.xValues.filter(Number.isFinite));
+  const yDomain = plotExpandedYDomain(plot);
+  const xMap = (value: number) => (
+    margin.left + (value - xDomain[0]) / (xDomain[1] - xDomain[0]) * plotWidth
+  );
+  const yMap = (value: number) => (
+    margin.top + (1 - (value - yDomain[0]) / (yDomain[1] - yDomain[0])) * plotHeight
+  );
+  const xTicks = ticks(xDomain[0], xDomain[1], 5);
+  const yTicks = ticks(yDomain[0], yDomain[1], 5);
+  const xLabel = withUnit(plot.xLabel, plot.xUnit);
+  const yLabel = withUnit(plot.yLabel, plot.yUnit);
+  const status = plotStatus(plot);
+  const paths = plot.lines.map((line, index) => {
+    const color = normalizedPlotColor(line.color, index);
+    const path = genericSvgPath(
+      plot.xValues,
+      line.values,
+      line.discontinuity,
+      xMap,
+      yMap,
+    );
+    return path
+      ? `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`
+      : "";
+  });
+  const hasValues = paths.some(Boolean);
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="title description">`,
+    "<title id=\"title\">", escapeXml(plot.title), "</title>",
+    "<desc id=\"description\">", escapeXml(`${plot.title}; ${status}.`), "</desc>",
+    "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>",
+    `<text x="${margin.left}" y="38" fill="#172321" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="600">${escapeXml(plot.title)}</text>`,
+    `<text x="${margin.left}" y="60" fill="#64706d" font-family="Arial, Helvetica, sans-serif" font-size="13">${escapeXml(status)}</text>`,
+    ...plot.lines.map((line, index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const x = margin.left + column * Math.max(1, plotWidth / 2);
+      const y = 83 + row * 22;
+      const color = normalizedPlotColor(line.color, index);
+      return [
+        `<line x1="${x}" y1="${y}" x2="${x + 22}" y2="${y}" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`,
+        `<text x="${x + 31}" y="${y}" dy="0.35em" fill="#394642" font-family="Arial, Helvetica, sans-serif" font-size="12">${escapeXml(line.label)}</text>`,
+      ].join("");
+    }),
+    ...yTicks.flatMap((value) => {
+      const y = plotNumber(yMap(value));
+      return [
+        `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="#e2e8e6" stroke-width="1"/>`,
+        `<text x="${margin.left - 14}" y="${y}" dy="0.35em" text-anchor="end" fill="#596663" font-family="Arial, Helvetica, sans-serif" font-size="12">${escapeXml(tickNumber(value))}</text>`,
+      ];
+    }),
+    ...xTicks.flatMap((value) => {
+      const x = plotNumber(xMap(value));
+      return [
+        `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${height - margin.bottom}" stroke="#edf1f0" stroke-width="1"/>`,
+        `<text x="${x}" y="${height - margin.bottom + 26}" text-anchor="middle" fill="#596663" font-family="Arial, Helvetica, sans-serif" font-size="12">${escapeXml(tickNumber(value))}</text>`,
+      ];
+    }),
+    `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="#84908d" stroke-width="1.2"/>`,
+    `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="#84908d" stroke-width="1.2"/>`,
+    ...paths,
+    hasValues
+      ? ""
+      : `<text x="${margin.left + plotWidth / 2}" y="${margin.top + plotHeight / 2}" text-anchor="middle" fill="#7b8784" font-family="Arial, Helvetica, sans-serif" font-size="14">No valid data</text>`,
+    `<text x="${margin.left + plotWidth / 2}" y="${height - 24}" text-anchor="middle" fill="#293633" font-family="Arial, Helvetica, sans-serif" font-size="14">${escapeXml(xLabel)}</text>`,
+    `<text x="24" y="${margin.top + plotHeight / 2}" transform="rotate(-90 24 ${margin.top + plotHeight / 2})" text-anchor="middle" fill="#293633" font-family="Arial, Helvetica, sans-serif" font-size="14">${escapeXml(yLabel)}</text>`,
+    "</svg>",
+  ].join("");
+}
+
+export function plotShelfPdf(
+  plot: PlotShelfData,
+  options: MeasurementSeriesPdfOptions = {},
+): Uint8Array {
+  validatePlotShelf(plot);
+  const width = positivePdfDimension(options.width ?? 720, "width");
+  const height = positivePdfDimension(options.height ?? 432, "height");
+  const legendRows = Math.ceil(plot.lines.length / 2);
+  const margin = {
+    top: 58 + legendRows * 14,
+    right: 30,
+    bottom: 54,
+    left: 62,
+  };
+  const plotWidth = Math.max(1, width - margin.left - margin.right);
+  const plotHeight = Math.max(1, height - margin.top - margin.bottom);
+  const xDomain = expandedDomain(plot.xValues.filter(Number.isFinite));
+  const yDomain = plotExpandedYDomain(plot);
+  const xMap = (value: number) => (
+    margin.left + (value - xDomain[0]) / (xDomain[1] - xDomain[0]) * plotWidth
+  );
+  const yMap = (value: number) => (
+    margin.top + (1 - (value - yDomain[0]) / (yDomain[1] - yDomain[0])) * plotHeight
+  );
+  const xTicks = ticks(xDomain[0], xDomain[1], 5);
+  const yTicks = ticks(yDomain[0], yDomain[1], 5);
+  const commands: string[] = [
+    "1 1 1 rg",
+    `0 0 ${pdfNumber(width)} ${pdfNumber(height)} re f`,
+  ];
+
+  for (const value of yTicks) {
+    const y = height - yMap(value);
+    commands.push(
+      "0.886 0.91 0.902 RG",
+      "0.6 w",
+      `${pdfNumber(margin.left)} ${pdfNumber(y)} m ${pdfNumber(width - margin.right)} ${pdfNumber(y)} l S`,
+      pdfText(tickNumber(value), margin.left - 8, y - 3.2, {
+        align: "right",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+  for (const value of xTicks) {
+    const x = xMap(value);
+    commands.push(
+      "0.929 0.945 0.941 RG",
+      "0.6 w",
+      `${pdfNumber(x)} ${pdfNumber(margin.bottom)} m ${pdfNumber(x)} ${pdfNumber(height - margin.top)} l S`,
+      pdfText(tickNumber(value), x, margin.bottom - 17, {
+        align: "center",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+  commands.push(
+    "0.518 0.565 0.553 RG",
+    "0.8 w",
+    `${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} m ${pdfNumber(width - margin.right)} ${pdfNumber(margin.bottom)} l S`,
+    `${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} m ${pdfNumber(margin.left)} ${pdfNumber(height - margin.top)} l S`,
+  );
+
+  let hasValues = false;
+  plot.lines.forEach((line, index) => {
+    const path = genericPdfPath(
+      plot.xValues,
+      line.values,
+      line.discontinuity,
+      xMap,
+      yMap,
+      height,
+    );
+    if (!path) return;
+    hasValues = true;
+    const [red, green, blue] = plotColorRgb(line.color, index);
+    commands.push(
+      `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} RG`,
+      "1.7 w",
+      "1 J 1 j",
+      path,
+      "S",
+    );
+  });
+  if (!hasValues) {
+    commands.push(pdfText(
+      "No valid data",
+      margin.left + plotWidth * 0.5,
+      margin.bottom + plotHeight * 0.5,
+      {
+        align: "center",
+        color: [0.482, 0.529, 0.518],
+        size: 9,
+      },
+    ));
+  }
+
+  commands.push(
+    pdfText(plot.title, margin.left, height - 27, {
+      color: [0.09, 0.137, 0.129],
+      font: "F2",
+      size: 15,
+    }),
+    pdfText(plotStatus(plot), margin.left, height - 42, {
+      color: [0.392, 0.439, 0.427],
+      size: 8.5,
+    }),
+  );
+  plot.lines.forEach((line, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const x = margin.left + column * Math.max(1, plotWidth / 2);
+    const y = height - 58 - row * 14;
+    const [red, green, blue] = plotColorRgb(line.color, index);
+    commands.push(
+      `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} RG`,
+      "2 w",
+      `${pdfNumber(x)} ${pdfNumber(y)} m ${pdfNumber(x + 14)} ${pdfNumber(y)} l S`,
+      pdfText(line.label, x + 20, y - 3, {
+        color: [0.224, 0.275, 0.259],
+        size: 8,
+      }),
+    );
+  });
+  commands.push(
+    pdfText(withUnit(plot.xLabel, plot.xUnit), margin.left + plotWidth * 0.5, 17, {
+      align: "center",
+      color: [0.161, 0.212, 0.2],
+      size: 9,
+    }),
+    pdfVerticalText(
+      withUnit(plot.yLabel, plot.yUnit),
+      18,
+      margin.bottom + plotHeight * 0.5,
+      {
+        color: [0.161, 0.212, 0.2],
+        size: 9,
+      },
+    ),
+  );
+
+  return buildVectorPdf(
+    width,
+    height,
+    commands.filter(Boolean).join("\n"),
+    plot.title,
+  );
 }
 
 export function measurementSeriesSvg(
@@ -488,6 +978,8 @@ function seriesSnapshot(
   axis: MeasurementSeriesAxis,
   xValues: readonly number[],
   values: readonly (number | null)[],
+  frameIndices: readonly number[],
+  frameKeys: readonly (FrameKey | null)[],
   loadedCount: number,
   complete: boolean,
 ): MeasurementSeries {
@@ -498,6 +990,55 @@ function seriesSnapshot(
     axis: Object.freeze({ ...axis }),
     xValues: Object.isFrozen(xValues) ? xValues : Object.freeze([...xValues]),
     values: Object.freeze([...values]),
+    frameIndices,
+    frameKeys: Object.freeze(frameKeys.map((key) => key
+      ? Object.freeze({ ...key })
+      : null)),
+    loadedCount,
+    complete,
+  });
+}
+
+function comparisonSnapshot(
+  title: string,
+  unit: MeasurementSuccess["unit"],
+  axis: MeasurementSeriesAxis,
+  xValues: readonly number[],
+  frameIndices: readonly number[],
+  frameKeys: readonly (FrameKey | null)[],
+  definitions: readonly {
+    id: string;
+    label: string;
+    selections: readonly AtomSelection[];
+    minimumImage: boolean;
+    kind: MeasurementKind;
+    unit: MeasurementSuccess["unit"];
+    values: readonly (number | null)[];
+  }[],
+  loadedCount: number,
+  complete: boolean,
+): MeasurementComparison {
+  return Object.freeze({
+    title,
+    unit,
+    axis: Object.freeze({ ...axis }),
+    xValues: Object.freeze([...xValues]),
+    frameIndices,
+    frameKeys: Object.freeze(frameKeys.map((key) => key
+      ? Object.freeze({ ...key })
+      : null)),
+    lines: Object.freeze(definitions.map((definition) => Object.freeze({
+      id: definition.id,
+      label: definition.label,
+      kind: definition.kind,
+      unit: definition.unit,
+      selections: Object.freeze(definition.selections.map(({ atom, image }) => Object.freeze({
+        atom,
+        image: Object.freeze([...image]) as unknown as AtomSelection["image"],
+      }))),
+      minimumImage: definition.minimumImage,
+      values: Object.freeze([...definition.values]),
+    }))),
     loadedCount,
     complete,
   });
@@ -553,6 +1094,51 @@ function validateRequest(
   if (!["atom", "molecule", "unwrapped", "none"].includes(wrap)) {
     throw new TypeError("Unknown coordinate wrapping mode");
   }
+}
+
+function validateComparisonRequest(
+  manifest: Manifest,
+  frameCount: number,
+  definitions: readonly MeasurementComparisonDefinition[],
+  wrap: ScenePresentation["wrap"],
+): void {
+  if (definitions.length < 1 || definitions.length > MAX_COMPARISON_DEFINITIONS) {
+    throw new RangeError(`A comparison needs one to ${MAX_COMPARISON_DEFINITIONS} measurements`);
+  }
+  const identifiers = new Set<string>();
+  for (const definition of definitions) {
+    const identifier = definition.id.trim();
+    if (!identifier) throw new TypeError("Each compared measurement needs an id");
+    if (identifiers.has(identifier)) {
+      throw new TypeError(`Duplicate measurement id: ${identifier}`);
+    }
+    identifiers.add(identifier);
+    validateRequest(manifest, frameCount, definition.selections, wrap);
+  }
+}
+
+function cloneFrameKey(key: FrameKey | undefined): FrameKey | null {
+  if (
+    !key
+    || typeof key.source_id !== "string"
+    || !key.source_id
+    || !Number.isSafeInteger(key.source_index)
+    || key.source_index < 0
+    || !Number.isSafeInteger(key.segment_index)
+    || key.segment_index < 0
+  ) {
+    return null;
+  }
+  return {
+    source_id: key.source_id,
+    source_index: key.source_index,
+    segment_index: key.segment_index,
+    step: typeof key.step === "number" && Number.isFinite(key.step) ? key.step : null,
+    time: typeof key.time === "number" && Number.isFinite(key.time) ? key.time : null,
+    time_unit: typeof key.time_unit === "string" && key.time_unit.trim()
+      ? key.time_unit.trim()
+      : null,
+  };
 }
 
 function frameAxis(): MeasurementSeriesAxis {
@@ -721,6 +1307,19 @@ function expandedDomain(values: readonly number[]): [number, number] {
   return [minimum, maximum];
 }
 
+function plotExpandedYDomain(plot: PlotShelfData): [number, number] {
+  const domain = expandedDomain(plot.lines.flatMap(({ values }) => (
+    values.filter((value): value is number => (
+      typeof value === "number" && Number.isFinite(value)
+    ))
+  )));
+  if (plot.yFloor === undefined || !Number.isFinite(plot.yFloor)) return domain;
+  return [
+    plot.yFloor,
+    domain[1] > plot.yFloor ? domain[1] : plot.yFloor + 1,
+  ];
+}
+
 function ticks(minimum: number, maximum: number, count: number): number[] {
   return Array.from(
     { length: count },
@@ -738,6 +1337,103 @@ function tickNumber(value: number): string {
 
 function plotNumber(value: number): string {
   return Number(value.toFixed(3)).toString();
+}
+
+function validatePlotShelf(plot: PlotShelfData): void {
+  if (plot.lines.length < 1 || plot.lines.length > 32) {
+    throw new RangeError("A plot needs one to 32 series");
+  }
+  if (!plot.title.trim() || !plot.xLabel.trim() || !plot.yLabel.trim()) {
+    throw new TypeError("Plot title and axis labels are required");
+  }
+}
+
+function genericSvgPath(
+  xValues: readonly number[],
+  values: readonly (number | null)[],
+  discontinuity: number | undefined,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+): string {
+  const commands: string[] = [];
+  let open = false;
+  let previousValue: number | null = null;
+  const threshold = typeof discontinuity === "number" && Number.isFinite(discontinuity)
+    ? Math.abs(discontinuity)
+    : null;
+  for (let index = 0; index < xValues.length; index += 1) {
+    const x = xValues[index];
+    const y = values[index];
+    if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      open = false;
+      previousValue = null;
+      continue;
+    }
+    if (threshold !== null && previousValue !== null && Math.abs(y - previousValue) > threshold) {
+      open = false;
+    }
+    commands.push(`${open ? "L" : "M"}${plotNumber(xMap(x))} ${plotNumber(yMap(y))}`);
+    open = true;
+    previousValue = y;
+  }
+  return commands.join("");
+}
+
+function genericPdfPath(
+  xValues: readonly number[],
+  values: readonly (number | null)[],
+  discontinuity: number | undefined,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+  height: number,
+): string {
+  const commands: string[] = [];
+  let open = false;
+  let previousValue: number | null = null;
+  const threshold = typeof discontinuity === "number" && Number.isFinite(discontinuity)
+    ? Math.abs(discontinuity)
+    : null;
+  for (let index = 0; index < xValues.length; index += 1) {
+    const x = xValues[index];
+    const y = values[index];
+    if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      open = false;
+      previousValue = null;
+      continue;
+    }
+    if (threshold !== null && previousValue !== null && Math.abs(y - previousValue) > threshold) {
+      open = false;
+    }
+    commands.push(
+      `${pdfNumber(xMap(x))} ${pdfNumber(height - yMap(y))} ${open ? "l" : "m"}`,
+    );
+    open = true;
+    previousValue = y;
+  }
+  return commands.join("\n");
+}
+
+function plotStatus(plot: PlotShelfData): string {
+  const status = plot.complete
+    ? `${plot.lines.length} series · ${plot.totalCount.toLocaleString()} points`
+    : `${Math.max(0, plot.loadedCount).toLocaleString()} / ${Math.max(0, plot.totalCount).toLocaleString()} points`;
+  return plot.context ? `${status} · ${plot.context}` : status;
+}
+
+function normalizedPlotColor(color: string | undefined, index: number): string {
+  const value = color?.trim();
+  return value && /^#[0-9a-f]{6}$/i.test(value)
+    ? value
+    : PLOT_COLORS[index % PLOT_COLORS.length];
+}
+
+function plotColorRgb(color: string | undefined, index: number): [number, number, number] {
+  const value = normalizedPlotColor(color, index);
+  return [
+    Number.parseInt(value.slice(1, 3), 16) / 255,
+    Number.parseInt(value.slice(3, 5), 16) / 255,
+    Number.parseInt(value.slice(5, 7), 16) / 255,
+  ];
 }
 
 function escapeXml(value: string): string {
@@ -977,6 +1673,17 @@ function pdfNumber(value: number): string {
   const rounded = Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(3));
   return rounded.toString();
 }
+
+const PLOT_COLORS = Object.freeze([
+  "#137f78",
+  "#b35c2e",
+  "#5468a8",
+  "#8b5a91",
+  "#4f7b45",
+  "#b08524",
+  "#366e83",
+  "#9a4d62",
+]);
 
 const elementSymbols = [
   "X", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",

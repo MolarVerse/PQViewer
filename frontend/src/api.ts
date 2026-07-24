@@ -1,4 +1,11 @@
-import type { DisplaySeries, FrameData, FrameHeader, Manifest, SeriesSpec } from "./types";
+import type {
+  DisplaySeries,
+  FrameData,
+  FrameHeader,
+  FrameKey,
+  Manifest,
+  SeriesSpec,
+} from "./types";
 
 const utf8 = new TextDecoder();
 const DEFAULT_FRAME_CACHE_LIMIT = 96;
@@ -6,6 +13,70 @@ const DEFAULT_FRAME_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_PENDING_PREFETCH_LIMIT = 4;
 
 export type FrameCoordinateMode = "source" | "unwrapped";
+
+export interface SelectedPositionsRequest {
+  datasetGeneration: string;
+  atomIndices: readonly number[];
+  frameIndices: readonly number[];
+  coordinates?: FrameCoordinateMode;
+}
+
+export interface SelectedPositionFrame {
+  index: number;
+  key: FrameKey;
+  positions: Float32Array;
+  step: number | null;
+  time: number | null;
+  timeUnit: string | null;
+}
+
+export interface SelectedPositions {
+  schemaVersion: number;
+  datasetGeneration: string;
+  atomIndices: readonly number[];
+  unit: string;
+  frames: readonly SelectedPositionFrame[];
+}
+
+export interface RdfAnalysisRequest {
+  datasetGeneration: string;
+  referenceIndices: readonly number[];
+  targetIndices: readonly number[];
+  frameStart?: number;
+  frameStop?: number;
+  frameStep?: number;
+  bins?: number;
+  rMax?: number;
+}
+
+export interface RdfFrameRange {
+  start: number;
+  stop: number;
+  step: number;
+  count: number;
+  firstKey: FrameKey;
+  lastKey: FrameKey;
+}
+
+export interface RdfAnalysisResult {
+  schemaVersion: number;
+  datasetGeneration: string;
+  referenceIndices: readonly number[];
+  targetIndices: readonly number[];
+  frameRange: RdfFrameRange;
+  radiusUnit: string;
+  rdfUnit: string;
+  coordinationUnit: string;
+  bins: number;
+  rMax: number;
+  deltaR: number;
+  radiusCenters: readonly number[];
+  gR: readonly number[];
+  coordinationRadius: readonly number[];
+  coordination: readonly number[];
+  pqAnalysisVersion?: string;
+  elapsedSeconds?: number;
+}
 
 export async function getManifest(): Promise<Manifest> {
   const response = await fetch("/api/manifest", { headers: { Accept: "application/json" } });
@@ -23,6 +94,68 @@ export async function getInitialRecipe(): Promise<unknown> {
     throw new Error(await responseMessage(response, "Could not load the figure recipe"));
   }
   return response.json();
+}
+
+export async function getSelectedPositions(
+  request: SelectedPositionsRequest,
+  signal?: AbortSignal,
+): Promise<SelectedPositions> {
+  const response = await fetch("/api/positions", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      dataset_generation: request.datasetGeneration,
+      atom_indices: request.atomIndices,
+      frame_indices: request.frameIndices,
+      coordinates: request.coordinates ?? "unwrapped",
+    }),
+    signal,
+  });
+  if (response.status === 409) {
+    throw new DatasetChangedError(
+      await responseMessage(response, "Trajectory changed. Reloading."),
+    );
+  }
+  if (!response.ok) {
+    throw new Error(await responseMessage(response, "Could not load selected positions"));
+  }
+  return parseSelectedPositions(await response.json(), request);
+}
+
+export async function runRdfAnalysis(
+  request: RdfAnalysisRequest,
+  signal?: AbortSignal,
+): Promise<RdfAnalysisResult> {
+  const response = await fetch("/api/analysis/rdf", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      dataset_generation: request.datasetGeneration,
+      reference_indices: request.referenceIndices,
+      target_indices: request.targetIndices,
+      frame_start: request.frameStart ?? 0,
+      frame_stop: request.frameStop,
+      frame_step: request.frameStep ?? 1,
+      n_bins: request.bins ?? 200,
+      r_max: request.rMax,
+    }),
+    signal,
+  });
+  if (response.status === 409) {
+    throw new DatasetChangedError(
+      await responseMessage(response, "Trajectory changed. Reloading."),
+    );
+  }
+  if (!response.ok) {
+    throw new Error(await responseMessage(response, "Could not run RDF analysis"));
+  }
+  return parseRdfAnalysisResult(await response.json(), request.datasetGeneration);
 }
 
 export async function openFiles(files: File[], signal?: AbortSignal): Promise<Manifest> {
@@ -258,6 +391,234 @@ function validateManifest(manifest: Manifest, message: string): void {
   ) {
     throw new Error(message);
   }
+}
+
+function parseSelectedPositions(
+  value: unknown,
+  request: SelectedPositionsRequest,
+): SelectedPositions {
+  if (!value || typeof value !== "object") {
+    throw new Error("Selected positions response is invalid");
+  }
+  const raw = value as {
+    schema_version?: unknown;
+    dataset_generation?: unknown;
+    atom_indices?: unknown;
+    unit?: unknown;
+    frames?: unknown;
+  };
+  const schemaVersion = finiteInteger(raw.schema_version, "position schema");
+  const generation = requiredString(raw.dataset_generation, "position generation");
+  if (generation !== request.datasetGeneration) {
+    throw new DatasetChangedError("Trajectory changed. Reloading.");
+  }
+  const atomIndices = integerArray(raw.atom_indices, "position atoms");
+  if (
+    atomIndices.length !== request.atomIndices.length
+    || atomIndices.some((atom, index) => atom !== request.atomIndices[index])
+  ) {
+    throw new Error("Selected positions do not match the requested atoms");
+  }
+  if (!Array.isArray(raw.frames) || raw.frames.length !== request.frameIndices.length) {
+    throw new Error("Selected positions do not match the requested frames");
+  }
+  const frames = raw.frames.map((entry, sample): SelectedPositionFrame => {
+    if (!entry || typeof entry !== "object") {
+      throw new Error("Selected position frame is invalid");
+    }
+    const frame = entry as {
+      index?: unknown;
+      key?: unknown;
+      positions?: unknown;
+      step?: unknown;
+      time?: unknown;
+      time_unit?: unknown;
+    };
+    const index = finiteInteger(frame.index, "position frame");
+    if (index !== request.frameIndices[sample]) {
+      throw new Error("Selected positions are out of order");
+    }
+    if (!Array.isArray(frame.positions) || frame.positions.length !== atomIndices.length) {
+      throw new Error("Selected position coordinates are incomplete");
+    }
+    const positions = new Float32Array(atomIndices.length * 3);
+    frame.positions.forEach((coordinates, atom) => {
+      if (
+        !Array.isArray(coordinates)
+        || coordinates.length !== 3
+        || !coordinates.every((coordinate) => (
+          typeof coordinate === "number" && Number.isFinite(coordinate)
+        ))
+      ) {
+        throw new Error("Selected position coordinates are invalid");
+      }
+      positions.set(coordinates as number[], atom * 3);
+    });
+    return Object.freeze({
+      index,
+      key: parseFrameKey(frame.key),
+      positions,
+      step: nullableFiniteNumber(frame.step),
+      time: nullableFiniteNumber(frame.time),
+      timeUnit: optionalString(frame.time_unit),
+    });
+  });
+  return Object.freeze({
+    schemaVersion,
+    datasetGeneration: generation,
+    atomIndices: Object.freeze([...atomIndices]),
+    unit: requiredString(raw.unit, "position unit"),
+    frames: Object.freeze(frames),
+  });
+}
+
+function parseRdfAnalysisResult(
+  value: unknown,
+  expectedGeneration: string,
+): RdfAnalysisResult {
+  if (!value || typeof value !== "object") {
+    throw new Error("RDF response is invalid");
+  }
+  const raw = value as Record<string, unknown>;
+  const generation = requiredString(raw.dataset_generation, "RDF generation");
+  if (generation !== expectedGeneration) {
+    throw new DatasetChangedError("Trajectory changed. Reloading.");
+  }
+  const frameRangeRaw = raw.frame_range;
+  if (!frameRangeRaw || typeof frameRangeRaw !== "object") {
+    throw new Error("RDF frame identity is missing");
+  }
+  const range = frameRangeRaw as Record<string, unknown>;
+  const frameRange: RdfFrameRange = Object.freeze({
+    start: finiteInteger(range.start, "RDF frame start"),
+    stop: finiteInteger(range.stop, "RDF frame stop"),
+    step: positiveIntegerValue(range.step, "RDF frame step"),
+    count: positiveIntegerValue(range.count, "RDF frame count"),
+    firstKey: parseFrameKey(range.first_key),
+    lastKey: parseFrameKey(range.last_key),
+  });
+  const radiusCenters = numberArray(raw.radius_centers, "RDF radius");
+  const gR = numberArray(raw.g_r, "RDF values");
+  const coordinationRadius = numberArray(
+    raw.coordination_radius,
+    "coordination radius",
+  );
+  const coordination = numberArray(raw.coordination, "coordination values");
+  if (
+    radiusCenters.length !== gR.length
+    || coordinationRadius.length !== coordination.length
+    || radiusCenters.length !== coordination.length
+  ) {
+    throw new Error("RDF result arrays are misaligned");
+  }
+  const units = raw.units;
+  if (!units || typeof units !== "object") {
+    throw new Error("RDF units are missing");
+  }
+  const unitValues = units as Record<string, unknown>;
+  const parameters = raw.parameters;
+  if (!parameters || typeof parameters !== "object") {
+    throw new Error("RDF parameters are missing");
+  }
+  const parameterValues = parameters as Record<string, unknown>;
+  const selections = raw.selections;
+  if (!selections || typeof selections !== "object") {
+    throw new Error("RDF selections are missing");
+  }
+  const selectionValues = selections as Record<string, unknown>;
+  return Object.freeze({
+    schemaVersion: finiteInteger(raw.schema_version, "RDF schema"),
+    datasetGeneration: generation,
+    referenceIndices: Object.freeze(integerArray(
+      selectionValues.reference_indices,
+      "RDF reference selection",
+    )),
+    targetIndices: Object.freeze(integerArray(
+      selectionValues.target_indices,
+      "RDF target selection",
+    )),
+    frameRange,
+    radiusUnit: requiredString(unitValues.radius, "RDF radius unit"),
+    rdfUnit: requiredString(unitValues.g_r, "RDF unit"),
+    coordinationUnit: requiredString(
+      unitValues.coordination,
+      "coordination unit",
+    ),
+    bins: positiveIntegerValue(parameterValues.n_bins, "RDF bins"),
+    rMax: positiveNumber(parameterValues.r_max, "RDF maximum radius"),
+    deltaR: positiveNumber(parameterValues.delta_r, "RDF resolution"),
+    radiusCenters: Object.freeze(radiusCenters),
+    gR: Object.freeze(gR),
+    coordinationRadius: Object.freeze(coordinationRadius),
+    coordination: Object.freeze(coordination),
+    pqAnalysisVersion: optionalString(raw.pqanalysis_version) ?? undefined,
+    elapsedSeconds: nullableFiniteNumber(raw.elapsed_seconds) ?? undefined,
+  });
+}
+
+function parseFrameKey(value: unknown): FrameKey {
+  if (!value || typeof value !== "object") {
+    throw new Error("Frame key is invalid");
+  }
+  const key = value as Record<string, unknown>;
+  return Object.freeze({
+    source_id: requiredString(key.source_id, "frame source"),
+    source_index: finiteInteger(key.source_index, "frame source index"),
+    segment_index: finiteInteger(key.segment_index, "frame segment"),
+    step: nullableFiniteNumber(key.step),
+    time: nullableFiniteNumber(key.time),
+    time_unit: optionalString(key.time_unit),
+  });
+}
+
+function integerArray(value: unknown, label: string): number[] {
+  if (!Array.isArray(value)) throw new Error(`${label} are invalid`);
+  return value.map((entry) => finiteInteger(entry, label));
+}
+
+function numberArray(value: unknown, label: string): number[] {
+  if (!Array.isArray(value)) throw new Error(`${label} are invalid`);
+  return value.map((entry) => {
+    if (typeof entry !== "number" || !Number.isFinite(entry)) {
+      throw new Error(`${label} are invalid`);
+    }
+    return entry;
+  });
+}
+
+function finiteInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value as number;
+}
+
+function positiveIntegerValue(value: unknown, label: string): number {
+  const result = finiteInteger(value, label);
+  if (result < 1) throw new Error(`${label} is invalid`);
+  return result;
+}
+
+function positiveNumber(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value;
+}
+
+function nullableFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value.trim();
+}
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function normalizedGeneration(value: string | undefined): string | undefined {

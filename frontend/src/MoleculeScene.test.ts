@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
+  alignedTrailSegments,
   atomSelectionForInstance,
   centeredFramePositions,
   clearOrbitMotion,
@@ -11,6 +12,7 @@ import {
   periodicBondSegments,
   sceneCapabilities,
   selectionMarkerState,
+  selectedDisplayedPosition,
   updateSelectionMarkers,
 } from "./MoleculeScene";
 import type { SelectionRenderState } from "./MoleculeScene";
@@ -1391,5 +1393,73 @@ describe("trajectory geometry reuse", () => {
       frameGeometryLayout(stable),
       frameGeometryLayout(changedVelocities),
     )).toBe(false);
+  });
+});
+
+describe("trajectory overlays", () => {
+  it("anchors unwrapped trails to the selected periodic image", () => {
+    const topology = manifest([1]);
+    const current = frame(
+      [-4.8, 0, 0],
+      [10, 0, 0, 0, 10, 0, 0, 0, 10],
+      [true, true, true],
+    );
+    const model = prepareScene(topology, current, basePresentation)!;
+    const segments = alignedTrailSegments(model, {
+      id: "h1",
+      atom: 0,
+      image: [1, 0, 0],
+      points: new Float32Array([4.7, 0, 0, 4.9, 0, 0, 5.2, 0, 0]),
+    });
+
+    [
+      4.7, 0, 0, 4.9, 0, 0,
+      4.9, 0, 0, 5.2, 0, 0,
+    ].forEach((value, index) => expect(segments[index]).toBeCloseTo(value, 5));
+    expectVectorClose(
+      selectedDisplayedPosition(model, 0, [1, 0, 0])!,
+      new THREE.Vector3(5.2, 0, 0),
+    );
+  });
+
+  it("mirrors trail displacements with the displayed cell", () => {
+    const topology = manifest([1]);
+    const model = prepareScene(
+      topology,
+      frame(
+        [1, 0, 0],
+        [10, 0, 0, 0, 10, 0, 0, 0, 10],
+        [true, true, true],
+      ),
+      { ...basePresentation, mirror: [true, false, false] },
+    )!;
+    const segments = alignedTrailSegments(model, {
+      id: "h1",
+      atom: 0,
+      image: [0, 0, 0],
+      points: new Float32Array([0, 0, 0, 0.5, 0, 0, 1, 0, 0]),
+    });
+
+    expect([...segments]).toEqual([
+      0, 0, 0, -0.5, 0, 0,
+      -0.5, 0, 0, -1, 0, 0,
+    ]);
+  });
+
+  it("bounds trail points and splits invalid samples", () => {
+    const topology = manifest([1]);
+    const model = prepareScene(topology, frame([0, 0, 0]), basePresentation)!;
+    const points = new Float32Array(520 * 3);
+    for (let index = 0; index < 520; index += 1) points[index * 3] = index;
+    points[(520 - 3) * 3] = Number.NaN;
+    const segments = alignedTrailSegments(model, {
+      id: "bounded",
+      atom: 0,
+      image: [0, 0, 0],
+      points,
+    });
+
+    expect(segments.length).toBeLessThanOrEqual((512 - 1) * 6);
+    expect([...segments].every(Number.isFinite)).toBe(true);
   });
 });

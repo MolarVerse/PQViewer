@@ -69,6 +69,14 @@ type LineSegments2Constructor = typeof import("three/examples/jsm/lines/LineSegm
 type LineSegmentsGeometryConstructor = typeof import("three/examples/jsm/lines/LineSegmentsGeometry.js").LineSegmentsGeometry;
 
 const MAX_SELECTION_RING_MARKERS = 512;
+export const MAX_TRAIL_ATOMS = 16;
+export const MAX_TRAIL_POINTS = 512;
+export const MAX_DISPLACEMENT_ATOMS = 32;
+
+const emptyTrajectoryOverlays: TrajectoryOverlays = Object.freeze({
+  trails: Object.freeze([]),
+  displacements: Object.freeze([]),
+});
 
 export interface SelectionMarkerState {
   mode: "rings" | "points";
@@ -128,6 +136,7 @@ interface MoleculeSceneProps {
   frame: FrameData | null;
   presentation: ScenePresentation;
   selectedAtoms: AtomSelection[];
+  trajectoryOverlays?: TrajectoryOverlays;
   resetSignal: number;
   forceScale: number;
   velocityScale: number;
@@ -183,6 +192,26 @@ export interface RenderedSceneInfo {
   capabilities: SceneCapabilities;
 }
 
+export interface AtomTrailOverlay {
+  id: string;
+  atom: number;
+  image: CellOffset;
+  points: Float32Array;
+}
+
+export interface AtomDisplacementOverlay {
+  id: string;
+  atom: number;
+  image: CellOffset;
+  from: [number, number, number];
+  to: [number, number, number];
+}
+
+export interface TrajectoryOverlays {
+  trails: readonly AtomTrailOverlay[];
+  displacements: readonly AtomDisplacementOverlay[];
+}
+
 export function isAdditivePick(
   event: Pick<PointerEvent, "pointerType" | "shiftKey" | "metaKey" | "ctrlKey">,
 ): boolean {
@@ -214,6 +243,7 @@ interface SceneState {
   forces: THREE.Group | null;
   velocities: THREE.Group | null;
   ribbon: THREE.Mesh | null;
+  trajectoryOverlays: THREE.Group;
   selection: THREE.Group;
   selectionGeometry: THREE.RingGeometry;
   selectionMaterial: THREE.MeshBasicMaterial;
@@ -259,6 +289,7 @@ interface ScenePalette {
   selectionOpacity: number;
   force: string;
   velocity: string;
+  displacement: string;
   ribbon: string;
   hemisphereSky: string;
   hemisphereGround: string;
@@ -281,6 +312,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
     selectionOpacity: 0.34,
     force: "#B8522D",
     velocity: "#6B62A8",
+    displacement: "#087F8C",
     ribbon: "#3D879D",
     hemisphereSky: "#ffffff",
     hemisphereGround: "#c6d2d5",
@@ -301,6 +333,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
     selectionOpacity: 0.42,
     force: "#f0a75a",
     velocity: "#9e98d7",
+    displacement: "#72d4df",
     ribbon: "#6cb9ca",
     hemisphereSky: "#f5f6f2",
     hemisphereGround: "#17272c",
@@ -404,6 +437,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   frame,
   presentation,
   selectedAtoms,
+  trajectoryOverlays = emptyTrajectoryOverlays,
   resetSignal,
   forceScale,
   velocityScale,
@@ -546,6 +580,9 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     keyboardFocus.renderOrder = 11;
     keyboardFocus.visible = false;
     root.add(keyboardFocus);
+    const trajectoryOverlayGroup = new THREE.Group();
+    trajectoryOverlayGroup.renderOrder = 7;
+    root.add(trajectoryOverlayGroup);
     const state: SceneState = {
       renderer,
       scene,
@@ -561,6 +598,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       forces: null,
       velocities: null,
       ribbon: null,
+      trajectoryOverlays: trajectoryOverlayGroup,
       selection,
       selectionGeometry,
       selectionMaterial,
@@ -824,7 +862,9 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       root.remove(selection);
       root.remove(selectionPoints);
       root.remove(keyboardFocus);
+      root.remove(trajectoryOverlayGroup);
       disposeObject(root);
+      disposeObject(trajectoryOverlayGroup);
       selection.clear();
       selectionGeometry.dispose();
       selectionMaterial.dispose();
@@ -939,6 +979,17 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     viewPreset,
     viewSignal,
   ]);
+
+  useEffect(() => {
+    const state = stateRef.current;
+    if (!state) return;
+    updateTrajectoryOverlayGroup(
+      state.trajectoryOverlays,
+      state.model,
+      trajectoryOverlays,
+      appearance,
+    );
+  }, [appearance, frame, presentation, trajectoryOverlays]);
 
   useEffect(() => {
     const state = stateRef.current;
@@ -1604,6 +1655,7 @@ const publicationPalette: ScenePalette = {
   selectionOpacity: 0,
   force: "#b34c2b",
   velocity: "#625c9f",
+  displacement: "#087F8C",
   ribbon: "#347f96",
   hemisphereSky: "#ffffff",
   hemisphereGround: "#d8e0df",
@@ -2127,6 +2179,202 @@ function clearRenderables(state: SceneState): void {
   state.velocities = null;
   state.ribbon = null;
   state.pickables = [];
+}
+
+function updateTrajectoryOverlayGroup(
+  group: THREE.Group,
+  model: PreparedScene | null,
+  overlays: TrajectoryOverlays,
+  appearance: Appearance,
+): void {
+  while (group.children.length > 0) {
+    const child = group.children[group.children.length - 1];
+    group.remove(child);
+    disposeObject(child);
+  }
+  if (!model) return;
+
+  const palette = scenePalettes[appearance];
+  const fade = new THREE.Color(palette.background);
+  const trailColor = new THREE.Color(palette.selection);
+  for (const overlay of overlays.trails.slice(0, MAX_TRAIL_ATOMS)) {
+    const positions = alignedTrailSegments(model, overlay);
+    if (positions.length === 0) continue;
+    const segmentCount = positions.length / 6;
+    const colors = new Float32Array(segmentCount * 6);
+    for (let segment = 0; segment < segmentCount; segment += 1) {
+      const from = segmentCount === 1 ? 0.35 : segment / segmentCount;
+      const to = (segment + 1) / segmentCount;
+      fade.clone().lerp(trailColor, 0.16 + from * 0.84).toArray(colors, segment * 6);
+      fade.clone().lerp(trailColor, 0.16 + to * 0.84).toArray(colors, segment * 6 + 3);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    const line = new THREE.LineSegments(
+      geometry,
+      new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.82,
+        depthWrite: false,
+      }),
+    );
+    line.name = `trail:${overlay.id}`;
+    line.renderOrder = 7;
+    group.add(line);
+  }
+
+  const arrows = overlays.displacements
+    .slice(0, MAX_DISPLACEMENT_ATOMS)
+    .map((overlay) => alignedDisplacementArrow(model, overlay))
+    .filter((arrow): arrow is VectorArrow => arrow !== null);
+  const displacement = buildExplicitVectors(arrows, palette.displacement);
+  if (displacement) {
+    displacement.name = "reference-displacements";
+    group.add(displacement);
+  }
+}
+
+export function alignedTrailSegments(
+  model: Pick<
+    PreparedScene,
+    "count" | "positions" | "baseImages" | "basis" | "displayTransform"
+  >,
+  overlay: AtomTrailOverlay,
+): Float32Array {
+  if (
+    !Number.isSafeInteger(overlay.atom)
+    || overlay.atom < 0
+    || overlay.atom >= model.count
+    || overlay.image.length !== 3
+    || !overlay.image.every(Number.isInteger)
+    || overlay.points.length < 6
+    || overlay.points.length % 3 !== 0
+  ) {
+    return new Float32Array();
+  }
+  const pointCount = Math.min(
+    MAX_TRAIL_POINTS,
+    Math.floor(overlay.points.length / 3),
+  );
+  const firstPoint = Math.floor(overlay.points.length / 3) - pointCount;
+  const lastOffset = overlay.points.length - 3;
+  const last = new THREE.Vector3().fromArray(overlay.points, lastOffset);
+  if (![last.x, last.y, last.z].every(Number.isFinite)) return new Float32Array();
+  const anchor = selectedDisplayedPosition(model, overlay.atom, overlay.image);
+  if (!anchor) return new Float32Array();
+  const aligned: THREE.Vector3[] = [];
+  const point = new THREE.Vector3();
+  for (let index = firstPoint; index < firstPoint + pointCount; index += 1) {
+    point.fromArray(overlay.points, index * 3);
+    if (![point.x, point.y, point.z].every(Number.isFinite)) {
+      aligned.push(new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN));
+      continue;
+    }
+    aligned.push(
+      point.clone()
+        .sub(last)
+        .applyMatrix3(model.displayTransform)
+        .add(anchor),
+    );
+  }
+  const segments: number[] = [];
+  for (let index = 1; index < aligned.length; index += 1) {
+    const from = aligned[index - 1];
+    const to = aligned[index];
+    if (
+      ![from.x, from.y, from.z, to.x, to.y, to.z].every(Number.isFinite)
+    ) continue;
+    segments.push(...from.toArray(), ...to.toArray());
+  }
+  return new Float32Array(segments);
+}
+
+export function selectedDisplayedPosition(
+  model: Pick<
+    PreparedScene,
+    "count" | "positions" | "baseImages" | "basis"
+  >,
+  atom: number,
+  image: CellOffset,
+): THREE.Vector3 | null {
+  if (
+    !Number.isSafeInteger(atom)
+    || atom < 0
+    || atom >= model.count
+    || image.length !== 3
+    || !image.every(Number.isInteger)
+  ) return null;
+  const point = new THREE.Vector3().fromArray(model.positions, atom * 3);
+  if (!model.basis) return point;
+  const offset = atom * 3;
+  const relative: CellOffset = [
+    image[0] - (model.baseImages[offset] ?? 0),
+    image[1] - (model.baseImages[offset + 1] ?? 0),
+    image[2] - (model.baseImages[offset + 2] ?? 0),
+  ];
+  return point.add(imageTranslation(relative, model.basis));
+}
+
+function alignedDisplacementArrow(
+  model: Pick<
+    PreparedScene,
+    "count" | "positions" | "baseImages" | "basis" | "displayTransform" | "radii"
+  >,
+  overlay: AtomDisplacementOverlay,
+): VectorArrow | null {
+  const tip = selectedDisplayedPosition(model, overlay.atom, overlay.image);
+  if (!tip || ![...overlay.from, ...overlay.to].every(Number.isFinite)) return null;
+  const displacement = new THREE.Vector3(
+    overlay.to[0] - overlay.from[0],
+    overlay.to[1] - overlay.from[1],
+    overlay.to[2] - overlay.from[2],
+  ).applyMatrix3(model.displayTransform);
+  const length = displacement.length();
+  if (!Number.isFinite(length) || length <= 1e-10) return null;
+  const direction = displacement.clone().multiplyScalar(1 / length);
+  const head = Math.min(0.22, Math.max(0.07, length * 0.18), length * 0.45);
+  return {
+    tail: tip.clone().sub(displacement),
+    tip,
+    direction,
+    head,
+  };
+}
+
+function buildExplicitVectors(
+  arrows: readonly VectorArrow[],
+  color: string,
+): THREE.Group | null {
+  if (arrows.length === 0) return null;
+  const group = new THREE.Group();
+  const shafts = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.014, 0.014, 1, 8, 1, false),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+    }),
+    arrows.length,
+  );
+  shafts.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  group.add(shafts);
+  const heads = new THREE.InstancedMesh(
+    new THREE.ConeGeometry(1, 1, 9),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+    }),
+    arrows.length,
+  );
+  heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  group.add(heads);
+  updateVectors(group, [...arrows]);
+  return group;
 }
 
 function buildFrameRenderables(

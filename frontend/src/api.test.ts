@@ -5,6 +5,8 @@ import {
   decodeFrame,
   getFrame,
   getInitialRecipe,
+  getSelectedPositions,
+  runRdfAnalysis,
 } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -121,6 +123,148 @@ describe("frame decoding", () => {
     expect(frame.arrays.get("centered_image_shifts")).toEqual(
       new Int32Array([1, -2, 3]),
     );
+  });
+});
+
+describe("compact scientific data", () => {
+  it("loads selected unwrapped positions with stable frame keys", async () => {
+    const fetch = vi.fn(() => Promise.resolve(Response.json({
+      schema_version: 1,
+      dataset_generation: "run-1",
+      atom_indices: [0, 2],
+      unit: "angstrom",
+      frames: [{
+        index: 4,
+        key: {
+          source_id: "segment-a",
+          source_index: 4,
+          segment_index: 0,
+          step: 40,
+          time: 2,
+          time_unit: "ps",
+        },
+        positions: [[1, 2, 3], [4, 5, 6]],
+        step: 40,
+        time: 2,
+        time_unit: "ps",
+      }],
+    })));
+    vi.stubGlobal("fetch", fetch);
+
+    const result = await getSelectedPositions({
+      datasetGeneration: "run-1",
+      atomIndices: [0, 2],
+      frameIndices: [4],
+    });
+
+    expect(result.frames[0].positions).toEqual(
+      new Float32Array([1, 2, 3, 4, 5, 6]),
+    );
+    expect(result.frames[0].key.source_index).toBe(4);
+    const calls = fetch.mock.calls as unknown as Array<[RequestInfo | URL, RequestInit?]>;
+    const init = calls[0][1]!;
+    expect(JSON.parse(String(init.body))).toEqual({
+      dataset_generation: "run-1",
+      atom_indices: [0, 2],
+      frame_indices: [4],
+      coordinates: "unwrapped",
+    });
+  });
+
+  it("rejects malformed compact position alignment", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json({
+      schema_version: 1,
+      dataset_generation: "run-1",
+      atom_indices: [0],
+      unit: "angstrom",
+      frames: [{
+        index: 3,
+        key: {
+          source_id: "segment-a",
+          source_index: 3,
+          segment_index: 0,
+        },
+        positions: [[1, 2]],
+      }],
+    }))));
+
+    await expect(getSelectedPositions({
+      datasetGeneration: "run-1",
+      atomIndices: [0],
+      frameIndices: [3],
+    })).rejects.toThrow("coordinates are invalid");
+  });
+
+  it("parses one typed RDF and coordination result", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json({
+      schema_version: 1,
+      dataset_generation: "run-2",
+      selections: {
+        reference_indices: [0, 1],
+        target_indices: [2],
+      },
+      frame_range: {
+        start: 0,
+        stop: 3,
+        step: 1,
+        count: 3,
+        first_key: {
+          source_id: "segment-a",
+          source_index: 0,
+          segment_index: 0,
+        },
+        last_key: {
+          source_id: "segment-a",
+          source_index: 2,
+          segment_index: 0,
+        },
+      },
+      units: {
+        radius: "angstrom",
+        g_r: "dimensionless",
+        coordination: "dimensionless",
+      },
+      parameters: {
+        n_bins: 2,
+        r_max: 2,
+        delta_r: 1,
+      },
+      radius_centers: [0.5, 1.5],
+      g_r: [0, 1.25],
+      coordination_radius: [1, 2],
+      coordination: [0, 1],
+      pqanalysis_version: "1.4.0",
+      elapsed_seconds: 0.02,
+    }))));
+
+    const result = await runRdfAnalysis({
+      datasetGeneration: "run-2",
+      referenceIndices: [0, 1],
+      targetIndices: [2],
+      bins: 2,
+    });
+
+    expect(result.radiusCenters).toEqual([0.5, 1.5]);
+    expect(result.coordinationRadius).toEqual([1, 2]);
+    expect(result.frameRange.lastKey.source_index).toBe(2);
+  });
+
+  it("maps stale scientific responses to DatasetChangedError", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json(
+      { detail: "Trajectory changed." },
+      { status: 409 },
+    ))));
+
+    await expect(getSelectedPositions({
+      datasetGeneration: "old",
+      atomIndices: [0],
+      frameIndices: [0],
+    })).rejects.toBeInstanceOf(DatasetChangedError);
+    await expect(runRdfAnalysis({
+      datasetGeneration: "old",
+      referenceIndices: [0],
+      targetIndices: [1],
+    })).rejects.toBeInstanceOf(DatasetChangedError);
   });
 });
 

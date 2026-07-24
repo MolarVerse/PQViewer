@@ -13,7 +13,7 @@ import webbrowser
 
 import uvicorn
 
-from .app import (
+from pqviewer.app import (
     CHARGES_ENV,
     ENERGY_ENV,
     FORCES_ENV,
@@ -25,7 +25,7 @@ from .app import (
     VELOCITIES_ENV,
     create_app,
 )
-from .recipe import is_figure_recipe_path, open_figure_recipe_dataset
+from pqviewer.recipe import is_figure_recipe_path, open_figure_recipe_dataset
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> None:
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments[:1] == ["render"]:
-        from .render_cli import main as render_main
+        from pqviewer.render_cli import main as render_main
 
         render_main(arguments[1:])
         return

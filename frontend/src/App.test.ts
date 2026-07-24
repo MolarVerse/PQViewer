@@ -4,9 +4,11 @@ import {
   canUseRepeatCounts,
   cellOriginForFrame,
   compactFrameNumber,
+  compatibleManifestGrowth,
   filterCommandActions,
   frameCountLabel,
   frameMetadata,
+  frameMarkPercent,
   meaningfulResidueId,
   measureDisplayedPositions,
   measurementPbc,
@@ -16,9 +18,16 @@ import {
   repeatImages,
   sameCellOrigin,
   selectedProfilePresentation,
+  uniqueAtomIndices,
   usesPeriodicFigureContext,
 } from "./App";
-import type { FrameData, FrameHeader, SceneCapabilities, ScenePresentation } from "./types";
+import type {
+  FrameData,
+  FrameHeader,
+  Manifest,
+  SceneCapabilities,
+  ScenePresentation,
+} from "./types";
 
 const presentation: ScenePresentation = {
   mode: "spacefill",
@@ -307,6 +316,48 @@ describe("periodic display controls", () => {
       { ...presentation, mode: "spacefill", wrap: "unwrapped" },
       [true, false, false],
     )).toBe(false);
+  });
+});
+
+describe("trajectory study helpers", () => {
+  const manifest = (frameCount: number): Manifest => ({
+    schema_version: 1,
+    dataset_generation: `generation-${frameCount}`,
+    name: "trajectory.xyz",
+    frame_count: frameCount,
+    topology: {
+      atom_count: 2,
+      atomic_numbers: [1, 8],
+    },
+    source: {
+      kind: "trajectory",
+      path: "/data/trajectory.xyz",
+      segments: [{
+        source_id: "trajectory.xyz",
+        kind: "ase",
+        path: "/data/trajectory.xyz",
+        frame_count: frameCount,
+      }],
+    },
+  });
+
+  it("preserves frame marks only across compatible trajectory growth", () => {
+    expect(compatibleManifestGrowth(manifest(10), manifest(12))).toBe(true);
+    expect(compatibleManifestGrowth(
+      manifest(10),
+      { ...manifest(12), topology: { atom_count: 2, atomic_numbers: [8, 1] } },
+    )).toBe(false);
+    expect(compatibleManifestGrowth(
+      manifest(10),
+      { ...manifest(12), source: { kind: "trajectory", path: "/data/other.xyz" } },
+    )).toBe(false);
+  });
+
+  it("normalizes selected atoms and marker positions", () => {
+    expect(uniqueAtomIndices([3, 1, 3, -1, 8], 4)).toEqual([1, 3]);
+    expect(frameMarkPercent(0, 10)).toBe(0);
+    expect(frameMarkPercent(9, 10)).toBe(100);
+    expect(frameMarkPercent(30, 10)).toBe(100);
   });
 });
 

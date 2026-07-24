@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   DatasetChangedError,
   frameArray,
@@ -6,17 +6,29 @@ import {
   getFrame,
   getInitialRecipe,
   getManifest,
+  getSelectedPositions,
+  normalizeSeries,
   openFiles,
+  runRdfAnalysis,
 } from "./api";
+import type { RdfAnalysisResult } from "./api";
 import { searchCommandActions } from "./commandSearch";
-import { MeasurementPlot } from "./MeasurementPlot";
+import { MeasurementPlot, PlotShelf } from "./MeasurementPlot";
 import {
+  calculateMeasurementComparison,
   calculateMeasurementSeries,
+  measurementComparisonPlotData,
   measurementSeriesCsv,
   measurementSeriesPdf,
   measurementSeriesSvg,
+  plotShelfCsv,
+  plotShelfPdf,
+  plotShelfSvg,
 } from "./measurementSeries";
-import type { MeasurementSeriesProgress } from "./measurementSeries";
+import type {
+  MeasurementComparisonDefinition,
+  MeasurementSeriesProgress,
+} from "./measurementSeries";
 import {
   cloneFigureRecipe,
   figureFrameFingerprint,
@@ -39,11 +51,17 @@ import {
   MoleculeScene,
 } from "./MoleculeScene";
 import type {
+  TrajectoryOverlays,
   FigureExportOptions,
   MoleculeSceneHandle,
   RenderedSceneInfo,
   ViewPreset,
 } from "./MoleculeScene";
+import { RdfSetup } from "./RdfSetup";
+import type {
+  AnalysisSelectionOption,
+  RdfSetupValue,
+} from "./RdfSetup";
 import {
   advanceFrameIndex,
   parseVimPreference,
@@ -83,9 +101,27 @@ import {
   schedulePlaybackFrame,
 } from "./trajectory";
 import type { PlaybackDirection, PlaybackMode } from "./trajectory";
+import {
+  frameMark,
+  frameMarkLabel,
+  initialTrajectoryStudyState,
+  trajectoryStudyReducer,
+} from "./trajectoryStudy";
+import type {
+  FrameMark,
+  PlotShelfData,
+  TrackingMode,
+} from "./trajectoryStudy";
+import {
+  MAX_TRACKED_SELECTIONS,
+  trackingFrameIndices,
+  trackingFrameMismatch,
+  trajectoryOverlaysFromPositions,
+} from "./trajectoryTracking";
 import type {
   AtomSelection,
   CellOffset,
+  DisplaySeries,
   FrameData,
   Manifest,
   RepresentationMode,
@@ -99,6 +135,11 @@ type WorkbenchTab = "view" | "inspect" | "summary";
 type SelectionIntent = "measurement" | "set";
 type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 type NoticeState = { message: string; tone: "status" | "error" };
+type RdfPlotContext = {
+  requestId: number;
+  referenceLabel: string;
+  targetLabel: string;
+};
 type FocusTarget = Element & { focus: (options?: FocusOptions) => void };
 type PinnedMeasurement = {
   id: number;
@@ -124,6 +165,7 @@ declare global {
 
 const DATASET_CHANNEL = "pqviewer-dataset";
 const MAX_FIGURE_RECIPE_BYTES = 1_048_576;
+const MAX_RDF_SELECTION_ATOMS = 4_096;
 
 const defaultFigureOutput: FigureOutput = {
   format: "png",
@@ -181,6 +223,20 @@ export default function App() {
   const [minimumImage, setMinimumImage] = useState(true);
   const [measurementPlotOpen, setMeasurementPlotOpen] = useState(false);
   const [measurementSeries, setMeasurementSeries] = useState<MeasurementSeriesProgress | null>(null);
+  const [study, dispatchStudy] = useReducer(
+    trajectoryStudyReducer,
+    initialTrajectoryStudyState,
+  );
+  const [trajectoryOverlays, setTrajectoryOverlays] = useState<TrajectoryOverlays>({
+    trails: [],
+    displacements: [],
+  });
+  const [rdfSetupOpen, setRdfSetupOpen] = useState(false);
+  const [rdfInitialView, setRdfInitialView] = useState<"rdf" | "coordination">("rdf");
+  const [rdfResult, setRdfResult] = useState<RdfAnalysisResult | null>(null);
+  const [rdfView, setRdfView] = useState<"rdf" | "coordination">("rdf");
+  const [rdfRunning, setRdfRunning] = useState(false);
+  const [rdfContext, setRdfContext] = useState<RdfPlotContext | null>(null);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -214,6 +270,10 @@ export default function App() {
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
   const measurementRequest = useRef(0);
+  const studyRequest = useRef(0);
+  const studyController = useRef<AbortController | null>(null);
+  const trackingController = useRef<AbortController | null>(null);
+  const rdfController = useRef<AbortController | null>(null);
   const recipeRequest = useRef(0);
   const pendingFigureRecipe = useRef<FigureRecipe | null>(null);
   const nextPinnedMeasurement = useRef(1);
@@ -224,6 +284,7 @@ export default function App() {
   const datasetReloadPending = useRef(false);
   const datasetCheckPending = useRef(false);
   const manifestGeneration = useRef("");
+  const activeManifest = useRef<Manifest | null>(null);
   const datasetChannel = useRef<BroadcastChannel | null>(null);
   const playbackClock = useRef<{ key: string; requestTimeMs: number | null }>({
     key: "",
@@ -245,13 +306,24 @@ export default function App() {
   };
   const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
-  const activateManifest = useCallback((value: Manifest) => {
+  const activateManifest = useCallback((
+    value: Manifest,
+    preserveStudyMarks = false,
+  ) => {
     recipeRequest.current += 1;
+    studyRequest.current += 1;
+    studyController.current?.abort();
+    studyController.current = null;
+    trackingController.current?.abort();
+    trackingController.current = null;
+    rdfController.current?.abort();
+    rdfController.current = null;
     cache.current.clear();
     cache.current = new FrameCache({ datasetGeneration: value.dataset_generation });
     frameCoordinateModeRef.current = "source";
     datasetReloadPending.current = false;
     manifestGeneration.current = value.dataset_generation ?? "";
+    activeManifest.current = value;
     setManifest(value);
     setFrameIndex(0);
     setLoadedFrame(null);
@@ -264,6 +336,12 @@ export default function App() {
     setMinimumImage(true);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
+    dispatchStudy({ type: "reset", preserveMarks: preserveStudyMarks });
+    setTrajectoryOverlays({ trails: [], displacements: [] });
+    setRdfSetupOpen(false);
+    setRdfResult(null);
+    setRdfRunning(false);
+    setRdfContext(null);
     setPlaying(false);
     setPlaybackDirection(1);
     setPlaybackOptionsOpen(false);
@@ -338,6 +416,19 @@ export default function App() {
         setPlaybackOptionsOpen(false);
         setMeasurementPlotOpen(false);
         setMeasurementSeries(null);
+        studyRequest.current += 1;
+        studyController.current?.abort();
+        studyController.current = null;
+        trackingController.current?.abort();
+        trackingController.current = null;
+        rdfController.current?.abort();
+        rdfController.current = null;
+        dispatchStudy({ type: "reset" });
+        setTrajectoryOverlays({ trails: [], displacements: [] });
+        setRdfSetupOpen(false);
+        setRdfResult(null);
+        setRdfRunning(false);
+        setRdfContext(null);
         setWorkbenchTab(null);
         setCommandOpen(false);
         setShortcutsOpen(false);
@@ -371,8 +462,16 @@ export default function App() {
   const reloadChangedDataset = useCallback(() => {
     if (datasetReloadPending.current) return;
     recipeRequest.current += 1;
+    studyRequest.current += 1;
+    studyController.current?.abort();
+    studyController.current = null;
+    trackingController.current?.abort();
+    trackingController.current = null;
+    rdfController.current?.abort();
+    rdfController.current = null;
     datasetReloadPending.current = true;
     manifestGeneration.current = "";
+    activeManifest.current = null;
     cache.current.clear();
     frameCoordinateModeRef.current = "source";
     setManifest(null);
@@ -388,6 +487,12 @@ export default function App() {
     setPinnedMeasurements([]);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
+    dispatchStudy({ type: "reset" });
+    setTrajectoryOverlays({ trails: [], displacements: [] });
+    setRdfSetupOpen(false);
+    setRdfResult(null);
+    setRdfRunning(false);
+    setRdfContext(null);
     setPlaying(false);
     setPlaybackDirection(1);
     setPlaybackOptionsOpen(false);
@@ -447,7 +552,10 @@ export default function App() {
       const current = await getManifest();
       if (manifestGeneration.current !== expectedGeneration) return;
       if (current.dataset_generation !== expectedGeneration) {
-        activateManifest(current);
+        activateManifest(
+          current,
+          compatibleManifestGrowth(activeManifest.current, current),
+        );
         setNotice({ message: "Trajectory changed · updated", tone: "status" });
         datasetChannel.current?.postMessage({
           datasetGeneration: current.dataset_generation,
@@ -841,6 +949,27 @@ export default function App() {
 
   const frame = loadedFrame?.data ?? null;
   const displayedFrameIndex = loadedFrame?.index ?? frameIndex;
+  const displayedFrameMark = useMemo(
+    () => frameMark(displayedFrameIndex, frame),
+    [displayedFrameIndex, frame],
+  );
+  useEffect(() => {
+    if (!displayedFrameMark) return;
+    const bookmark = study.bookmarks.find(
+      ({ index }) => index === displayedFrameMark.index,
+    );
+    if (bookmark && !sameFrameKey(bookmark.key, displayedFrameMark.key)) {
+      dispatchStudy({ type: "toggle-bookmark", mark: bookmark });
+      setNotice({ message: "Removed a stale bookmark", tone: "status" });
+    }
+    if (
+      study.reference?.index === displayedFrameMark.index
+      && !sameFrameKey(study.reference.key, displayedFrameMark.key)
+    ) {
+      dispatchStudy({ type: "clear-reference" });
+      setNotice({ message: "Reference frame changed · cleared", tone: "status" });
+    }
+  }, [displayedFrameMark, study.bookmarks, study.reference]);
   const selectedAtom = selectedAtoms.at(-1)?.atom ?? null;
   const cellAvailable = hasFrameCell(frame);
   const forces = frameArray(frame, ["forces", "force"]);
@@ -949,6 +1078,96 @@ export default function App() {
     && selectedAtoms.length >= 2
     && selectedAtoms.length <= 4
     && selectedAtoms.every(({ atom }) => atom >= 0 && atom < (manifest?.topology.atom_count ?? 0));
+  const propertySeries = useMemo(
+    () => normalizeSeries(manifest?.series).filter(({ name, values }) => (
+      values.length === (manifest?.frame_count ?? 0)
+      && !["step", "time"].includes(normalizeName(name))
+    )),
+    [manifest?.frame_count, manifest?.series],
+  );
+  const analysisSelectionOptions = useMemo<AnalysisSelectionOption[]>(() => {
+    if (!manifest) return [];
+    const options: AnalysisSelectionOption[] = [];
+    const selected = uniqueAtomIndices(
+      selectedAtoms.map(({ atom }) => atom),
+      manifest.topology.atom_count,
+    );
+    if (selected.length > 0 && selected.length <= MAX_RDF_SELECTION_ATOMS) {
+      options.push({
+        id: "selected",
+        label: selectionFormula || "Selection",
+        atomIndices: selected,
+      });
+    }
+    namedSelections.forEach((named, index) => {
+      const atoms = uniqueAtomIndices(
+        named.selections.map(({ atom }) => atom),
+        manifest.topology.atom_count,
+      );
+      if (atoms.length > 0 && atoms.length <= MAX_RDF_SELECTION_ATOMS) {
+        options.push({
+          id: `saved-${index}`,
+          label: named.name,
+          atomIndices: atoms,
+        });
+      }
+    });
+    const atomicNumbers = manifest.topology.atomic_numbers
+      ?? (selectionContext?.atomicNumbers
+        ? Array.from(selectionContext.atomicNumbers)
+        : []);
+    selectableElements.forEach((atomicNumber) => {
+      const atoms = atomicNumbers.flatMap((value, atom) => (
+        value === atomicNumber ? [atom] : []
+      ));
+      if (atoms.length > 0 && atoms.length <= MAX_RDF_SELECTION_ATOMS) {
+        options.push({
+          id: `element-${atomicNumber}`,
+          label: `All ${ELEMENT_SYMBOLS[atomicNumber]} atoms`,
+          atomIndices: atoms,
+        });
+      }
+    });
+    if (
+      options.length === 0
+      && manifest.topology.atom_count > 0
+      && manifest.topology.atom_count <= MAX_RDF_SELECTION_ATOMS
+    ) {
+      options.push({
+        id: "all",
+        label: "All atoms",
+        atomIndices: Array.from(
+          { length: manifest.topology.atom_count },
+          (_, atom) => atom,
+        ),
+      });
+    }
+    return options;
+  }, [
+    manifest,
+    namedSelections,
+    selectableElements,
+    selectionContext?.atomicNumbers,
+    selectedAtoms,
+    selectionFormula,
+  ]);
+  const analysisAvailable = Boolean(
+    canPlay
+    && manifest?.source?.path
+    && pbc.every(Boolean)
+    && analysisSelectionOptions.length > 0,
+  );
+  const trackingAvailable = canPlay
+    && selectedAtoms.length > 0
+    && selectedAtoms.length <= MAX_TRACKED_SELECTIONS;
+  const currentBookmarked = Boolean(
+    displayedFrameMark
+    && study.bookmarks.some(({ key }) => sameFrameKey(key, displayedFrameMark.key)),
+  );
+  const comparablePins = useMemo(
+    () => largestCompatibleMeasurementGroup(pinnedMeasurements),
+    [pinnedMeasurements],
+  );
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
   const plotFrameAxis = useMemo(
     () => measurementPlotOpen && manifest
@@ -1085,6 +1304,21 @@ export default function App() {
     applyScientificSelection(pin.selections, undefined, "measurement");
   }, [applyScientificSelection]);
 
+  const closeStudyPlot = useCallback((restoreFocus = false) => {
+    studyRequest.current += 1;
+    studyController.current?.abort();
+    studyController.current = null;
+    rdfController.current?.abort();
+    rdfController.current = null;
+    setRdfRunning(false);
+    setRdfResult(null);
+    setRdfContext(null);
+    dispatchStudy({ type: "close-plot" });
+    if (restoreFocus) requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".timeline-options > summary")?.focus();
+    });
+  }, []);
+
   const closeMeasurementPlot = useCallback((restoreFocus = false) => {
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
@@ -1102,9 +1336,17 @@ export default function App() {
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     setMeasurementSeries(null);
+    closeStudyPlot(false);
     if (!cellAvailable || !pbc.some(Boolean)) setMinimumImage(false);
     setMeasurementPlotOpen(true);
-  }, [canPlotMeasurement, cellAvailable, pbc[0], pbc[1], pbc[2]]);
+  }, [
+    canPlotMeasurement,
+    cellAvailable,
+    closeStudyPlot,
+    pbc[0],
+    pbc[1],
+    pbc[2],
+  ]);
 
   useEffect(() => {
     const request = measurementRequest.current + 1;
@@ -1157,6 +1399,312 @@ export default function App() {
     reloadChangedDataset,
     selectedAtoms,
   ]);
+
+  const toggleCurrentBookmark = useCallback(() => {
+    if (!displayedFrameMark) {
+      setNotice({ message: "This frame has no stable source identity.", tone: "status" });
+      return;
+    }
+    dispatchStudy({ type: "toggle-bookmark", mark: displayedFrameMark });
+  }, [displayedFrameMark]);
+
+  const setCurrentReference = useCallback(() => {
+    if (!displayedFrameMark) {
+      setNotice({ message: "This frame has no stable source identity.", tone: "status" });
+      return;
+    }
+    dispatchStudy({ type: "set-reference", mark: displayedFrameMark });
+    setNotice({
+      message: `Reference · ${frameMarkLabel(displayedFrameMark)}`,
+      tone: "status",
+    });
+  }, [displayedFrameMark]);
+
+  const setTrackingMode = useCallback((mode: TrackingMode) => {
+    if (mode !== "off" && !trackingAvailable) {
+      setNotice({
+        message: selectedAtoms.length > MAX_TRACKED_SELECTIONS
+          ? `Track up to ${MAX_TRACKED_SELECTIONS} selected atoms.`
+          : "Select atoms in a trajectory first.",
+        tone: "status",
+      });
+      return;
+    }
+    if (mode === "displacement" && study.reference === null) {
+      setNotice({ message: "Set a reference frame first.", tone: "status" });
+      return;
+    }
+    dispatchStudy({
+      type: "set-tracking",
+      mode: study.tracking === mode ? "off" : mode,
+    });
+  }, [selectedAtoms.length, study.reference, study.tracking, trackingAvailable]);
+
+  useEffect(() => {
+    trackingController.current?.abort();
+    trackingController.current = null;
+    if (
+      study.tracking === "off"
+      || !manifest
+      || !trackingAvailable
+      || selectedAtoms.length === 0
+    ) {
+      setTrajectoryOverlays({ trails: [], displacements: [] });
+      if (study.tracking !== "off" && !trackingAvailable) {
+        dispatchStudy({ type: "set-tracking", mode: "off" });
+      }
+      return;
+    }
+    const frameIndices = trackingFrameIndices(
+      study.tracking,
+      displayedFrameIndex,
+      study.reference?.index ?? null,
+      manifest.frame_count,
+    );
+    if (frameIndices.length === 0) {
+      setTrajectoryOverlays({ trails: [], displacements: [] });
+      return;
+    }
+    const controller = new AbortController();
+    trackingController.current = controller;
+    const selections = cloneSelections(selectedAtoms);
+    void getSelectedPositions({
+      datasetGeneration: manifest.dataset_generation ?? "",
+      atomIndices: uniqueAtomIndices(
+        selections.map(({ atom }) => atom),
+        manifest.topology.atom_count,
+      ),
+      frameIndices,
+      coordinates: "unwrapped",
+    }, controller.signal)
+      .then((positions) => {
+        if (controller.signal.aborted) return;
+        const mismatch = trackingFrameMismatch(
+          positions,
+          displayedFrameIndex,
+          displayedFrameMark?.key ?? null,
+          study.reference?.index ?? null,
+          study.reference?.key ?? null,
+        );
+        if (mismatch === "reference") {
+          dispatchStudy({ type: "clear-reference" });
+          setTrajectoryOverlays({ trails: [], displacements: [] });
+          setNotice({ message: "Reference frame changed · cleared", tone: "status" });
+          return;
+        }
+        if (mismatch === "current") {
+          reloadChangedDataset();
+          return;
+        }
+        setTrajectoryOverlays(trajectoryOverlaysFromPositions(
+          positions,
+          selections,
+          study.tracking,
+          displayedFrameIndex,
+          study.reference?.index ?? null,
+        ));
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
+        dispatchStudy({ type: "set-tracking", mode: "off" });
+        setTrajectoryOverlays({ trails: [], displacements: [] });
+        setNotice({ message: `Tracking unavailable · ${message(error)}`, tone: "error" });
+      });
+    return () => controller.abort();
+  }, [
+    displayedFrameIndex,
+    displayedFrameMark,
+    manifest,
+    reloadChangedDataset,
+    selectedAtoms,
+    study.reference,
+    study.tracking,
+    trackingAvailable,
+  ]);
+
+  const showPropertyPlot = useCallback((series: DisplaySeries) => {
+    if (!manifest || series.values.length !== manifest.frame_count) return;
+    const requestId = studyRequest.current + 1;
+    studyRequest.current = requestId;
+    studyController.current?.abort();
+    studyController.current = null;
+    rdfController.current?.abort();
+    rdfController.current = null;
+    setRdfRunning(false);
+    setRdfResult(null);
+    setRdfContext(null);
+    setPlaying(false);
+    setPlaybackOptionsOpen(false);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    dispatchStudy({
+      type: "open-plot",
+      plot: propertyPlotData(series, manifest.frame_count, requestId),
+    });
+  }, [manifest]);
+
+  const comparePinnedMeasurements = useCallback(() => {
+    if (!manifest || comparablePins.length < 2) return;
+    const requestId = studyRequest.current + 1;
+    studyRequest.current = requestId;
+    studyController.current?.abort();
+    const controller = new AbortController();
+    studyController.current = controller;
+    rdfController.current?.abort();
+    rdfController.current = null;
+    setRdfRunning(false);
+    setRdfResult(null);
+    setRdfContext(null);
+    setPlaying(false);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    const definitions = comparablePins.map((pin) => ({
+      id: `pin-${pin.id}`,
+      label: measurementSelectionTitle(manifest, pin.selections),
+      selections: pin.selections,
+      minimumImage: pin.minimumImage,
+    }));
+    dispatchStudy({
+      type: "open-plot",
+      plot: comparisonPlaceholder(definitions, manifest.frame_count, requestId),
+    });
+    void calculateMeasurementComparison({
+      manifest,
+      frameCount: manifest.frame_count,
+      definitions,
+      wrap: presentation.wrap,
+      signal: controller.signal,
+      loadFrame: (index, signal) => getFrame(
+        index,
+        signal,
+        manifest.dataset_generation,
+      ),
+      onProgress: (progress) => {
+        if (studyRequest.current !== requestId || controller.signal.aborted) return;
+        dispatchStudy({
+          type: "update-plot",
+          plot: measurementComparisonPlotData(progress, requestId),
+        });
+      },
+    })
+      .then((comparison) => {
+        if (studyRequest.current !== requestId || controller.signal.aborted) return;
+        dispatchStudy({
+          type: "update-plot",
+          plot: measurementComparisonPlotData(comparison, requestId),
+        });
+      })
+      .catch((error: unknown) => {
+        if (studyRequest.current !== requestId || controller.signal.aborted) return;
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
+        dispatchStudy({ type: "close-plot" });
+        setNotice({ message: `Comparison unavailable · ${message(error)}`, tone: "error" });
+      });
+  }, [
+    comparablePins,
+    manifest,
+    presentation.wrap,
+    reloadChangedDataset,
+  ]);
+
+  const showRdfSetup = useCallback((view: "rdf" | "coordination") => {
+    if (!analysisAvailable) {
+      setNotice({
+        message: "Pair analysis needs a trajectory with a full periodic cell.",
+        tone: "status",
+      });
+      return;
+    }
+    setPlaying(false);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setFigureSheetOpen(false);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    setRdfInitialView(view);
+    setRdfSetupOpen(true);
+  }, [analysisAvailable]);
+
+  const runRdfSetup = useCallback((value: RdfSetupValue) => {
+    if (!manifest) return;
+    const requestId = studyRequest.current + 1;
+    studyRequest.current = requestId;
+    studyController.current?.abort();
+    studyController.current = null;
+    rdfController.current?.abort();
+    const controller = new AbortController();
+    rdfController.current = controller;
+    const context = {
+      requestId,
+      referenceLabel: value.reference.label,
+      targetLabel: value.target.label,
+    };
+    setRdfSetupOpen(false);
+    setRdfInitialView(value.initialView);
+    setRdfView(value.initialView);
+    setRdfResult(null);
+    setRdfContext(context);
+    setRdfRunning(true);
+    dispatchStudy({
+      type: "open-plot",
+      plot: rdfPlaceholder(value.initialView, context),
+    });
+    void runRdfAnalysis({
+      datasetGeneration: manifest.dataset_generation ?? "",
+      referenceIndices: value.reference.atomIndices,
+      targetIndices: value.target.atomIndices,
+      frameStart: value.frameStart,
+      frameStop: value.frameStop,
+      frameStep: value.frameStep,
+      bins: value.bins,
+      rMax: value.rMax,
+    }, controller.signal)
+      .then((result) => {
+        if (studyRequest.current !== requestId || controller.signal.aborted) return;
+        setRdfRunning(false);
+        setRdfResult(result);
+        dispatchStudy({
+          type: "update-plot",
+          plot: rdfPlotData(result, value.initialView, context),
+        });
+      })
+      .catch((error: unknown) => {
+        if (studyRequest.current !== requestId || controller.signal.aborted) return;
+        setRdfRunning(false);
+        setRdfResult(null);
+        setRdfContext(null);
+        dispatchStudy({ type: "close-plot" });
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
+        setNotice({ message: `Pair analysis unavailable · ${message(error)}`, tone: "error" });
+      });
+  }, [manifest, reloadChangedDataset]);
+
+  const selectRdfView = useCallback((view: "rdf" | "coordination") => {
+    setRdfView(view);
+    if (!rdfResult || !rdfContext) return;
+    dispatchStudy({
+      type: "update-plot",
+      plot: rdfPlotData(rdfResult, view, rdfContext),
+    });
+  }, [rdfContext, rdfResult]);
+
+  useEffect(() => () => {
+    studyController.current?.abort();
+    trackingController.current?.abort();
+    rdfController.current?.abort();
+  }, []);
 
   const showRender = useCallback(() => {
     if (!canRender || rendering) return;
@@ -1566,6 +2114,8 @@ export default function App() {
       setCommandOpen(false);
     } else if (shortcutsOpen) {
       setShortcutsOpen(false);
+    } else if (rdfSetupOpen) {
+      setRdfSetupOpen(false);
     } else if (figureSheetOpen) {
       setFigureSheetOpen(false);
     } else if (playbackOptionsOpen) {
@@ -1577,6 +2127,8 @@ export default function App() {
       closeWorkbench(true);
     } else if (measurementPlotOpen) {
       closeMeasurementPlot(true);
+    } else if (study.plot) {
+      closeStudyPlot(true);
     } else if (selectedAtoms.length > 0) {
       setSelectedAtoms([]);
     } else {
@@ -1585,13 +2137,16 @@ export default function App() {
     return true;
   }, [
     closeMeasurementPlot,
+    closeStudyPlot,
     closeWorkbench,
     commandOpen,
     figureSheetOpen,
     measurementPlotOpen,
+    rdfSetupOpen,
     playbackOptionsOpen,
     selectedAtoms.length,
     shortcutsOpen,
+    study.plot,
     workbenchTab,
   ]);
 
@@ -1715,6 +2270,9 @@ export default function App() {
         event.preventDefault();
         setPlaying(false);
         setFrame((manifest?.frame_count ?? 1) - 1);
+      } else if (event.key.toLowerCase() === "m" && canPlay && !event.repeat) {
+        event.preventDefault();
+        toggleCurrentBookmark();
       } else if (event.key.toLowerCase() === "r" && !event.repeat) {
         event.preventDefault();
         setResetSignal((value) => value + 1);
@@ -1727,6 +2285,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     capabilities?.water,
+    canPlay,
     cellAvailable,
     closeWorkbench,
     commandOpen,
@@ -1741,6 +2300,7 @@ export default function App() {
     setFrame,
     shortcutsOpen,
     stepFrame,
+    toggleCurrentBookmark,
     showCommands,
     showOpen,
     showRender,
@@ -1779,6 +2339,81 @@ export default function App() {
       { id: "next", label: "Next frame", keywords: "forward step", detail: "→", disabled: !canPlay || frameIndex >= (manifest?.frame_count ?? 1) - 1, run: run(() => { setPlaying(false); stepFrame(1); }) },
       { id: "first", label: "First frame", keywords: "start beginning", detail: "Home", disabled: !canPlay || frameIndex === 0, run: run(() => { setPlaying(false); setFrame(0); }) },
       { id: "last", label: "Last frame", keywords: "end final", detail: "End", disabled: !canPlay || frameIndex >= (manifest?.frame_count ?? 1) - 1, run: run(() => { setPlaying(false); setFrame((manifest?.frame_count ?? 1) - 1); }) },
+      {
+        id: "frame-bookmark",
+        label: currentBookmarked ? "Remove frame bookmark" : "Bookmark current frame",
+        keywords: "trajectory mark remember frame",
+        detail: "M",
+        disabled: !displayedFrameMark,
+        run: run(toggleCurrentBookmark),
+      },
+      {
+        id: "frame-reference",
+        label: "Set current frame as reference",
+        keywords: "trajectory reference displacement compare",
+        disabled: !displayedFrameMark,
+        run: run(setCurrentReference),
+      },
+      ...(study.reference ? [{
+        id: "frame-reference-go",
+        label: "Go to reference frame",
+        keywords: "trajectory reference jump",
+        detail: `Frame ${study.reference.index + 1}`,
+        run: run(() => {
+          setPlaying(false);
+          setFrame(study.reference!.index);
+        }),
+      }, {
+        id: "frame-reference-clear",
+        label: "Clear reference frame",
+        keywords: "trajectory reference displacement",
+        run: run(() => dispatchStudy({ type: "clear-reference" })),
+      }] : []),
+      {
+        id: "track-trail",
+        label: study.tracking === "trail" ? "Hide selected-atom trails" : "Track selected atoms",
+        keywords: "trajectory trail path motion history",
+        disabled: !trackingAvailable,
+        run: run(() => setTrackingMode("trail")),
+      },
+      {
+        id: "track-displacement",
+        label: study.tracking === "displacement" ? "Hide displacement vectors" : "Show displacement from reference",
+        keywords: "trajectory movement vector reference atoms",
+        detail: study.reference ? frameMarkLabel(study.reference) : "Set a reference first",
+        disabled: !trackingAvailable || !study.reference,
+        run: run(() => setTrackingMode("displacement")),
+      },
+      ...(comparablePins.length >= 2 ? [{
+        id: "measurement-compare",
+        label: "Compare pinned measurements",
+        keywords: "trajectory plot distance angle dihedral lines",
+        detail: `${comparablePins.length} lines`,
+        run: run(comparePinnedMeasurements),
+      }] : []),
+      ...propertySeries.map((series) => ({
+        id: `plot-property-${series.name}`,
+        label: `Plot ${series.label}`,
+        keywords: `trajectory property scalar ${series.name}`,
+        detail: series.unit,
+        run: run(() => showPropertyPlot(series)),
+      })),
+      {
+        id: "analysis-rdf",
+        label: "Pair distribution",
+        keywords: "trajectory rdf radial distribution structure analysis",
+        detail: analysisAvailable ? "PQAnalysis" : "Full periodic cell required",
+        disabled: !analysisAvailable,
+        run: run(() => showRdfSetup("rdf")),
+      },
+      {
+        id: "analysis-coordination",
+        label: "Coordination",
+        keywords: "trajectory coordination number rdf structure analysis",
+        detail: analysisAvailable ? "PQAnalysis" : "Full periodic cell required",
+        disabled: !analysisAvailable,
+        run: run(() => showRdfSetup("coordination")),
+      },
       { id: "fit", label: "Fit structure", keywords: "reset camera center", detail: "R", disabled: !manifest?.frame_count, run: run(() => setResetSignal((value) => value + 1)) },
       ...(["perspective", "xy", "xz", "yz"] as ViewPreset[]).map((view, index) => ({
         id: `view-${view}`,
@@ -1968,10 +2603,15 @@ export default function App() {
     canPlay,
     canPlotMeasurement,
     canRender,
+    analysisAvailable,
     capabilities,
     cellAvailable,
     closeMeasurementPlot,
     closeWorkbench,
+    comparablePins,
+    comparePinnedMeasurements,
+    currentBookmarked,
+    displayedFrameMark,
     forceAvailable,
     frameIndex,
     manifest?.frame_count,
@@ -1985,6 +2625,7 @@ export default function App() {
     pinnedMeasurements,
     pbc,
     presentation,
+    propertySeries,
     recallNamedSelection,
     restorePinnedMeasurement,
     selectView,
@@ -2000,6 +2641,8 @@ export default function App() {
     setFrame,
     shortcutLabels,
     showOpen,
+    showPropertyPlot,
+    showRdfSetup,
     saveFigureRecipe,
     showFigureSheet,
     showMeasurementPlot,
@@ -2007,6 +2650,12 @@ export default function App() {
     showRender,
     showShortcuts,
     stepFrame,
+    study.reference,
+    study.tracking,
+    setCurrentReference,
+    setTrackingMode,
+    toggleCurrentBookmark,
+    trackingAvailable,
     updatePresentation,
     velocityAvailable,
     viewPreset,
@@ -2024,6 +2673,11 @@ export default function App() {
       && selectedAtoms.length >= 2
       && selectedAtoms.length <= 4 ? ["pin-measurement"] : []),
     ...(canPlotMeasurement ? ["plot-measurement"] : []),
+    ...(displayedFrameMark ? ["frame-bookmark", "frame-reference"] : []),
+    ...(trackingAvailable ? ["track-trail"] : []),
+    ...(study.reference && trackingAvailable ? ["track-displacement"] : []),
+    ...(comparablePins.length >= 2 ? ["measurement-compare"] : []),
+    ...(analysisAvailable ? ["analysis-rdf"] : []),
     ...(canPlay ? ["play", "previous", "next"] : []),
     "fit",
     "display",
@@ -2032,10 +2686,15 @@ export default function App() {
   ], [
     canPlay,
     canPlotMeasurement,
+    analysisAvailable,
+    comparablePins.length,
+    displayedFrameMark,
     selectedAtom,
     selectedAtoms.length,
     selectionAnchor,
     selectionIntent,
+    study.reference,
+    trackingAvailable,
   ]);
   const workspaceClass = [
     "workspace",
@@ -2044,7 +2703,7 @@ export default function App() {
     canPlay ? "timeline-present" : "timeline-absent",
     selectedAtoms.length > 0 ? "selection-present" : "",
     figureSheetOpen ? "figure-sheet-open" : "",
-    measurementPlotOpen ? "measurement-plot-open" : "",
+    measurementPlotOpen || study.plot ? "measurement-plot-open" : "",
     playbackOptionsOpen ? "playback-options-open" : "",
   ].filter(Boolean).join(" ");
 
@@ -2177,6 +2836,7 @@ export default function App() {
             viewSignal={viewSignal}
             forceScale={forceScale}
             velocityScale={velocityScale}
+            trajectoryOverlays={trajectoryOverlays}
             appearance="light"
             onSelect={selectAtom}
             onSelectMany={selectManyAtoms}
@@ -2248,10 +2908,12 @@ export default function App() {
               : null}
             onRestore={restorePinnedMeasurement}
             onRemove={(id) => setPinnedMeasurements((current) => current.filter((pin) => pin.id !== id))}
+            canCompare={comparablePins.length >= 2}
+            onCompare={comparePinnedMeasurements}
           />
         )}
 
-        {manifest && selectedAtoms.length > 0 && (
+        {manifest && selectedAtoms.length > 0 && !rdfSetupOpen && (
           <SelectionBar
             manifest={manifest}
             selectedAtoms={selectedAtoms}
@@ -2266,6 +2928,9 @@ export default function App() {
             measurementEnabled={selectionIntent === "measurement"}
             canPlot={canPlotMeasurement}
             plotOpen={measurementPlotOpen}
+            trackingAvailable={trackingAvailable}
+            trackingMode={study.tracking}
+            analysisAvailable={analysisAvailable}
             onMinimumImage={() => setMinimumImage((current) => !current)}
             onPlot={() => measurementPlotOpen
               ? closeMeasurementPlot(false)
@@ -2282,6 +2947,8 @@ export default function App() {
             onRecall={recallNamedSelection}
             onRemoveSaved={removeNamedSelection}
             onPin={pinSelectedMeasurement}
+            onTracking={setTrackingMode}
+            onAnalyze={() => showRdfSetup("rdf")}
             onDetails={() => workbenchVisible && workbenchTab === "inspect"
               ? closeWorkbench(false)
               : openWorkbench("inspect", true)}
@@ -2337,6 +3004,67 @@ export default function App() {
           />
         )}
 
+        {manifest && study.plot && (
+          <PlotShelf
+            plot={study.plot}
+            currentFrame={displayedFrameIndex}
+            onFrame={study.plot.frameIndices ? (index) => {
+              setPlaying(false);
+              setFrame(index);
+            } : undefined}
+            onRestoreLine={(line) => {
+              if (!line.selection) return;
+              if (line.minimumImage !== undefined) setMinimumImage(line.minimumImage);
+              applyScientificSelection(line.selection, undefined, "measurement");
+            }}
+            headerActions={study.plot.kind === "rdf" ? (
+              <div className="rdf-view-toggle" role="group" aria-label="Pair analysis view">
+                <button
+                  type="button"
+                  className={rdfView === "rdf" ? "is-active" : ""}
+                  aria-pressed={rdfView === "rdf"}
+                  disabled={rdfRunning}
+                  onClick={() => selectRdfView("rdf")}
+                >g(r)</button>
+                <button
+                  type="button"
+                  className={rdfView === "coordination" ? "is-active" : ""}
+                  aria-pressed={rdfView === "coordination"}
+                  disabled={rdfRunning}
+                  onClick={() => selectRdfView("coordination")}
+                >N(r)</button>
+              </div>
+            ) : undefined}
+            onClose={() => closeStudyPlot(false)}
+            onExportCsv={() => {
+              if (!study.plot?.complete) return;
+              downloadBlob(
+                new Blob([plotShelfCsv(study.plot)], { type: "text/csv;charset=utf-8" }),
+                plotFileName(manifest.name, study.plot, "csv"),
+              );
+            }}
+            onExportSvg={() => {
+              if (!study.plot?.complete) return;
+              downloadBlob(
+                new Blob([plotShelfSvg(study.plot)], { type: "image/svg+xml;charset=utf-8" }),
+                plotFileName(manifest.name, study.plot, "svg"),
+              );
+            }}
+            onExportPdf={() => {
+              if (!study.plot?.complete) return;
+              const pdf = plotShelfPdf(study.plot);
+              const bytes = pdf.buffer.slice(
+                pdf.byteOffset,
+                pdf.byteOffset + pdf.byteLength,
+              ) as ArrayBuffer;
+              downloadBlob(
+                new Blob([bytes], { type: "application/pdf" }),
+                plotFileName(manifest.name, study.plot, "pdf"),
+              );
+            }}
+          />
+        )}
+
         {manifest && manifest.frame_count > 1 && (
           <Timeline
             busy={rendering}
@@ -2351,6 +3079,13 @@ export default function App() {
             stride={playbackStride}
             mode={playbackMode}
             optionsOpen={playbackOptionsOpen}
+            bookmarks={study.bookmarks}
+            reference={study.reference}
+            currentBookmarked={currentBookmarked}
+            propertySeries={propertySeries}
+            analysisAvailable={analysisAvailable}
+            trackingAvailable={trackingAvailable}
+            trackingMode={study.tracking}
             onFrame={(index) => {
               setPlaying(false);
               setFrame(index);
@@ -2362,6 +3097,17 @@ export default function App() {
               setPlaybackOptionsOpen(open);
               if (open && measurementPlotOpen) closeMeasurementPlot(false);
             }}
+            onToggleBookmark={toggleCurrentBookmark}
+            onSetReference={setCurrentReference}
+            onClearReference={() => dispatchStudy({ type: "clear-reference" })}
+            onGoToReference={() => {
+              if (!study.reference) return;
+              setPlaying(false);
+              setFrame(study.reference.index);
+            }}
+            onProperty={showPropertyPlot}
+            onAnalyze={showRdfSetup}
+            onTracking={setTrackingMode}
             onMode={(mode) => {
               setPlaybackMode(mode);
               setPlaybackDirection(1);
@@ -2423,6 +3169,17 @@ export default function App() {
             onSaveRecipe={saveFigureRecipe}
             onOpenRecipe={showRecipeOpen}
             onClose={() => setFigureSheetOpen(false)}
+          />
+        )}
+        {manifest && (
+          <RdfSetup
+            open={rdfSetupOpen}
+            frameCount={manifest.frame_count}
+            options={analysisSelectionOptions}
+            defaultReferenceId={analysisSelectionOptions[0]?.id}
+            initialView={rdfInitialView}
+            onRun={runRdfSetup}
+            onClose={() => setRdfSetupOpen(false)}
           />
         )}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
@@ -2870,6 +3627,7 @@ function ShortcutSheet({
         ["Shift ← / →", "Move ten frames"],
         ["Home / End", "First / last frame"],
         ["Space", "Play / pause"],
+        ["M", "Bookmark frame"],
       ],
     },
     {
@@ -3192,6 +3950,9 @@ function SelectionBar({
   measurementEnabled,
   canPlot,
   plotOpen,
+  trackingAvailable,
+  trackingMode,
+  analysisAvailable,
   onMinimumImage,
   onPlot,
   onClear,
@@ -3201,6 +3962,8 @@ function SelectionBar({
   onRecall,
   onRemoveSaved,
   onPin,
+  onTracking,
+  onAnalyze,
   onDetails,
   onSummary,
 }: {
@@ -3217,6 +3980,9 @@ function SelectionBar({
   measurementEnabled: boolean;
   canPlot: boolean;
   plotOpen: boolean;
+  trackingAvailable: boolean;
+  trackingMode: TrackingMode;
+  analysisAvailable: boolean;
   onMinimumImage: () => void;
   onPlot: () => void;
   onClear: () => void;
@@ -3226,6 +3992,8 @@ function SelectionBar({
   onRecall: (selection: NamedSelection) => void;
   onRemoveSaved: (name: string) => void;
   onPin: () => void;
+  onTracking: (mode: TrackingMode) => void;
+  onAnalyze: () => void;
   onDetails: () => void;
   onSummary: () => void;
 }) {
@@ -3425,7 +4193,27 @@ function SelectionBar({
     {measurementEnabled
       && validSelections.length >= 2
       && validSelections.length <= 4 && (
-      <button type="button" onClick={onPin}>Pin</button>
+      <button className="selection-pin-button" type="button" onClick={onPin}>Pin</button>
+    )}
+    {trackingAvailable && (
+      <button
+        className="selection-track-button"
+        type="button"
+        aria-pressed={trackingMode !== "off"}
+        title={trackingMode === "displacement"
+          ? "Showing displacement from the reference frame"
+          : "Show the previous 50 frames"}
+        onClick={() => onTracking(trackingMode === "off" ? "trail" : "off")}
+      >
+        {trackingMode === "off" ? "Track" : "Stop"}
+      </button>
+    )}
+    {analysisAvailable
+      && (!measurementEnabled || validSelections.length > 4)
+      && (
+      <button className="selection-analyze-button" type="button" onClick={onAnalyze}>
+        Analyze
+      </button>
     )}
     {validSelections.length === 1 && (
       <button type="button" onClick={onDetails}>Details</button>
@@ -3446,6 +4234,8 @@ function PinnedMeasurements({
   activeId,
   onRestore,
   onRemove,
+  canCompare,
+  onCompare,
 }: {
   manifest: Manifest;
   pins: PinnedMeasurement[];
@@ -3455,31 +4245,58 @@ function PinnedMeasurements({
   activeId: number | null;
   onRestore: (pin: PinnedMeasurement) => void;
   onRemove: (id: number) => void;
+  canCompare: boolean;
+  onCompare: () => void;
 }) {
-  return <section className="pinned-measurements" aria-label="Pinned measurements">
-    {pins.map((pin) => {
-      const readout = measurementReadout(manifest, index, pin, cell, pbc);
-      return <div key={pin.id}>
-        <button
-          className="selection-chip"
-          type="button"
-          aria-pressed={activeId === pin.id}
-          onClick={() => onRestore(pin)}
-        >
-          <span>{readout.title}</span>
-          <strong>{readout.value}</strong>
-        </button>
-        <button
-          className="pinned-measurement-remove"
-          type="button"
-          aria-label={`Remove pinned ${readout.title.toLowerCase()} · ${
-            pin.minimumImage ? "minimum image" : "displayed images"
-          } · ${readout.value}`}
-          onClick={() => onRemove(pin.id)}
-        ><Icon name="close" /></button>
-      </div>;
-    })}
-  </section>;
+  const detailsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (detailsRef.current?.open && !detailsRef.current.contains(event.target as Node)) {
+        detailsRef.current.open = false;
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, []);
+  return <details ref={detailsRef} className="pinned-measurements">
+    <summary>Measurements · {pins.length}</summary>
+    <section aria-label="Pinned measurements">
+      <header>
+        <strong>Measurements</strong>
+        {canCompare && <button type="button" onClick={() => {
+          if (detailsRef.current) detailsRef.current.open = false;
+          onCompare();
+        }}>Compare</button>}
+      </header>
+      <div className="pinned-measurements__list">
+        {pins.map((pin) => {
+          const readout = measurementReadout(manifest, index, pin, cell, pbc);
+          return <div key={pin.id}>
+            <button
+              className="selection-chip"
+              type="button"
+              aria-pressed={activeId === pin.id}
+              onClick={() => {
+                onRestore(pin);
+                if (detailsRef.current) detailsRef.current.open = false;
+              }}
+            >
+              <span>{readout.title}</span>
+              <strong>{readout.value}</strong>
+            </button>
+            <button
+              className="pinned-measurement-remove"
+              type="button"
+              aria-label={`Remove pinned ${readout.title.toLowerCase()} · ${
+                pin.minimumImage ? "minimum image" : "displayed images"
+              } · ${readout.value}`}
+              onClick={() => onRemove(pin.id)}
+            ><Icon name="close" /></button>
+          </div>;
+        })}
+      </div>
+    </section>
+  </details>;
 }
 
 function SelectionSummaryPanel({
@@ -3561,11 +4378,25 @@ function Timeline({
   stride,
   mode,
   optionsOpen,
+  bookmarks,
+  reference,
+  currentBookmarked,
+  propertySeries,
+  analysisAvailable,
+  trackingAvailable,
+  trackingMode,
   onFrame,
   onPlay,
   onFps,
   onStride,
   onOptionsOpen,
+  onToggleBookmark,
+  onSetReference,
+  onClearReference,
+  onGoToReference,
+  onProperty,
+  onAnalyze,
+  onTracking,
   onMode,
 }: {
   busy: boolean;
@@ -3580,11 +4411,25 @@ function Timeline({
   stride: number;
   mode: PlaybackMode;
   optionsOpen: boolean;
+  bookmarks: readonly FrameMark[];
+  reference: FrameMark | null;
+  currentBookmarked: boolean;
+  propertySeries: readonly DisplaySeries[];
+  analysisAvailable: boolean;
+  trackingAvailable: boolean;
+  trackingMode: TrackingMode;
   onFrame: (index: number) => void;
   onPlay: () => void;
   onFps: (fps: number) => void;
   onStride: (stride: number) => void;
   onOptionsOpen: (open: boolean) => void;
+  onToggleBookmark: () => void;
+  onSetReference: () => void;
+  onClearReference: () => void;
+  onGoToReference: () => void;
+  onProperty: (series: DisplaySeries) => void;
+  onAnalyze: (view: "rdf" | "coordination") => void;
+  onTracking: (mode: TrackingMode) => void;
   onMode: (mode: PlaybackMode) => void;
 }) {
   const displayedFrame = String(displayedFrameIndex + 1).padStart(String(frameCount).length, "0");
@@ -3617,17 +4462,40 @@ function Timeline({
             <Icon name="last" />
           </button>
         </div>
-        <label className="scrubber">
-          <span className="sr-only">Frame</span>
-          <input
-            type="range"
-            min={0}
-            max={Math.max(frameCount - 1, 0)}
-            value={frameIndex}
-            disabled={busy}
-            onChange={(event) => onFrame(Number(event.target.value))}
-          />
-        </label>
+        <div className="scrubber-shell">
+          <label className="scrubber">
+            <span className="sr-only">Frame</span>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(frameCount - 1, 0)}
+              value={frameIndex}
+              disabled={busy}
+              onChange={(event) => onFrame(Number(event.target.value))}
+            />
+          </label>
+          {(bookmarks.length > 0 || reference) && (
+            <div className="trajectory-marker-rail">
+              {bookmarks.map((mark) => <button
+                key={`${mark.key.source_id}:${mark.key.segment_index}:${mark.key.source_index}`}
+                type="button"
+                className="trajectory-marker is-bookmark"
+                style={{ left: `${frameMarkPercent(mark.index, frameCount)}%` }}
+                aria-label={`Go to ${frameMarkLabel(mark)}`}
+                title={frameMarkLabel(mark)}
+                onClick={() => onFrame(mark.index)}
+              />)}
+              {reference && <button
+                type="button"
+                className="trajectory-marker is-reference"
+                style={{ left: `${frameMarkPercent(reference.index, frameCount)}%` }}
+                aria-label={`Go to reference · ${frameMarkLabel(reference)}`}
+                title={`Reference · ${frameMarkLabel(reference)}`}
+                onClick={onGoToReference}
+              />}
+            </div>
+          )}
+        </div>
         {!frameError && <output
             className="frame-counter"
             aria-label={displayedFrameIndex === frameIndex
@@ -3649,13 +4517,58 @@ function Timeline({
         >
           <summary aria-label="Playback options"><Icon name="more" /></summary>
           <div>
+            <span className="section-label">Frame</span>
+            <div className="timeline-action-list">
+              <button type="button" onClick={onToggleBookmark}>
+                {currentBookmarked ? "Remove bookmark" : "Bookmark frame"}
+              </button>
+              <button type="button" onClick={onSetReference}>Set as reference</button>
+              {reference && <>
+                <button type="button" onClick={onGoToReference}>Go to reference</button>
+                <button type="button" onClick={onClearReference}>Clear reference</button>
+                <button
+                  type="button"
+                  disabled={!trackingAvailable}
+                  onClick={() => onTracking("displacement")}
+                >
+                  {trackingMode === "displacement" ? "Hide displacement" : "Show displacement"}
+                </button>
+              </>}
+            </div>
+            {bookmarks.length > 0 && <>
+              <span className="section-label">Bookmarks</span>
+              <div className="timeline-action-list">
+                {bookmarks.map((mark) => <button
+                  key={`bookmark-action:${mark.key.source_id}:${mark.key.segment_index}:${mark.key.source_index}`}
+                  type="button"
+                  onClick={() => onFrame(mark.index)}
+                >{frameMarkLabel(mark)}</button>)}
+              </div>
+            </>}
+            {propertySeries.length > 0 && <>
+              <span className="section-label">Plot</span>
+              <div className="timeline-action-list">
+                {propertySeries.map((series) => <button
+                  key={series.name}
+                  type="button"
+                  onClick={() => onProperty(series)}
+                >{series.label}</button>)}
+              </div>
+            </>}
+            {analysisAvailable && <>
+              <span className="section-label">Pair analysis</span>
+              <div className="timeline-action-list">
+                <button type="button" onClick={() => onAnalyze("rdf")}>Pair distribution</button>
+                <button type="button" onClick={() => onAnalyze("coordination")}>Coordination</button>
+              </div>
+            </>}
+            <span className="section-label">Playback</span>
             <label><span>Speed</span><select value={fps} onChange={(event) => onFps(Number(event.target.value))}>
               {[1, 5, 10, 12, 15, 24, 30, 60].map((value) => <option key={value} value={value}>{value} fps</option>)}
             </select></label>
             <label><span>Stride</span><select value={stride} onChange={(event) => onStride(Number(event.target.value))}>
               {[1, 2, 5, 10].map((value) => <option key={value} value={value}>{value} frame{value === 1 ? "" : "s"}</option>)}
             </select></label>
-            <span className="section-label">Playback</span>
             <div className="segmented-options">
               {([
                 ["once", "Once"],
@@ -4217,6 +5130,215 @@ function measurementFileName(
   extension: "csv" | "svg" | "pdf",
 ): string {
   return `${safeFileBase(name, "trajectory")}-${kind}.${extension}`;
+}
+
+function plotFileName(
+  name: string | undefined,
+  plot: PlotShelfData,
+  extension: "csv" | "svg" | "pdf",
+): string {
+  const kind = plot.kind === "comparison"
+    ? "measurements"
+    : plot.kind === "rdf"
+      ? "pair-analysis"
+      : safeFileBase(plot.lines[0]?.label, plot.kind);
+  return `${safeFileBase(name, "trajectory")}-${kind}.${extension}`;
+}
+
+export function uniqueAtomIndices(
+  values: readonly number[],
+  atomCount: number,
+): number[] {
+  return [...new Set(values.filter((value) => (
+    Number.isSafeInteger(value) && value >= 0 && value < atomCount
+  )))].sort((left, right) => left - right);
+}
+
+export function compatibleManifestGrowth(
+  previous: Manifest | null,
+  next: Manifest,
+): boolean {
+  if (
+    !previous
+    || next.frame_count < previous.frame_count
+    || next.topology.atom_count !== previous.topology.atom_count
+    || previous.source?.kind !== next.source?.kind
+    || previous.source?.path !== next.source?.path
+    || JSON.stringify(previous.source?.slice ?? null) !== JSON.stringify(next.source?.slice ?? null)
+  ) {
+    return false;
+  }
+  const previousElements = previous.topology.atomic_numbers
+    ?? previous.topology.symbols
+    ?? [];
+  const nextElements = next.topology.atomic_numbers
+    ?? next.topology.symbols
+    ?? [];
+  if (
+    previousElements.length !== nextElements.length
+    || previousElements.some((value, index) => value !== nextElements[index])
+  ) {
+    return false;
+  }
+  const sourceIdentity = (manifest: Manifest) => (
+    manifest.source?.segments?.map((segment) => ({
+      source_id: segment.source_id,
+      kind: segment.kind,
+      path: segment.path ?? null,
+      input: segment.input ?? null,
+      files: segment.files ?? null,
+    })) ?? []
+  );
+  return JSON.stringify(sourceIdentity(previous)) === JSON.stringify(sourceIdentity(next));
+}
+
+function largestCompatibleMeasurementGroup(
+  pins: readonly PinnedMeasurement[],
+): PinnedMeasurement[] {
+  const distance = pins.filter(({ selections }) => selections.length === 2);
+  const angular = pins.filter(({ selections }) => (
+    selections.length === 3 || selections.length === 4
+  ));
+  return angular.length > distance.length ? angular : distance;
+}
+
+function comparisonPlaceholder(
+  definitions: readonly MeasurementComparisonDefinition[],
+  frameCount: number,
+  requestId: number,
+): PlotShelfData {
+  const xValues = Array.from({ length: frameCount }, (_, index) => index + 1);
+  return {
+    requestId,
+    kind: "comparison",
+    title: "Measurement comparison",
+    xLabel: "Frame",
+    yLabel: definitions[0]?.selections.length === 2 ? "Distance" : "Angle",
+    yUnit: definitions[0]?.selections.length === 2 ? "Å" : "°",
+    xValues,
+    frameIndices: xValues.map((_, index) => index),
+    lines: definitions.map((definition) => ({
+      id: definition.id,
+      label: definition.label ?? definition.id,
+      values: xValues.map(() => null),
+      selection: definition.selections,
+      minimumImage: definition.minimumImage,
+    })),
+    loadedCount: 0,
+    totalCount: frameCount,
+    complete: false,
+  };
+}
+
+function propertyPlotData(
+  series: DisplaySeries,
+  frameCount: number,
+  requestId: number,
+): PlotShelfData {
+  return {
+    requestId,
+    kind: "property",
+    title: series.label,
+    xLabel: "Frame",
+    yLabel: series.label,
+    yUnit: displayUnit(series.unit),
+    xValues: Array.from({ length: frameCount }, (_, index) => index + 1),
+    frameIndices: Array.from({ length: frameCount }, (_, index) => index),
+    lines: [{
+      id: series.name,
+      label: series.label,
+      values: series.values,
+    }],
+    loadedCount: frameCount,
+    totalCount: frameCount,
+    complete: true,
+  };
+}
+
+function rdfPlaceholder(
+  view: "rdf" | "coordination",
+  context: RdfPlotContext,
+): PlotShelfData {
+  const coordination = view === "coordination";
+  return {
+    requestId: context.requestId,
+    kind: "rdf",
+    title: `${coordination ? "Coordination" : "Pair distribution"} · ${pairSelectionPlotLabel(context.referenceLabel)} → ${pairSelectionPlotLabel(context.targetLabel)}`,
+    xLabel: "Radius",
+    xUnit: "Å",
+    yLabel: coordination ? "N(r)" : "g(r)",
+    yFloor: 0,
+    xValues: [],
+    lines: [{
+      id: coordination ? "coordination" : "rdf",
+      label: coordination ? "N(r)" : "g(r)",
+      values: [],
+    }],
+    loadedCount: 0,
+    totalCount: 0,
+    complete: false,
+  };
+}
+
+function rdfPlotData(
+  result: RdfAnalysisResult,
+  view: "rdf" | "coordination",
+  context: RdfPlotContext,
+): PlotShelfData {
+  const coordination = view === "coordination";
+  const xValues = coordination
+    ? result.coordinationRadius
+    : result.radiusCenters;
+  const values = coordination ? result.coordination : result.gR;
+  return {
+    requestId: context.requestId,
+    kind: "rdf",
+    title: `${coordination ? "Coordination" : "Pair distribution"} · ${pairSelectionPlotLabel(context.referenceLabel)} → ${pairSelectionPlotLabel(context.targetLabel)}`,
+    xLabel: "Radius",
+    xUnit: displayUnit(result.radiusUnit),
+    yLabel: coordination ? "N(r)" : "g(r)",
+    yFloor: 0,
+    yUnit: displayAnalysisUnit(
+      coordination ? result.coordinationUnit : result.rdfUnit,
+    ),
+    context: rdfSamplingContext(result),
+    xValues,
+    lines: [{
+      id: coordination ? "coordination" : "rdf",
+      label: coordination ? "N(r)" : "g(r)",
+      values,
+    }],
+    loadedCount: values.length,
+    totalCount: values.length,
+    complete: true,
+  };
+}
+
+function rdfSamplingContext(result: RdfAnalysisResult): string {
+  const radiusUnit = displayUnit(result.radiusUnit) ?? result.radiusUnit;
+  return [
+    `${result.frameRange.count.toLocaleString()} frames`,
+    `${result.referenceIndices.length.toLocaleString()}×${result.targetIndices.length.toLocaleString()} atoms`,
+    `Δr ${formatNumber(result.deltaR)} ${radiusUnit}`,
+    `r max ${formatNumber(result.rMax)} ${radiusUnit}`,
+  ].join(" · ");
+}
+
+function displayAnalysisUnit(unit: string | undefined): string | undefined {
+  const normalized = unit?.trim().toLowerCase();
+  return normalized && !["1", "dimensionless", "unitless"].includes(normalized)
+    ? displayUnit(unit)
+    : undefined;
+}
+
+function pairSelectionPlotLabel(label: string): string {
+  const match = /^All (.+) atoms$/.exec(label);
+  return match?.[1] ?? label;
+}
+
+export function frameMarkPercent(index: number, frameCount: number): number {
+  if (frameCount <= 1) return 0;
+  return Math.max(0, Math.min(100, index / (frameCount - 1) * 100));
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
