@@ -1,6 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { frameArray, FrameCache, getManifest, openFiles } from "./api";
+import {
+  DatasetChangedError,
+  frameArray,
+  FrameCache,
+  getFrame,
+  getManifest,
+  openFiles,
+} from "./api";
 import { searchCommandActions } from "./commandSearch";
+import { MeasurementPlot } from "./MeasurementPlot";
+import {
+  calculateMeasurementSeries,
+  measurementSeriesCsv,
+  measurementSeriesSvg,
+} from "./measurementSeries";
+import type { MeasurementSeriesProgress } from "./measurementSeries";
 import { framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
 import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
 import {
@@ -15,9 +29,11 @@ import {
   updateSceneSelection,
 } from "./selection";
 import {
-  advancePlaybackFrame,
   DEFAULT_PLAYBACK_FPS,
-  playbackIntervalMs,
+  playbackPrefetchIndices,
+  playbackTimerDelay,
+  runScheduledPlaybackTick,
+  schedulePlaybackFrame,
 } from "./trajectory";
 import type { PlaybackDirection, PlaybackMode } from "./trajectory";
 import type {
@@ -34,6 +50,10 @@ type LoadState = "loading" | "ready" | "error";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
 type WorkbenchTab = "view" | "inspect";
 type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
+type NoticeState = { message: string; tone: "status" | "error" };
+type FocusTarget = Element & { focus: (options?: FocusOptions) => void };
+
+const DATASET_CHANNEL = "pqviewer-dataset";
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -64,10 +84,15 @@ export default function App() {
   const [playbackStride, setPlaybackStride] = useState(1);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("loop");
   const [playbackDirection, setPlaybackDirection] = useState<PlaybackDirection>(1);
+  const [playbackPulse, setPlaybackPulse] = useState(0);
+  const [playbackOptionsOpen, setPlaybackOptionsOpen] = useState(false);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
   const [selectionPositions, setSelectionPositions] = useState<Float64Array | null>(null);
+  const [minimumImage, setMinimumImage] = useState(true);
+  const [measurementPlotOpen, setMeasurementPlotOpen] = useState(false);
+  const [measurementSeries, setMeasurementSeries] = useState<MeasurementSeriesProgress | null>(null);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -81,29 +106,61 @@ export default function App() {
   const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<NoticeState | null>(null);
   const [sceneInfo, setSceneInfo] = useState<RenderedSceneInfo | null>(null);
   const cache = useRef(new FrameCache());
   const moleculeSceneRef = useRef<MoleculeSceneHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelButtonRef = useRef<HTMLButtonElement>(null);
+  const renderButtonRef = useRef<HTMLButtonElement>(null);
   const workbenchRef = useRef<HTMLElement>(null);
   const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
   const autoProfileKey = useRef("");
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
+  const measurementRequest = useRef(0);
+  const datasetReloadPending = useRef(false);
+  const datasetCheckPending = useRef(false);
+  const manifestGeneration = useRef("");
+  const datasetChannel = useRef<BroadcastChannel | null>(null);
+  const playbackClock = useRef<{ key: string; requestTimeMs: number | null }>({
+    key: "",
+    requestTimeMs: null,
+  });
+  const playbackState = useRef({
+    playing,
+    mode: playbackMode,
+    direction: playbackDirection,
+    stride: playbackStride,
+  });
+  playbackState.current = {
+    playing,
+    mode: playbackMode,
+    direction: playbackDirection,
+    stride: playbackStride,
+  };
   const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
     cache.current.clear();
+    cache.current = new FrameCache({ datasetGeneration: value.dataset_generation });
+    datasetReloadPending.current = false;
+    manifestGeneration.current = value.dataset_generation ?? "";
     setManifest(value);
     setFrameIndex(0);
     setLoadedFrame(null);
     setSelectedAtoms([]);
     setSelectionPositions(null);
+    setMinimumImage(true);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
     setPlaying(false);
     setPlaybackDirection(1);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
     setSceneInfo(null);
     setLoadState("ready");
     setLoadError("");
@@ -111,6 +168,102 @@ export default function App() {
     autoProfileKey.current = "";
     document.title = `${value.name || "Trajectory"} · PQViewer`;
   }, []);
+
+  const reloadChangedDataset = useCallback(() => {
+    if (datasetReloadPending.current) return;
+    datasetReloadPending.current = true;
+    manifestGeneration.current = "";
+    cache.current.clear();
+    setManifest(null);
+    setFrameIndex(0);
+    setLoadedFrame(null);
+    setFrameError("");
+    setFrameLoading(false);
+    setSelectedAtoms([]);
+    setSelectionPositions(null);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    setPlaying(false);
+    setPlaybackDirection(1);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setSceneInfo(null);
+    setLoadState("loading");
+    setLoadError("");
+    setNotice({ message: "Trajectory changed in another tab · reloading", tone: "status" });
+    setRequestKey((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.BroadcastChannel !== "function") return;
+    const channel = new BroadcastChannel(DATASET_CHANNEL);
+    datasetChannel.current = channel;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      const generation = (
+        typeof event.data === "object"
+        && event.data !== null
+        && "datasetGeneration" in event.data
+        && typeof event.data.datasetGeneration === "string"
+      )
+        ? event.data.datasetGeneration
+        : "";
+      if (
+        generation
+        && manifestGeneration.current
+        && generation !== manifestGeneration.current
+      ) {
+        reloadChangedDataset();
+      }
+    };
+    return () => {
+      if (datasetChannel.current === channel) datasetChannel.current = null;
+      channel.close();
+    };
+  }, [reloadChangedDataset]);
+
+  const revalidateDataset = useCallback(async () => {
+    const expectedGeneration = manifestGeneration.current;
+    if (
+      !expectedGeneration
+      || datasetCheckPending.current
+      || datasetReloadPending.current
+    ) {
+      return;
+    }
+    datasetCheckPending.current = true;
+    try {
+      const current = await getManifest();
+      if (manifestGeneration.current !== expectedGeneration) return;
+      if (current.dataset_generation !== expectedGeneration) {
+        activateManifest(current);
+        setNotice({ message: "Trajectory changed · updated", tone: "status" });
+        datasetChannel.current?.postMessage({
+          datasetGeneration: current.dataset_generation,
+        });
+      }
+    } catch {
+      // A transient focus check should not replace the loaded trajectory.
+    } finally {
+      datasetCheckPending.current = false;
+    }
+  }, [activateManifest]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void revalidateDataset();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void revalidateDataset();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [revalidateDataset]);
 
   useEffect(() => {
     document.documentElement.dataset.appearance = "light";
@@ -159,12 +312,25 @@ export default function App() {
         if (!active) return;
         setLoadedFrame({ index: frameIndex, data });
         setFrameLoading(false);
-        for (let ahead = 1; ahead <= Math.min(4, manifest.frame_count - 1); ahead += 1) {
-          cache.current.prefetch((frameIndex + ahead) % manifest.frame_count, manifest.frame_count);
-        }
+        const playback = playbackState.current;
+        const prefetch = playback.playing
+          ? playbackPrefetchIndices(frameIndex, manifest.frame_count, {
+              mode: playback.mode,
+              direction: playback.direction,
+              stride: playback.stride,
+            })
+          : Array.from(
+              { length: Math.min(4, manifest.frame_count - 1) },
+              (_, ahead) => (frameIndex + ahead + 1) % manifest.frame_count,
+            );
+        prefetch.forEach((index) => cache.current.prefetch(index, manifest.frame_count));
       })
       .catch((error: unknown) => {
         if (!active) return;
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
         setFrameError(message(error));
         setFrameLoading(false);
         setPlaying(false);
@@ -172,7 +338,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [frameIndex, manifest, rendering]);
+  }, [frameIndex, manifest, reloadChangedDataset, rendering]);
 
   const setFrame = useCallback(
     (value: number) => {
@@ -197,6 +363,9 @@ export default function App() {
   }, []);
 
   const openWorkbench = useCallback((tab: WorkbenchTab, focus = false) => {
+    setPlaybackOptionsOpen(false);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
     setWorkbenchTab(tab);
     if (focus) focusWorkbench();
   }, [focusWorkbench]);
@@ -211,9 +380,12 @@ export default function App() {
   }, [workbenchTab]);
 
   const selectAtom = useCallback((selection: AtomSelection | null, additive = false) => {
+    setPlaybackOptionsOpen(false);
     if (selection === null) {
       setSelectedAtoms([]);
       setSelectionPositions(null);
+      setMeasurementPlotOpen(false);
+      setMeasurementSeries(null);
       setWorkbenchTab((current) => current === "inspect" ? null : current);
       return;
     }
@@ -229,6 +401,10 @@ export default function App() {
     if (selectedAtoms.length === 0) {
       setWorkbenchTab((current) => current === "inspect" ? null : current);
     }
+    if (selectedAtoms.length < 2 || selectedAtoms.length > 4) {
+      setMeasurementPlotOpen(false);
+      setMeasurementSeries(null);
+    }
   }, [selectedAtoms.length]);
 
   const selectView = useCallback((preset: ViewPreset) => {
@@ -240,6 +416,7 @@ export default function App() {
     if (rendering) return;
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     fileInputRef.current?.click();
   }, [rendering]);
@@ -248,12 +425,14 @@ export default function App() {
     if (rendering) return;
     setPlaying(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setCommandOpen(true);
   }, [rendering]);
 
   const showShortcuts = useCallback(() => {
     if (rendering) return;
     setCommandOpen(false);
+    setPlaybackOptionsOpen(false);
     setShortcutsOpen(true);
   }, [rendering]);
 
@@ -261,20 +440,32 @@ export default function App() {
     const scene = moleculeSceneRef.current;
     if (!scene || rendering) return;
     if (frameLoading) {
-      setNotice("Wait for the current frame to finish loading.");
+      setNotice({ message: "Wait for the current frame to finish loading.", tone: "status" });
       return;
     }
+    const activeElement = document.activeElement;
+    const focusOrigin = activeElement
+      && activeElement !== document.body
+      && "focus" in activeElement
+      ? activeElement as FocusTarget
+      : null;
     setPlaying(false);
     setRendering(true);
-    setNotice("Exporting PNG…");
+    setNotice({ message: "Exporting PNG…", tone: "status" });
     try {
       const blob = await scene.exportPng(options);
       downloadBlob(blob, renderFileName(manifest?.name, options.width, options.height));
-      setNotice(`Exported ${options.width.toLocaleString()} × ${options.height.toLocaleString()} px`);
+      setNotice({
+        message: `Exported ${options.width.toLocaleString()} × ${options.height.toLocaleString()} px`,
+        tone: "status",
+      });
     } catch (error) {
-      setNotice(`Export failed · ${message(error)}`);
+      setNotice({ message: `Export failed · ${message(error)}`, tone: "error" });
     } finally {
       setRendering(false);
+      requestAnimationFrame(() => restoreFocusWhenAvailable(
+        focusOrigin?.isConnected ? focusOrigin : renderButtonRef.current,
+      ));
     }
   }, [frameLoading, manifest?.name, rendering]);
 
@@ -290,7 +481,93 @@ export default function App() {
   const capabilities = sceneInfo?.capabilities ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
   const canRender = Boolean(frame && capabilities && !frameLoading);
+  const canPlotMeasurement = canPlay
+    && selectedAtoms.length >= 2
+    && selectedAtoms.length <= 4
+    && selectedAtoms.every(({ atom }) => atom >= 0 && atom < (manifest?.topology.atom_count ?? 0));
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
+  const plotFrameAxis = useMemo(
+    () => measurementPlotOpen && manifest
+      ? Array.from({ length: manifest.frame_count }, (_, index) => index)
+      : [],
+    [manifest, measurementPlotOpen],
+  );
+  const emptyMeasurementValues = useMemo(
+    () => plotFrameAxis.map(() => null),
+    [plotFrameAxis],
+  );
+
+  const closeMeasurementPlot = useCallback((restoreFocus = false) => {
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    if (restoreFocus) requestAnimationFrame(() => {
+      document.querySelector<HTMLButtonElement>(".selection-plot-button")?.focus();
+    });
+  }, []);
+
+  const showMeasurementPlot = useCallback(() => {
+    if (!canPlotMeasurement) return;
+    setPlaying(false);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setMeasurementSeries(null);
+    if (!cellAvailable || !pbc.some(Boolean)) setMinimumImage(false);
+    setMeasurementPlotOpen(true);
+  }, [canPlotMeasurement, cellAvailable, pbc[0], pbc[1], pbc[2]]);
+
+  useEffect(() => {
+    const request = measurementRequest.current + 1;
+    measurementRequest.current = request;
+    if (!measurementPlotOpen || !manifest || !canPlotMeasurement) return;
+
+    const controller = new AbortController();
+    setMeasurementSeries(null);
+    void calculateMeasurementSeries({
+      manifest,
+      frameCount: manifest.frame_count,
+      selections: selectedAtoms,
+      wrap: presentation.wrap,
+      minimumImage,
+      signal: controller.signal,
+      loadFrame: (index, signal) => getFrame(
+        index,
+        signal,
+        manifest.dataset_generation,
+      ),
+      onProgress: (progress) => {
+        if (measurementRequest.current === request && !controller.signal.aborted) {
+          setMeasurementSeries(progress);
+        }
+      },
+    })
+      .then((series) => {
+        if (measurementRequest.current === request && !controller.signal.aborted) {
+          setMeasurementSeries(series);
+        }
+      })
+      .catch((error: unknown) => {
+        if (measurementRequest.current !== request || controller.signal.aborted) return;
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
+        setMeasurementPlotOpen(false);
+        setMeasurementSeries(null);
+        setNotice({ message: `Plot unavailable · ${message(error)}`, tone: "error" });
+      });
+
+    return () => controller.abort();
+  }, [
+    canPlotMeasurement,
+    manifest,
+    measurementPlotOpen,
+    minimumImage,
+    presentation.wrap,
+    reloadChangedDataset,
+    selectedAtoms,
+  ]);
 
   useEffect(() => {
     setSelectedAtoms((current) => {
@@ -317,6 +594,7 @@ export default function App() {
     if (!canRender || rendering) return;
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     void exportPng({
       width: 2400,
@@ -349,18 +627,56 @@ export default function App() {
   }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile]);
 
   useEffect(() => {
-    if (!playing || rendering || !manifest || manifest.frame_count < 2) return;
+    if (!playing || rendering || !manifest || manifest.frame_count < 2) {
+      playbackClock.current = { key: "", requestTimeMs: null };
+      return;
+    }
     if (frameLoading || loadedFrame?.index !== frameIndex) return;
-    const timer = window.setTimeout(() => {
-      const next = advancePlaybackFrame(frameIndex, manifest.frame_count, {
-        mode: playbackMode,
-        direction: playbackDirection,
-        stride: playbackStride,
-      });
-      setFrameIndex(next.frameIndex);
-      setPlaybackDirection(next.direction);
-      if (!next.continuePlaying) setPlaying(false);
-    }, playbackIntervalMs(playbackFps));
+    const clockKey = [
+      manifest.dataset_generation ?? manifest.name,
+      playbackFps,
+      playbackMode,
+      playbackStride,
+    ].join(":");
+    if (playbackClock.current.key !== clockKey) {
+      playbackClock.current = { key: clockKey, requestTimeMs: null };
+    }
+    const now = performance.now();
+    const requestAnchor = playbackClock.current.requestTimeMs ?? now;
+    const schedule = schedulePlaybackFrame(
+      now,
+      playbackClock.current.requestTimeMs,
+      playbackFps,
+    );
+    let timer = 0;
+    const commit = () => {
+      const tick = runScheduledPlaybackTick(
+        performance.now(),
+        requestAnchor,
+        playbackFps,
+        frameIndex,
+        manifest.frame_count,
+        {
+          mode: playbackMode,
+          direction: playbackDirection,
+          stride: playbackStride,
+        },
+        {
+          onStep: (next) => {
+            setFrameIndex(next.frameIndex);
+            setPlaybackDirection(next.direction);
+            if (!next.continuePlaying) setPlaying(false);
+          },
+          onPulse: () => setPlaybackPulse((value) => value + 1),
+        },
+      );
+      if (!tick.committed) {
+        timer = window.setTimeout(commit, playbackTimerDelay(tick.schedule.delayMs));
+        return;
+      }
+      playbackClock.current.requestTimeMs = tick.schedule.requestTimeMs;
+    };
+    timer = window.setTimeout(commit, playbackTimerDelay(schedule.delayMs));
     return () => window.clearTimeout(timer);
   }, [
     frameIndex,
@@ -370,6 +686,7 @@ export default function App() {
     playbackDirection,
     playbackFps,
     playbackMode,
+    playbackPulse,
     playbackStride,
     playing,
     rendering,
@@ -383,15 +700,21 @@ export default function App() {
     const controller = new AbortController();
     openController.current = controller;
     setOpening(true);
-    setNotice("Opening files…");
+    setNotice({ message: "Opening files…", tone: "status" });
     try {
       const value = await openFiles(selected, controller.signal);
       if (request !== openRequest.current) return;
       activateManifest(value);
-      setNotice(`Opened ${value.name} · ${value.frame_count.toLocaleString()} frames`);
+      datasetChannel.current?.postMessage({
+        datasetGeneration: value.dataset_generation,
+      });
+      setNotice({
+        message: `Opened ${value.name} · ${frameCountLabel(value.frame_count)}`,
+        tone: "status",
+      });
     } catch (error) {
       if (request !== openRequest.current || controller.signal.aborted) return;
-      setNotice(message(error));
+      setNotice({ message: message(error), tone: "error" });
     } finally {
       if (request === openRequest.current) {
         openController.current = null;
@@ -403,18 +726,42 @@ export default function App() {
   useEffect(() => () => openController.current?.abort(), []);
 
   useEffect(() => {
-    if (!notice || opening || rendering) return;
-    const timer = window.setTimeout(() => setNotice(""), 4200);
+    if (!notice || notice.tone === "error" || opening || rendering) return;
+    const timer = window.setTimeout(() => setNotice(null), noticeDurationMs(notice.message));
     return () => window.clearTimeout(timer);
   }, [notice, opening, rendering]);
 
-  const dismissActive = useCallback(() => {
+  const dismissActive = useCallback((): boolean => {
     vimSequenceRef.current = { prefix: null, at: 0 };
-    if (commandOpen) setCommandOpen(false);
-    else if (shortcutsOpen) setShortcutsOpen(false);
-    else if (workbenchTab) closeWorkbench(true);
-    else if (selectedAtoms.length > 0) setSelectedAtoms([]);
-  }, [closeWorkbench, commandOpen, selectedAtoms.length, shortcutsOpen, workbenchTab]);
+    if (commandOpen) {
+      setCommandOpen(false);
+    } else if (shortcutsOpen) {
+      setShortcutsOpen(false);
+    } else if (playbackOptionsOpen) {
+      setPlaybackOptionsOpen(false);
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(".timeline-options > summary")?.focus();
+      });
+    } else if (workbenchTab) {
+      closeWorkbench(true);
+    } else if (measurementPlotOpen) {
+      closeMeasurementPlot(true);
+    } else if (selectedAtoms.length > 0) {
+      setSelectedAtoms([]);
+    } else {
+      return false;
+    }
+    return true;
+  }, [
+    closeMeasurementPlot,
+    closeWorkbench,
+    commandOpen,
+    measurementPlotOpen,
+    playbackOptionsOpen,
+    selectedAtoms.length,
+    shortcutsOpen,
+    workbenchTab,
+  ]);
 
   const runVimNavigation = useCallback((action: VimNavigationAction) => {
     if (action === "commands") {
@@ -468,7 +815,7 @@ export default function App() {
         return;
       }
       if (event.key === "Escape") {
-        dismissActive();
+        if (dismissActive()) event.preventDefault();
         return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -623,7 +970,15 @@ export default function App() {
         detail: presentation.wrap === wrap ? "Current" : undefined,
         run: run(() => updatePresentation({ wrap })),
       })) : []),
-      ...(selectedAtom !== null ? [{
+      ...(canPlotMeasurement ? [{
+        id: "plot-measurement",
+        label: measurementPlotOpen ? "Hide measurement plot" : "Plot measurement",
+        keywords: "selection trajectory distance angle dihedral graph",
+        run: run(() => measurementPlotOpen
+          ? closeMeasurementPlot(false)
+          : showMeasurementPlot()),
+      }] : []),
+      ...(selectedAtoms.length === 1 && selectedAtom !== null ? [{
         id: "inspect-selection",
         label: "Inspect selected atom",
         keywords: "selection properties coordinates",
@@ -648,13 +1003,16 @@ export default function App() {
     }));
   }, [
     canPlay,
+    canPlotMeasurement,
     canRender,
     capabilities,
     cellAvailable,
+    closeMeasurementPlot,
     closeWorkbench,
     forceAvailable,
     frameIndex,
     manifest?.frame_count,
+    measurementPlotOpen,
     openWorkbench,
     playing,
     presentation,
@@ -662,6 +1020,7 @@ export default function App() {
     setFrame,
     shortcutLabels,
     showOpen,
+    showMeasurementPlot,
     showRender,
     showShortcuts,
     stepFrame,
@@ -675,18 +1034,21 @@ export default function App() {
     selectedAtoms.length,
   ]);
   const commandContextIds = useMemo(() => [
-    ...(selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
+    ...(selectedAtoms.length === 1 && selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
+    ...(canPlotMeasurement ? ["plot-measurement"] : []),
     ...(canPlay ? ["play", "previous", "next"] : []),
     "fit",
     "display",
     "export",
-  ], [canPlay, selectedAtom]);
+  ], [canPlay, canPlotMeasurement, selectedAtom, selectedAtoms.length]);
   const workspaceClass = [
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
     rendering ? "is-rendering" : "",
     canPlay ? "timeline-present" : "timeline-absent",
     selectedAtoms.length > 0 ? "selection-present" : "",
+    measurementPlotOpen ? "measurement-plot-open" : "",
+    playbackOptionsOpen ? "playback-options-open" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -727,40 +1089,24 @@ export default function App() {
         }}
       />
       <div className={workspaceClass} aria-busy={loadState === "loading" || frameLoading || opening || rendering}>
-        {manifest && manifest.frame_count > 0 ? (
-          <MoleculeScene
-            ref={moleculeSceneRef}
-            manifest={manifest}
-            frame={frame}
-            presentation={presentation}
-            selectedAtoms={selectedAtoms}
-            resetSignal={resetSignal}
-            viewPreset={viewPreset}
-            viewSignal={viewSignal}
-            forceScale={forceScale}
-            velocityScale={velocityScale}
-            appearance="light"
-            onSelect={selectAtom}
-            onSceneInfo={setSceneInfo}
-            onSelectionPositions={setSelectionPositions}
-          />
-        ) : (
-          <div className="canvas-field" />
-        )}
-
         <header className="topbar">
-          <div className="identity">
+          <div
+            className="identity"
+            title={manifest?.name || "Molecular trajectory"}
+          >
             <img className="identity-mark" src="/pq-logo.png" alt="" />
             <div>
               <strong>PQViewer</strong>
-              <span>{manifest?.name || "Molecular trajectory"}</span>
+              <span title={manifest?.name || "Molecular trajectory"}>
+                {manifest?.name || "Molecular trajectory"}
+              </span>
             </div>
           </div>
           <div className="topbar-tools">
             {manifest && (
               <div className="scene-status">
-                <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> atoms</span>
-                <span><strong>{manifest.frame_count.toLocaleString()}</strong> frames</span>
+                <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> {manifest.topology.atom_count === 1 ? "atom" : "atoms"}</span>
+                <span><strong>{manifest.frame_count.toLocaleString()}</strong> {manifest.frame_count === 1 ? "frame" : "frames"}</span>
                 {cellAvailable && <span>PBC <strong>{pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</strong></span>}
               </div>
             )}
@@ -786,7 +1132,7 @@ export default function App() {
               disabled={rendering || !capabilities}
               onClick={() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view", true)}
             ><Icon name="sliders" /><span>View</span></button>
-            <button className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
+            <button ref={renderButtonRef} className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
           </div>
         </header>
 
@@ -797,6 +1143,27 @@ export default function App() {
             onFit={() => setResetSignal((value) => value + 1)}
             onView={selectView}
           />
+        )}
+
+        {manifest && manifest.frame_count > 0 ? (
+          <MoleculeScene
+            ref={moleculeSceneRef}
+            manifest={manifest}
+            frame={frame}
+            presentation={presentation}
+            selectedAtoms={selectedAtoms}
+            resetSignal={resetSignal}
+            viewPreset={viewPreset}
+            viewSignal={viewSignal}
+            forceScale={forceScale}
+            velocityScale={velocityScale}
+            appearance="light"
+            onSelect={selectAtom}
+            onSceneInfo={setSceneInfo}
+            onSelectionPositions={setSelectionPositions}
+          />
+        ) : (
+          <div className="canvas-field" />
         )}
 
         {manifest && capabilities && <aside ref={workbenchRef} className={workbenchTab === "inspect" ? "workbench atom-card" : "workbench"} id="workbench" aria-labelledby="workbench-title" hidden={!workbenchVisible} tabIndex={-1}>
@@ -835,11 +1202,55 @@ export default function App() {
             frame={frame}
             selectedAtoms={selectedAtoms}
             displayedPositions={selectionPositions}
+            minimumImage={minimumImage}
+            canPlot={canPlotMeasurement}
+            plotOpen={measurementPlotOpen}
+            onMinimumImage={() => setMinimumImage((current) => !current)}
+            onPlot={() => measurementPlotOpen
+              ? closeMeasurementPlot(false)
+              : showMeasurementPlot()}
             onClear={() => {
               setSelectedAtoms([]);
               setSelectionPositions(null);
+              closeMeasurementPlot(false);
             }}
-            onDetails={() => openWorkbench("inspect", true)}
+            onDetails={() => workbenchVisible && workbenchTab === "inspect"
+              ? closeWorkbench(false)
+              : openWorkbench("inspect", true)}
+          />
+        )}
+
+        {manifest && measurementPlotOpen && canPlotMeasurement && (
+          <MeasurementPlot
+            title={measurementSeries?.title ?? measurementSelectionTitle(manifest, selectedAtoms)}
+            unit={measurementUnitLabel(
+              measurementSeries?.unit ?? (selectedAtoms.length === 2 ? "angstrom" : "degree"),
+            )}
+            axisLabel={measurementSeries?.axis.label ?? "Frame"}
+            axisUnit={measurementSeries?.axis.unit}
+            xValues={measurementSeries?.xValues ?? plotFrameAxis}
+            values={measurementSeries?.values ?? emptyMeasurementValues}
+            loadedCount={measurementSeries?.loadedCount ?? 0}
+            complete={measurementSeries?.complete ?? false}
+            currentFrame={displayedFrameIndex}
+            onFrame={(index) => {
+              setPlaying(false);
+              setFrame(index);
+            }}
+            onExportCsv={() => {
+              if (!measurementSeries?.complete) return;
+              downloadBlob(
+                new Blob([measurementSeriesCsv(measurementSeries)], { type: "text/csv;charset=utf-8" }),
+                measurementFileName(manifest.name, measurementSeries.kind, "csv"),
+              );
+            }}
+            onExportSvg={() => {
+              if (!measurementSeries?.complete) return;
+              downloadBlob(
+                new Blob([measurementSeriesSvg(measurementSeries)], { type: "image/svg+xml;charset=utf-8" }),
+                measurementFileName(manifest.name, measurementSeries.kind, "svg"),
+              );
+            }}
           />
         )}
 
@@ -856,6 +1267,7 @@ export default function App() {
             fps={playbackFps}
             stride={playbackStride}
             mode={playbackMode}
+            optionsOpen={playbackOptionsOpen}
             onFrame={(index) => {
               setPlaying(false);
               setFrame(index);
@@ -863,6 +1275,10 @@ export default function App() {
             onPlay={() => canPlay && setPlaying((value) => !value)}
             onFps={setPlaybackFps}
             onStride={setPlaybackStride}
+            onOptionsOpen={(open) => {
+              setPlaybackOptionsOpen(open);
+              if (open && measurementPlotOpen) closeMeasurementPlot(false);
+            }}
             onMode={(mode) => {
               setPlaybackMode(mode);
               setPlaybackDirection(1);
@@ -888,7 +1304,25 @@ export default function App() {
             onAction={showOpen}
           />
         )}
-        {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status">{notice}</div>}
+        {notice && (
+          <div
+            className={`${opening || rendering ? "notice is-busy" : "notice"}${notice.tone === "error" ? " is-error" : ""}`}
+            role={notice.tone === "error" ? "alert" : "status"}
+            title={notice.message}
+          >
+            <span>{notice.message}</span>
+            {notice.tone === "error" && (
+              <button
+                className="notice-dismiss"
+                type="button"
+                aria-label="Dismiss message"
+                onClick={() => setNotice(null)}
+              >
+                <Icon name="close" />
+              </button>
+            )}
+          </div>
+        )}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
         {commandOpen && <CommandPalette
           actions={commands}
@@ -985,7 +1419,7 @@ function useModalFocus<T extends HTMLElement>(
   }, []);
 }
 
-function restoreFocusWhenAvailable(element: HTMLElement | null) {
+function restoreFocusWhenAvailable(element: FocusTarget | null) {
   if (!element?.isConnected) return;
   if (!element.matches(":disabled")) {
     element.focus();
@@ -1101,6 +1535,8 @@ function ShortcutSheet({
       items: [
         ["R", "Fit structure"],
         ["1 / 2 / 3 / 4", "3D / XY / XZ / YZ"],
+        ["↑ / ↓", "Browse atoms"],
+        ["Enter", "Toggle atom"],
         ["V", "View controls"],
         ["B", "Bonds / lines"],
         ["C / F / W", "Cell / forces / water"],
@@ -1302,6 +1738,11 @@ function SelectionBar({
   frame,
   selectedAtoms,
   displayedPositions,
+  minimumImage,
+  canPlot,
+  plotOpen,
+  onMinimumImage,
+  onPlot,
   onClear,
   onDetails,
 }: {
@@ -1309,10 +1750,14 @@ function SelectionBar({
   frame: FrameData | null;
   selectedAtoms: AtomSelection[];
   displayedPositions: Float64Array | null;
+  minimumImage: boolean;
+  canPlot: boolean;
+  plotOpen: boolean;
+  onMinimumImage: () => void;
+  onPlot: () => void;
   onClear: () => void;
   onDetails: () => void;
 }) {
-  const [minimumImage, setMinimumImage] = useState(true);
   const validSelections = selectedAtoms.filter(
     ({ atom }) => atom >= 0 && atom < manifest.topology.atom_count,
   );
@@ -1358,7 +1803,7 @@ function SelectionBar({
 
   return <section className="selection-bar" aria-label="Atom selection">
     <div className="selection-readout">
-      <strong>{title}</strong>
+      <strong title={title}>{title}</strong>
       {value && <output>{value}</output>}
     </div>
     {supportsDisplayedImages ? (
@@ -1366,15 +1811,29 @@ function SelectionBar({
         className="measurement-mode"
         type="button"
         aria-pressed={minimumImage}
+        aria-label={minimumImage ? "Minimum image" : "Displayed images"}
         title="Choose minimum-image or displayed-image geometry"
-        onClick={() => setMinimumImage((current) => !current)}
+        onClick={onMinimumImage}
       >
-        {minimumImage ? "Minimum image" : "Displayed images"}
+        <span className="measurement-mode-full">{minimumImage ? "Minimum image" : "Displayed images"}</span>
+        <span className="measurement-mode-compact" aria-hidden="true">{minimumImage ? "Min. image" : "Images"}</span>
       </button>
-    ) : (
-      <span className="selection-hint">Shift-click to measure</span>
+    ) : validSelections.length === 1 ? (
+      <span className="selection-hint">Shift-click or tap more</span>
+    ) : null}
+    {canPlot && (
+      <button
+        className="selection-plot-button"
+        type="button"
+        aria-pressed={plotOpen}
+        onClick={onPlot}
+      >
+        {plotOpen ? "Hide plot" : "Plot"}
+      </button>
     )}
-    <button type="button" onClick={onDetails}>Details</button>
+    {validSelections.length === 1 && (
+      <button type="button" onClick={onDetails}>Details</button>
+    )}
     <button className="icon-button" type="button" onClick={onClear} aria-label="Clear selection"><Icon name="close" /></button>
   </section>;
 }
@@ -1402,12 +1861,13 @@ function Inspector({
   const chargeUnit = arrayUnit(frame, manifest, "charges");
   const residueIndex = atom === null ? -1 : manifest.topology.atom_residue_index?.[atom] ?? -1;
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
+  const residueId = meaningfulResidueId(manifest.topology.residue_ids, atom);
   return <div className="inspector-content">
     {atom === null ? <p className="quiet-copy">Click an atom to inspect it.</p> : <section className="readout-section atom-section">
       <Readout label="Element" value={symbol ?? "—"} />
       {manifest.topology.atom_names?.[atom] && <Readout label="Name" value={manifest.topology.atom_names[atom]} />}
       {residue && <Readout label="Residue" value={`${residue.name ?? `Type ${residue.type_id ?? "—"}`} · ${residue.index + 1}`} />}
-      {!residue && manifest.topology.residue_ids?.[atom] !== undefined && <Readout label="Residue type" value={String(manifest.topology.residue_ids[atom])} />}
+      {!residue && residueId !== null && <Readout label="Residue ID" value={residueId} />}
       {selectedPosition && (
         <VectorReadout
           label={cellAvailable ? "Displayed cell position" : "Displayed position"}
@@ -1435,10 +1895,12 @@ function Timeline({
   fps,
   stride,
   mode,
+  optionsOpen,
   onFrame,
   onPlay,
   onFps,
   onStride,
+  onOptionsOpen,
   onMode,
 }: {
   busy: boolean;
@@ -1452,10 +1914,12 @@ function Timeline({
   fps: number;
   stride: number;
   mode: PlaybackMode;
+  optionsOpen: boolean;
   onFrame: (index: number) => void;
   onPlay: () => void;
   onFps: (fps: number) => void;
   onStride: (stride: number) => void;
+  onOptionsOpen: (open: boolean) => void;
   onMode: (mode: PlaybackMode) => void;
 }) {
   const displayedFrame = String(displayedFrameIndex + 1).padStart(String(frameCount).length, "0");
@@ -1463,6 +1927,9 @@ function Timeline({
   const frameLabel = displayedFrameIndex === frameIndex
     ? `${displayedFrame} / ${frameCount}`
     : `${displayedFrame} → ${requestedFrame}`;
+  const compactFrameLabel = displayedFrameIndex === frameIndex
+    ? `${compactFrameNumber(displayedFrameIndex + 1)} / ${compactFrameNumber(frameCount)}`
+    : `${compactFrameNumber(displayedFrameIndex + 1)} → ${compactFrameNumber(frameIndex + 1)}`;
   const metadata = frameMetadata(frame);
 
   return (
@@ -1496,15 +1963,25 @@ function Timeline({
             onChange={(event) => onFrame(Number(event.target.value))}
           />
         </label>
-        <output
-          className="frame-counter"
-          aria-label={displayedFrameIndex === frameIndex
-            ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
-            : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
-        >{frameLabel}</output>
+        {!frameError && <output
+            className="frame-counter"
+            aria-label={displayedFrameIndex === frameIndex
+              ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
+              : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
+          >
+            <span className="frame-counter-full">{frameLabel}</span>
+            <span className="frame-counter-compact" aria-hidden="true">{compactFrameLabel}</span>
+          </output>}
         {metadata && <span className="frame-metadata">{metadata}</span>}
-        {frameError && <span className="frame-error" title={frameError}>Frame unavailable</span>}
-        <details className="timeline-options">
+        {frameError && <span className="frame-error" title={frameError} aria-label="Frame unavailable">
+          <span className="frame-error-full">Frame error</span>
+          <span className="frame-error-compact" aria-hidden="true">Error</span>
+        </span>}
+        <details
+          className="timeline-options"
+          open={optionsOpen}
+          onToggle={(event) => onOptionsOpen(event.currentTarget.open)}
+        >
           <summary aria-label="Playback options"><Icon name="more" /></summary>
           <div>
             <label><span>Speed</span><select value={fps} onChange={(event) => onFps(Number(event.target.value))}>
@@ -1540,6 +2017,48 @@ export function frameMetadata(frame: FrameData | null): string {
   const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
   const time = timeValue === null ? "" : `t ${formatNumber(timeValue)}`;
   return [step, time].filter(Boolean).join(" · ");
+}
+
+export function compactFrameNumber(value: number): string {
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded < 10_000) return String(rounded);
+  const [scale, suffix] = rounded >= 1_000_000_000
+    ? [1_000_000_000, "B"] as const
+    : rounded >= 1_000_000
+      ? [1_000_000, "M"] as const
+      : [1_000, "k"] as const;
+  const scaled = rounded / scale;
+  return `${Number(scaled.toFixed(scaled >= 10 ? 0 : 1))}${suffix}`;
+}
+
+export function frameCountLabel(value: number): string {
+  const count = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  return `${count.toLocaleString()} ${count === 1 ? "frame" : "frames"}`;
+}
+
+export function noticeDurationMs(value: string): number {
+  return Math.min(10_000, Math.max(4_200, value.length * 70));
+}
+
+export function meaningfulResidueId(
+  residueIds: readonly (number | string)[] | undefined,
+  atom: number | null,
+): string | null {
+  if (
+    atom === null
+    || !Number.isInteger(atom)
+    || atom < 0
+    || !residueIds
+    || atom >= residueIds.length
+  ) {
+    return null;
+  }
+  const meaningful = residueIds.some((value) => {
+    const normalized = String(value).trim();
+    return normalized !== "" && normalized !== "0";
+  });
+  const current = String(residueIds[atom]).trim();
+  return meaningful && current !== "" ? current : null;
 }
 
 export function measurementPbc(frame: FrameData | null): [boolean, boolean, boolean] {
@@ -1787,6 +2306,31 @@ function renderFileName(name: string | undefined, width: number, height: number)
     .replace(/[^a-z0-9._-]+/gi, "-")
     .replace(/^-+|-+$/g, "") || "molecule";
   return `${base}-${width}x${height}.png`;
+}
+
+function measurementSelectionTitle(manifest: Manifest, selections: readonly AtomSelection[]): string {
+  const kind = selections.length === 2
+    ? "Distance"
+    : selections.length === 3
+      ? "Angle"
+      : "Dihedral";
+  return `${kind} · ${selections.map((selection) => atomSelectionLabel(manifest, selection)).join("–")}`;
+}
+
+function measurementUnitLabel(unit: "angstrom" | "degree"): string {
+  return unit === "angstrom" ? "Å" : "°";
+}
+
+function measurementFileName(
+  name: string | undefined,
+  kind: "distance" | "angle" | "dihedral",
+  extension: "csv" | "svg",
+): string {
+  const base = (name ?? "trajectory")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-z0-9._-]+/gi, "-")
+    .replace(/^-+|-+$/g, "") || "trajectory";
+  return `${base}-${kind}.${extension}`;
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

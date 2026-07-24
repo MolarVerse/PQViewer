@@ -71,12 +71,13 @@ The existing implementation is a good technical base. It already has:
 - a compact trajectory bar with speed, stride, once, loop, and rock playback
 - command search, platform-aware shortcuts, and optional Vim navigation
 - high-resolution PNG output
-- 115 passing frontend tests, 43 passing backend tests, and a clean production build
+- measurement trajectory plots with CSV and SVG output
+- 154 passing frontend tests, 44 passing backend tests, and a clean production build
 
 The next gaps are deeper scientific workflows rather than rendering basics:
 
 - box and semantic selection are not implemented
-- measurements cannot yet be pinned or plotted
+- measurements cannot yet be pinned or compared
 - cell-origin translation is not yet exposed
 - broad ASE file and object interoperability is missing
 - figures cannot yet be saved as reusable view recipes
@@ -355,7 +356,7 @@ a useful figure without opening documentation.
 - add frame keys and robust property alignment across restarts and gaps
 - add selected-atom trails and displacement vectors
 - add frame bookmarks and comparison to a reference frame
-- open measurement and property plots on demand
+- extend measurement plots with pinned comparisons and add property plots on demand
 - link plot cursor, selected atoms, and current frame bidirectionally
 - expose RDF and coordination analysis through typed PQAnalysis results
 - keep long trajectories lazy with workers and a bounded cache

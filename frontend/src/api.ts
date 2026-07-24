@@ -9,9 +9,7 @@ export async function getManifest(): Promise<Manifest> {
   const response = await fetch("/api/manifest", { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(await responseMessage(response, "Could not load the trajectory"));
   const manifest = (await response.json()) as Manifest;
-  if (!manifest.topology || !Number.isFinite(manifest.frame_count)) {
-    throw new Error("The trajectory manifest is incomplete");
-  }
+  validateManifest(manifest, "The trajectory manifest is incomplete");
   return manifest;
 }
 
@@ -28,17 +26,34 @@ export async function openFiles(files: File[], signal?: AbortSignal): Promise<Ma
   if (!response.ok) throw new Error(await responseMessage(response, "Could not open the files"));
   const result = (await response.json()) as Manifest | { manifest?: Manifest };
   const manifest = "manifest" in result && result.manifest ? result.manifest : result as Manifest;
-  if (!manifest.topology || !Number.isFinite(manifest.frame_count)) {
-    throw new Error("The opened trajectory is incomplete");
-  }
+  validateManifest(manifest, "The opened trajectory is incomplete");
   return manifest;
 }
 
-export async function getFrame(index: number, signal?: AbortSignal): Promise<FrameData> {
-  const response = await fetch(`/api/frames/${index}`, {
+export class DatasetChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DatasetChangedError";
+  }
+}
+
+export async function getFrame(
+  index: number,
+  signal?: AbortSignal,
+  datasetGeneration?: string,
+): Promise<FrameData> {
+  const query = datasetGeneration
+    ? `?dataset_generation=${encodeURIComponent(datasetGeneration)}`
+    : "";
+  const response = await fetch(`/api/frames/${index}${query}`, {
     headers: { Accept: "application/octet-stream" },
     signal,
   });
+  if (response.status === 409) {
+    throw new DatasetChangedError(
+      await responseMessage(response, "Trajectory changed. Reloading."),
+    );
+  }
   if (!response.ok) throw new Error(await responseMessage(response, `Could not load frame ${index + 1}`));
   return decodeFrame(await response.arrayBuffer());
 }
@@ -84,18 +99,21 @@ interface FrameCacheEntry {
 export interface FrameCacheOptions {
   maxFrames?: number;
   maxBytes?: number;
+  datasetGeneration?: string;
 }
 
 export class FrameCache {
   private readonly values = new Map<number, FrameCacheEntry>();
   private readonly maxFrames: number;
   private readonly maxBytes: number;
+  private readonly datasetGeneration?: string;
   private resolvedBytes = 0;
   private frameByteEstimate = 0;
 
   constructor(options: FrameCacheOptions = {}) {
     this.maxFrames = positiveInteger(options.maxFrames, DEFAULT_FRAME_CACHE_LIMIT);
     this.maxBytes = positiveInteger(options.maxBytes, DEFAULT_FRAME_CACHE_BYTES);
+    this.datasetGeneration = normalizedGeneration(options.datasetGeneration);
   }
 
   get(index: number): Promise<FrameData> {
@@ -138,7 +156,7 @@ export class FrameCache {
   private load(index: number, prefetch: boolean): Promise<FrameData> {
     const controller = new AbortController();
     let entry!: FrameCacheEntry;
-    const promise = getFrame(index, controller.signal)
+    const promise = getFrame(index, controller.signal, this.datasetGeneration)
       .then((frame) => {
         entry.controller = null;
         entry.byteLength = decodedFrameByteLength(frame);
@@ -208,6 +226,21 @@ function decodedFrameByteLength(frame: FrameData): number {
 function positiveInteger(value: number | undefined, fallback: number): number {
   if (!Number.isFinite(value) || value === undefined || value <= 0) return fallback;
   return Math.max(1, Math.floor(value));
+}
+
+function validateManifest(manifest: Manifest, message: string): void {
+  if (
+    !manifest.topology
+    || !Number.isFinite(manifest.frame_count)
+    || normalizedGeneration(manifest.dataset_generation) === undefined
+  ) {
+    throw new Error(message);
+  }
+}
+
+function normalizedGeneration(value: string | undefined): string | undefined {
+  const generation = value?.trim();
+  return generation ? generation : undefined;
 }
 
 export function frameArray(frame: FrameData | null, names: string[]): Float32Array | null {

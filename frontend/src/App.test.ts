@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   autoProfile,
+  compactFrameNumber,
   filterCommandActions,
+  frameCountLabel,
   frameMetadata,
+  meaningfulResidueId,
   measurementPbc,
+  noticeDurationMs,
   profilePresentation,
   selectionVisibleInImages,
   selectedProfilePresentation,
@@ -127,6 +131,43 @@ describe("command search", () => {
   it("returns every action for an empty query and none for an unknown command", () => {
     expect(filterCommandActions(actions, "  ")).toEqual(actions);
     expect(filterCommandActions(actions, "density surface")).toEqual([]);
+  });
+});
+
+describe("frame labels", () => {
+  it("keeps long trajectory counts compact", () => {
+    expect(compactFrameNumber(9_999)).toBe("9999");
+    expect(compactFrameNumber(10_000)).toBe("10k");
+    expect(compactFrameNumber(10_000_000)).toBe("10M");
+  });
+
+  it("uses the singular form for one frame", () => {
+    expect(frameCountLabel(1)).toBe("1 frame");
+    expect(frameCountLabel(2)).toBe("2 frames");
+  });
+});
+
+describe("notices", () => {
+  it("keeps longer messages visible long enough to read", () => {
+    expect(noticeDurationMs("Done")).toBe(4_200);
+    expect(noticeDurationMs("x".repeat(100))).toBe(7_000);
+    expect(noticeDurationMs("x".repeat(1_000))).toBe(10_000);
+  });
+});
+
+describe("residue identifiers", () => {
+  it("hides default zero-only topology values", () => {
+    expect(meaningfulResidueId(undefined, 0)).toBeNull();
+    expect(meaningfulResidueId([], 0)).toBeNull();
+    expect(meaningfulResidueId([0, 0], 0)).toBeNull();
+  });
+
+  it("keeps identifiers when the topology carries real residue groups", () => {
+    expect(meaningfulResidueId([0, 0, 1, 1], 0)).toBe("0");
+    expect(meaningfulResidueId([0, 0, 1, 1], 2)).toBe("1");
+    expect(meaningfulResidueId([4, 4], 1)).toBe("4");
+    expect(meaningfulResidueId(["", "1"], 0)).toBeNull();
+    expect(meaningfulResidueId([" A ", "B"], 0)).toBe("A");
   });
 });
 
