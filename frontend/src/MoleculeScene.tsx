@@ -97,6 +97,16 @@ export interface RenderedSceneInfo {
   capabilities: SceneCapabilities;
 }
 
+export function isAdditivePick(
+  event: Pick<PointerEvent, "pointerType" | "shiftKey" | "metaKey" | "ctrlKey">,
+): boolean {
+  return event.pointerType === "touch"
+    || event.pointerType === "pen"
+    || event.shiftKey
+    || event.metaKey
+    || event.ctrlKey;
+}
+
 interface FitContext {
   model: PreparedScene;
   presentation: ScenePresentation;
@@ -404,12 +414,28 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     resize();
 
     const pointerStart = new THREE.Vector2();
+    let pickPointerId: number | null = null;
+    let multiPointerGesture = false;
     const pointer = new THREE.Vector2();
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points!.threshold = 0.24;
-    const onPointerDown = (event: PointerEvent) => pointerStart.set(event.clientX, event.clientY);
+    const onPointerDown = (event: PointerEvent) => {
+      if (pickPointerId !== null && event.pointerId !== pickPointerId) {
+        multiPointerGesture = true;
+        return;
+      }
+      if (!event.isPrimary) return;
+      pickPointerId = event.pointerId;
+      multiPointerGesture = false;
+      pointerStart.set(event.clientX, event.clientY);
+    };
     const onPointerUp = (event: PointerEvent) => {
-      if (pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5) return;
+      if (event.pointerId !== pickPointerId) return;
+      pickPointerId = null;
+      const moved = pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5;
+      const gesture = multiPointerGesture;
+      multiPointerGesture = false;
+      if (moved || gesture) return;
       const bounds = canvas.getBoundingClientRect();
       pointer.set(
         ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
@@ -419,11 +445,17 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       const hit = raycaster.intersectObjects(state.pickables, false)[0];
       selectRef.current(
         hit ? pickedAtom(hit, state) : null,
-        event.shiftKey || event.metaKey || event.ctrlKey,
+        isAdditivePick(event),
       );
+    };
+    const onPointerCancel = (event: PointerEvent) => {
+      if (event.pointerId !== pickPointerId) return;
+      pickPointerId = null;
+      multiPointerGesture = false;
     };
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerCancel);
     renderer.setAnimationLoop(() => {
       controls.update();
       selection.children.forEach((marker) => {
@@ -437,6 +469,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       observer.disconnect();
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerCancel);
       controls.dispose();
       root.remove(selection);
       disposeObject(root);

@@ -29,6 +29,7 @@ export interface SeriesSpec {
 
 export interface Manifest {
   schema_version: string | number;
+  dataset_generation?: string;
   name: string;
   frame_count: number;
   topology: Topology;

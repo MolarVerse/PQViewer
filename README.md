@@ -53,8 +53,10 @@ neighboring images. Ribbon appears when residue and backbone topology are
 present. Periodic coordinates follow PQ's centered `−½…+½` convention.
 
 Click an atom for a compact readout. Shift-click additional atoms to measure a
-distance, angle, or ordered dihedral. Periodic measurements use the exact
+distance, angle, or ordered dihedral. On touch screens, tap atoms in order and
+tap a selected atom again to remove it. Periodic measurements use the exact
 minimum image by default; switch to displayed images when inspecting replicas.
+`Plot` follows the measurement across the trajectory and exports CSV or SVG.
 `Details` shows the selected atom's position and available per-atom values.
 
 The trajectory bar appears only for multi-frame data. It provides first,

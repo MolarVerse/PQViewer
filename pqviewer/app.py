@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path, PurePosixPath
+import secrets
 from tempfile import TemporaryDirectory
 from threading import RLock
 from typing import Any, Callable
@@ -34,6 +35,8 @@ MAX_UPLOAD_FILES = 8
 MAX_UPLOAD_FILE_BYTES = 2 * 1024**3
 MAX_UPLOAD_TOTAL_BYTES = 4 * 1024**3
 UPLOAD_CHUNK_BYTES = 1024**2
+DATASET_GENERATION_FIELD = "dataset_generation"
+STALE_DATASET_DETAIL = "Trajectory changed. Reload the manifest."
 
 _UPLOAD_FIELDS = {
     "files",
@@ -173,6 +176,7 @@ def create_app(
     application = FastAPI(title="PQViewer", lifespan=lifespan)
     application.state.dataset = dataset
     application.state.dataset_lock = RLock()
+    application.state.dataset_generation = _new_dataset_generation()
     application.state.upload_temp = None
     application.state.open_generation = 0
 
@@ -184,12 +188,26 @@ def create_app(
     def manifest(response: Response) -> dict[str, Any]:
         response.headers["Cache-Control"] = "no-store"
         with application.state.dataset_lock:
-            return application.state.dataset.manifest()
+            return _manifest_with_generation(
+                application.state.dataset.manifest(),
+                application.state.dataset_generation,
+            )
 
     @application.get("/api/frames/{frame_index}")
-    def frame(frame_index: int) -> Response:
+    def frame(
+        frame_index: int,
+        dataset_generation: str | None = None,
+    ) -> Response:
         try:
             with application.state.dataset_lock:
+                if (
+                    dataset_generation is not None
+                    and dataset_generation != application.state.dataset_generation
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=STALE_DATASET_DETAIL,
+                    )
                 value = application.state.dataset.get_frame(frame_index)
         except IndexError as error:
             raise HTTPException(status_code=404, detail="Frame not found.") from error
@@ -205,7 +223,11 @@ def create_app(
         with application.state.dataset_lock:
             current = application.state.dataset
             added_frames = current.refresh()
-            refreshed_manifest = dict(current.manifest())
+            application.state.dataset_generation = _new_dataset_generation()
+            refreshed_manifest = _manifest_with_generation(
+                current.manifest(),
+                application.state.dataset_generation,
+            )
         refreshed_manifest["added_frames"] = added_frames
         response.headers["Cache-Control"] = "no-store"
         return refreshed_manifest
@@ -264,7 +286,12 @@ def create_app(
                 )
             previous_temp = application.state.upload_temp
             application.state.dataset = candidate
+            application.state.dataset_generation = _new_dataset_generation()
             application.state.upload_temp = temporary
+            opened_manifest = _manifest_with_generation(
+                opened_manifest,
+                application.state.dataset_generation,
+            )
         if previous_temp is not None:
             previous_temp.cleanup()
         response.headers["Cache-Control"] = "no-store"
@@ -287,6 +314,19 @@ def create_app(
             )
 
     return application
+
+
+def _new_dataset_generation() -> str:
+    return secrets.token_urlsafe(18)
+
+
+def _manifest_with_generation(
+    manifest: dict[str, Any],
+    generation: str,
+) -> dict[str, Any]:
+    result = dict(manifest)
+    result[DATASET_GENERATION_FIELD] = generation
+    return result
 
 
 def create_app_from_env() -> FastAPI:

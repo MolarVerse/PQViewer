@@ -4,6 +4,7 @@ import {
   clientXToPlotX,
   downsampleMeasurementSegments,
   measurementDiscontinuityThreshold,
+  measurementPlotLayout,
   nearestFrameForPlotX,
   splitMeasurementSegments,
 } from "./MeasurementPlot";
@@ -52,10 +53,11 @@ describe("measurement plot geometry", () => {
 });
 
 describe("measurement plot seeking", () => {
-  it("accounts for horizontal SVG letterboxing", () => {
-    expect(clientXToPlotX(140, { left: 0, width: 1_000, height: 188 })).toBe(0);
-    expect(clientXToPlotX(500, { left: 0, width: 1_000, height: 188 })).toBe(360);
-    expect(clientXToPlotX(860, { left: 0, width: 1_000, height: 188 })).toBe(720);
+  it("maps rendered pixels into the responsive SVG view box", () => {
+    expect(clientXToPlotX(20, { left: 20, width: 360 }, 360)).toBe(0);
+    expect(clientXToPlotX(200, { left: 20, width: 360 }, 360)).toBe(180);
+    expect(clientXToPlotX(380, { left: 20, width: 360 }, 360)).toBe(360);
+    expect(clientXToPlotX(10, { left: 0, width: 0 }, 360)).toBeNull();
   });
 
   it("seeks the nearest irregular axis value", () => {
@@ -68,6 +70,42 @@ describe("measurement plot seeking", () => {
 
   it("uses frame position when the axis is constant", () => {
     expect(nearestFrameForPlotX(74, [1, 1, 1, 1, 1], 0, 100)).toBe(3);
+  });
+});
+
+describe("measurement plot layout", () => {
+  it("uses the available width without changing the panel height", () => {
+    const mobile = measurementPlotLayout(374, 122);
+    const desktop = measurementPlotLayout(760, 130);
+
+    expect(mobile).toEqual({
+      width: 374,
+      height: 122,
+      left: 58,
+      right: 358,
+      top: 12,
+      bottom: 84,
+    });
+    expect(desktop).toEqual({
+      width: 760,
+      height: 130,
+      left: 64,
+      right: 744,
+      top: 12,
+      bottom: 92,
+    });
+    expect((mobile.right - mobile.left) / mobile.width).toBeGreaterThanOrEqual(0.8);
+    expect((desktop.right - desktop.left) / desktop.width).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it("keeps axes and labels inside a short landscape plot", () => {
+    const layout = measurementPlotLayout(560, 88);
+
+    expect(layout.top).toBeGreaterThanOrEqual(0);
+    expect(layout.bottom).toBeGreaterThan(layout.top);
+    expect(layout.bottom + 17).toBeLessThan(layout.height);
+    expect(layout.right).toBeLessThan(layout.width);
+    expect((layout.bottom - layout.top) / layout.height).toBeGreaterThan(0.6);
   });
 });
 

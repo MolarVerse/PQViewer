@@ -2642,7 +2642,6 @@ input[type="range"]::-moz-range-thumb {
     flex: 1 1 0;
   }
 
-  .selection-hint,
   .frame-metadata {
     display: none;
   }
@@ -4676,14 +4675,14 @@ input[type="range"]::-moz-range-thumb {
 .measurement-plot__empty {
   fill: var(--quiet);
   font-family: var(--numeric);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .measurement-plot__axis-label,
 .measurement-plot__unit,
 .measurement-plot__empty {
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .measurement-plot__progress {
@@ -4750,16 +4749,6 @@ input[type="range"]::-moz-range-thumb {
     width: 44px;
     height: 44px;
     padding-inline: 5px;
-  }
-
-  .measurement-plot__tick {
-    font-size: 15px;
-  }
-
-  .measurement-plot__axis-label,
-  .measurement-plot__unit,
-  .measurement-plot__empty {
-    font-size: 14px;
   }
 }
 

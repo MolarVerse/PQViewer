@@ -1,12 +1,8 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 
-const VIEWBOX_WIDTH = 720;
-const VIEWBOX_HEIGHT = 188;
-const PLOT_LEFT = 64;
-const PLOT_RIGHT = 704;
-const PLOT_TOP = 14;
-const PLOT_BOTTOM = 150;
+const DEFAULT_PLOT_WIDTH = 720;
+const DEFAULT_PLOT_HEIGHT = 130;
 
 export interface MeasurementPlotProps {
   title: string;
@@ -56,6 +52,32 @@ export interface MeasurementPlotGeometryOptions {
   maxPoints?: number;
 }
 
+export interface MeasurementPlotLayout {
+  width: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export function measurementPlotLayout(width: number, height: number): MeasurementPlotLayout {
+  const resolvedWidth = Math.max(160, finiteNumber(width, DEFAULT_PLOT_WIDTH));
+  const resolvedHeight = Math.max(72, finiteNumber(height, DEFAULT_PLOT_HEIGHT));
+  const left = resolvedWidth <= 520 ? 58 : 64;
+  const compactHeight = resolvedHeight <= 96;
+  return {
+    width: resolvedWidth,
+    height: resolvedHeight,
+    left,
+    right: Math.max(left + 1, resolvedWidth - 16),
+    top: compactHeight ? 8 : 12,
+    bottom: Math.max(24, resolvedHeight - (compactHeight ? 24 : 38)),
+  };
+}
+
+const DEFAULT_PLOT_LAYOUT = measurementPlotLayout(DEFAULT_PLOT_WIDTH, DEFAULT_PLOT_HEIGHT);
+
 export function MeasurementPlot({
   title,
   unit,
@@ -70,28 +92,42 @@ export function MeasurementPlot({
   onExportCsv,
   onExportSvg,
 }: MeasurementPlotProps) {
+  const [chartRef, chartSize] = useMeasuredPlotSize();
+  const layout = useMemo(
+    () => measurementPlotLayout(
+      chartSize?.width ?? DEFAULT_PLOT_WIDTH,
+      chartSize?.height ?? DEFAULT_PLOT_HEIGHT,
+    ),
+    [chartSize?.height, chartSize?.width],
+  );
   const frameCount = xValues.length;
   const activeFrame = clampFrame(currentFrame, frameCount);
   const geometry = useMemo(
-    () => buildMeasurementPlotGeometry(xValues, values, {
-      width: VIEWBOX_WIDTH,
-      height: VIEWBOX_HEIGHT,
-      left: PLOT_LEFT,
-      right: PLOT_RIGHT,
-      top: PLOT_TOP,
-      bottom: PLOT_BOTTOM,
-      discontinuityThreshold: measurementDiscontinuityThreshold(unit),
-      maxPoints: Math.ceil((PLOT_RIGHT - PLOT_LEFT) * 2),
-    }),
-    [unit, values, xValues],
+    () => chartSize === null
+      ? {
+          xDomain: [0, Math.max(1, frameCount - 1)] as [number, number],
+          yDomain: [0, 1] as [number, number],
+          segments: [],
+        }
+      : buildMeasurementPlotGeometry(xValues, values, {
+          width: layout.width,
+          height: layout.height,
+          left: layout.left,
+          right: layout.right,
+          top: layout.top,
+          bottom: layout.bottom,
+          discontinuityThreshold: measurementDiscontinuityThreshold(unit),
+          maxPoints: Math.ceil((layout.right - layout.left) * 2),
+        }),
+    [chartSize, frameCount, layout, unit, values, xValues],
   );
   const currentX = frameCount > 0
-    ? plotXForFrame(activeFrame, xValues, geometry.xDomain, PLOT_LEFT, PLOT_RIGHT)
+    ? plotXForFrame(activeFrame, xValues, geometry.xDomain, layout.left, layout.right)
     : null;
   const currentValue = finiteMeasurementValue(values[activeFrame]);
   const currentY = currentValue === null
     ? null
-    : scaleLinear(currentValue, geometry.yDomain, PLOT_BOTTOM, PLOT_TOP);
+    : scaleLinear(currentValue, geometry.yDomain, layout.bottom, layout.top);
   const boundedLoadedCount = Math.max(
     0,
     Math.min(frameCount, Number.isFinite(loadedCount) ? Math.floor(loadedCount) : 0),
@@ -107,9 +143,9 @@ export function MeasurementPlot({
   const seekFromPointer = (event: PointerEvent<SVGSVGElement>) => {
     if (frameCount === 0) return;
     const bounds = event.currentTarget.getBoundingClientRect();
-    const plotX = clientXToPlotX(event.clientX, bounds);
+    const plotX = clientXToPlotX(event.clientX, bounds, layout.width);
     if (plotX === null) return;
-    onFrame(nearestFrameForPlotX(plotX, xValues, PLOT_LEFT, PLOT_RIGHT));
+    onFrame(nearestFrameForPlotX(plotX, xValues, layout.left, layout.right));
   };
 
   const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
@@ -157,8 +193,9 @@ export function MeasurementPlot({
       </header>
 
       <svg
+        ref={chartRef}
         className="measurement-plot__chart"
-        viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
+        viewBox={`0 0 ${layout.width} ${layout.height}`}
         role="slider"
         tabIndex={0}
         aria-label={`${title} frame`}
@@ -175,27 +212,27 @@ export function MeasurementPlot({
         style={{ touchAction: "none" }}
       >
         <title>{title}</title>
-        <desc>Click or drag to seek. Use arrow keys, Home, or End to move between frames.</desc>
+        <desc>Tap or drag to seek. Use arrow keys, Home, or End to move between frames.</desc>
         <line
           className="measurement-plot__grid"
-          x1={PLOT_LEFT}
-          x2={PLOT_RIGHT}
-          y1={PLOT_TOP}
-          y2={PLOT_TOP}
+          x1={layout.left}
+          x2={layout.right}
+          y1={layout.top}
+          y2={layout.top}
         />
         <line
           className="measurement-plot__grid"
-          x1={PLOT_LEFT}
-          x2={PLOT_RIGHT}
-          y1={(PLOT_TOP + PLOT_BOTTOM) / 2}
-          y2={(PLOT_TOP + PLOT_BOTTOM) / 2}
+          x1={layout.left}
+          x2={layout.right}
+          y1={(layout.top + layout.bottom) / 2}
+          y2={(layout.top + layout.bottom) / 2}
         />
         <line
           className="measurement-plot__axis"
-          x1={PLOT_LEFT}
-          x2={PLOT_RIGHT}
-          y1={PLOT_BOTTOM}
-          y2={PLOT_BOTTOM}
+          x1={layout.left}
+          x2={layout.right}
+          y1={layout.bottom}
+          y2={layout.bottom}
         />
 
         {geometry.segments.map((segment, index) => (
@@ -220,8 +257,8 @@ export function MeasurementPlot({
         {geometry.segments.length === 0 && (
           <text
             className="measurement-plot__empty"
-            x={(PLOT_LEFT + PLOT_RIGHT) / 2}
-            y={(PLOT_TOP + PLOT_BOTTOM) / 2}
+            x={(layout.left + layout.right) / 2}
+            y={(layout.top + layout.bottom) / 2}
             textAnchor="middle"
           >
             {complete ? "No valid measurements" : "Loading measurements…"}
@@ -233,8 +270,8 @@ export function MeasurementPlot({
             className="measurement-plot__cursor"
             x1={currentX}
             x2={currentX}
-            y1={PLOT_TOP}
-            y2={PLOT_BOTTOM}
+            y1={layout.top}
+            y2={layout.bottom}
             vectorEffect="non-scaling-stroke"
           />
         )}
@@ -247,37 +284,37 @@ export function MeasurementPlot({
           />
         )}
 
-        <text className="measurement-plot__tick" x={PLOT_LEFT} y={PLOT_BOTTOM + 17}>
+        <text className="measurement-plot__tick" x={layout.left} y={layout.bottom + 17}>
           {formatTick(geometry.xDomain[0])}
         </text>
         <text
           className="measurement-plot__tick"
-          x={PLOT_RIGHT}
-          y={PLOT_BOTTOM + 17}
+          x={layout.right}
+          y={layout.bottom + 17}
           textAnchor="end"
         >
           {formatTick(geometry.xDomain[1])}
         </text>
         <text
           className="measurement-plot__tick"
-          x={PLOT_LEFT - 8}
-          y={PLOT_TOP + 4}
+          x={layout.left - 8}
+          y={layout.top + 4}
           textAnchor="end"
         >
           {formatTick(geometry.yDomain[1])}
         </text>
         <text
           className="measurement-plot__tick"
-          x={PLOT_LEFT - 8}
-          y={PLOT_BOTTOM}
+          x={layout.left - 8}
+          y={layout.bottom}
           textAnchor="end"
         >
           {formatTick(geometry.yDomain[0])}
         </text>
         <text
           className="measurement-plot__axis-label"
-          x={(PLOT_LEFT + PLOT_RIGHT) / 2}
-          y={VIEWBOX_HEIGHT - 3}
+          x={(layout.left + layout.right) / 2}
+          y={layout.height - 4}
           textAnchor="middle"
         >
           {axisTitle}
@@ -285,9 +322,9 @@ export function MeasurementPlot({
         <text
           className="measurement-plot__unit"
           x={12}
-          y={(PLOT_TOP + PLOT_BOTTOM) / 2}
+          y={(layout.top + layout.bottom) / 2}
           textAnchor="middle"
-          transform={`rotate(-90 12 ${(PLOT_TOP + PLOT_BOTTOM) / 2})`}
+          transform={`rotate(-90 12 ${(layout.top + layout.bottom) / 2})`}
         >
           {unit}
         </text>
@@ -307,17 +344,66 @@ export function MeasurementPlot({
   );
 }
 
+function useMeasuredPlotSize() {
+  const chartRef = useRef<SVGSVGElement>(null);
+  const [size, setSize] = useState<{ width: number; height: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    let resizeTimer: number | null = null;
+    let pendingSize: { width: number; height: number } | null = null;
+
+    const update = (width: number, height: number) => {
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+      const next = {
+        width: Math.round(width),
+        height: Math.round(height),
+      };
+      setSize((current) => (
+        current
+        && current.width === next.width
+        && current.height === next.height
+          ? current
+          : next
+      ));
+    };
+
+    const bounds = chart.getBoundingClientRect();
+    update(bounds.width, bounds.height);
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      pendingSize = {
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      };
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => {
+        if (pendingSize) update(pendingSize.width, pendingSize.height);
+        resizeTimer = null;
+      }, 80);
+    });
+    observer.observe(chart);
+    return () => {
+      observer.disconnect();
+      if (resizeTimer !== null) window.clearTimeout(resizeTimer);
+    };
+  }, []);
+
+  return [chartRef, size] as const;
+}
+
 export function buildMeasurementPlotGeometry(
   xValues: readonly number[],
   values: readonly (number | null)[],
   options: MeasurementPlotGeometryOptions = {},
 ): MeasurementPlotGeometry {
-  const width = positiveNumber(options.width, VIEWBOX_WIDTH);
-  const height = positiveNumber(options.height, VIEWBOX_HEIGHT);
-  const left = finiteNumber(options.left, PLOT_LEFT);
-  const right = finiteNumber(options.right, width - (VIEWBOX_WIDTH - PLOT_RIGHT));
-  const top = finiteNumber(options.top, PLOT_TOP);
-  const bottom = finiteNumber(options.bottom, height - (VIEWBOX_HEIGHT - PLOT_BOTTOM));
+  const width = positiveNumber(options.width, DEFAULT_PLOT_LAYOUT.width);
+  const height = positiveNumber(options.height, DEFAULT_PLOT_LAYOUT.height);
+  const left = finiteNumber(options.left, DEFAULT_PLOT_LAYOUT.left);
+  const right = finiteNumber(options.right, width - (DEFAULT_PLOT_LAYOUT.width - DEFAULT_PLOT_LAYOUT.right));
+  const top = finiteNumber(options.top, DEFAULT_PLOT_LAYOUT.top);
+  const bottom = finiteNumber(options.bottom, height - (DEFAULT_PLOT_LAYOUT.height - DEFAULT_PLOT_LAYOUT.bottom));
   const rawSegments = splitMeasurementSegments(
     xValues,
     values,
@@ -429,8 +515,8 @@ export function downsampleMeasurementSegments(
 export function nearestFrameForPlotX(
   targetX: number,
   xValues: readonly number[],
-  left = PLOT_LEFT,
-  right = PLOT_RIGHT,
+  left = DEFAULT_PLOT_LAYOUT.left,
+  right = DEFAULT_PLOT_LAYOUT.right,
 ): number {
   if (xValues.length === 0) return 0;
   const clampedTarget = Math.max(Math.min(left, right), Math.min(Math.max(left, right), targetX));
@@ -481,16 +567,11 @@ function nearestFrameLinear(
 
 export function clientXToPlotX(
   clientX: number,
-  bounds: Pick<DOMRect, "left" | "width" | "height">,
+  bounds: Pick<DOMRect, "left" | "width">,
+  viewBoxWidth = DEFAULT_PLOT_WIDTH,
 ): number | null {
-  if (bounds.width <= 0 || bounds.height <= 0) return null;
-  const scale = Math.min(
-    bounds.width / VIEWBOX_WIDTH,
-    bounds.height / VIEWBOX_HEIGHT,
-  );
-  if (!Number.isFinite(scale) || scale <= 0) return null;
-  const contentLeft = bounds.left + (bounds.width - VIEWBOX_WIDTH * scale) / 2;
-  return (clientX - contentLeft) / scale;
+  if (bounds.width <= 0 || !Number.isFinite(viewBoxWidth) || viewBoxWidth <= 0) return null;
+  return (clientX - bounds.left) / bounds.width * viewBoxWidth;
 }
 
 export function measurementDiscontinuityThreshold(unit: string): number | undefined {

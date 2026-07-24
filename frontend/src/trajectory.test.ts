@@ -4,6 +4,7 @@ import {
   normalizePlaybackFps,
   normalizePlaybackStride,
   playbackIntervalMs,
+  schedulePlaybackFrame,
   type PlaybackDirection,
 } from "./trajectory";
 
@@ -20,6 +21,47 @@ describe("playback timing", () => {
   it("converts normalized frame rates to timer intervals", () => {
     expect(playbackIntervalMs(8)).toBe(125);
     expect(playbackIntervalMs(0)).toBeCloseTo(1000 / 12);
+  });
+
+  it("subtracts frame-loading time from the next playback delay", () => {
+    const schedule = schedulePlaybackFrame(106, 100, 60);
+
+    expect(schedule.delayMs).toBeCloseTo(1000 / 60 - 6);
+    expect(schedule.requestTimeMs).toBeCloseTo(100 + 1000 / 60);
+  });
+
+  it("keeps playback aligned to its monotonic request clock", () => {
+    const first = schedulePlaybackFrame(100, null, 30);
+    const second = schedulePlaybackFrame(140, first.requestTimeMs, 30);
+
+    expect(first.delayMs).toBeCloseTo(1000 / 30);
+    expect(first.requestTimeMs).toBeCloseTo(100 + 1000 / 30);
+    expect(second.delayMs).toBeCloseTo(100 + 2000 / 30 - 140);
+    expect(second.requestTimeMs).toBeCloseTo(100 + 2000 / 30);
+  });
+
+  it("reanchors overdue playback without a catch-up burst", () => {
+    const overdue = schedulePlaybackFrame(10_000, 100, 60);
+    const following = schedulePlaybackFrame(
+      overdue.requestTimeMs,
+      overdue.requestTimeMs,
+      60,
+    );
+
+    expect(overdue).toEqual({ delayMs: 0, requestTimeMs: 10_000 });
+    expect(following.delayMs).toBeCloseTo(1000 / 60);
+    expect(following.requestTimeMs).toBeCloseTo(10_000 + 1000 / 60);
+  });
+
+  it("restarts safely when the monotonic clock is unavailable or resets", () => {
+    expect(schedulePlaybackFrame(Number.NaN, 50, 10)).toEqual({
+      delayMs: 100,
+      requestTimeMs: 100,
+    });
+    expect(schedulePlaybackFrame(20, 50, 10)).toEqual({
+      delayMs: 100,
+      requestTimeMs: 120,
+    });
   });
 
   it("normalizes stride to a positive integer", () => {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FrameCache } from "./api";
+import { DatasetChangedError, FrameCache, getFrame } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -27,7 +27,62 @@ function framePacket(byteLength: number): ArrayBuffer {
   return packet.buffer;
 }
 
+describe("dataset generation", () => {
+  it("encodes the generation when fetching a bound frame", async () => {
+    const fetch = vi.fn((_input: string | URL | Request) => Promise.resolve(
+      new Response(emptyFramePacket(), { status: 200 }),
+    ));
+    vi.stubGlobal("fetch", fetch);
+
+    await getFrame(3, undefined, "run / α?");
+
+    expect(String(fetch.mock.calls[0][0])).toBe(
+      "/api/frames/3?dataset_generation=run%20%2F%20%CE%B1%3F",
+    );
+  });
+
+  it("maps a stale generation response to DatasetChangedError", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(
+      new Response(
+        JSON.stringify({ detail: "Trajectory changed. Reload the manifest." }),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+    )));
+
+    try {
+      await getFrame(0, undefined, "stale");
+      expect.fail("Expected the stale frame request to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DatasetChangedError);
+      expect(error).toMatchObject({
+        name: "DatasetChangedError",
+        message: "Trajectory changed. Reload the manifest.",
+      });
+    }
+  });
+});
+
 describe("FrameCache", () => {
+  it("binds current and prefetched frames to its dataset generation", async () => {
+    const fetch = vi.fn((_input: string | URL | Request) => Promise.resolve(
+      new Response(emptyFramePacket(), { status: 200 }),
+    ));
+    vi.stubGlobal("fetch", fetch);
+    const cache = new FrameCache({ datasetGeneration: "dataset/42" });
+
+    await cache.get(1);
+    cache.prefetch(2, 3);
+    await cache.get(2);
+
+    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/frames/1?dataset_generation=dataset%2F42",
+      "/api/frames/2?dataset_generation=dataset%2F42",
+    ]);
+  });
+
   it("cancels obsolete pending frames while keeping the latest request", async () => {
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
       if (String(input).endsWith("/1")) {

@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { frameArray, FrameCache, getFrame, getManifest, openFiles } from "./api";
+import {
+  DatasetChangedError,
+  frameArray,
+  FrameCache,
+  getFrame,
+  getManifest,
+  openFiles,
+} from "./api";
 import { searchCommandActions } from "./commandSearch";
 import { MeasurementPlot } from "./MeasurementPlot";
 import {
@@ -24,7 +31,7 @@ import {
 import {
   advancePlaybackFrame,
   DEFAULT_PLAYBACK_FPS,
-  playbackIntervalMs,
+  schedulePlaybackFrame,
 } from "./trajectory";
 import type { PlaybackDirection, PlaybackMode } from "./trajectory";
 import type {
@@ -41,6 +48,8 @@ type LoadState = "loading" | "ready" | "error";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
 type WorkbenchTab = "view" | "inspect";
 type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
+
+const DATASET_CHANNEL = "pqviewer-dataset";
 
 const defaultPresentation: ScenePresentation = {
   mode: "ball-stick",
@@ -71,6 +80,7 @@ export default function App() {
   const [playbackStride, setPlaybackStride] = useState(1);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("loop");
   const [playbackDirection, setPlaybackDirection] = useState<PlaybackDirection>(1);
+  const [playbackOptionsOpen, setPlaybackOptionsOpen] = useState(false);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
@@ -104,10 +114,21 @@ export default function App() {
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
   const measurementRequest = useRef(0);
+  const datasetReloadPending = useRef(false);
+  const datasetCheckPending = useRef(false);
+  const manifestGeneration = useRef("");
+  const datasetChannel = useRef<BroadcastChannel | null>(null);
+  const playbackClock = useRef<{ key: string; requestTimeMs: number | null }>({
+    key: "",
+    requestTimeMs: null,
+  });
   const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
     cache.current.clear();
+    cache.current = new FrameCache({ datasetGeneration: value.dataset_generation });
+    datasetReloadPending.current = false;
+    manifestGeneration.current = value.dataset_generation ?? "";
     setManifest(value);
     setFrameIndex(0);
     setLoadedFrame(null);
@@ -118,6 +139,10 @@ export default function App() {
     setMeasurementSeries(null);
     setPlaying(false);
     setPlaybackDirection(1);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
     setSceneInfo(null);
     setLoadState("ready");
     setLoadError("");
@@ -125,6 +150,102 @@ export default function App() {
     autoProfileKey.current = "";
     document.title = `${value.name || "Trajectory"} · PQViewer`;
   }, []);
+
+  const reloadChangedDataset = useCallback(() => {
+    if (datasetReloadPending.current) return;
+    datasetReloadPending.current = true;
+    manifestGeneration.current = "";
+    cache.current.clear();
+    setManifest(null);
+    setFrameIndex(0);
+    setLoadedFrame(null);
+    setFrameError("");
+    setFrameLoading(false);
+    setSelectedAtoms([]);
+    setSelectionPositions(null);
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    setPlaying(false);
+    setPlaybackDirection(1);
+    setPlaybackOptionsOpen(false);
+    setWorkbenchTab(null);
+    setCommandOpen(false);
+    setShortcutsOpen(false);
+    setSceneInfo(null);
+    setLoadState("loading");
+    setLoadError("");
+    setNotice("Trajectory changed in another tab · reloading");
+    setRequestKey((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window.BroadcastChannel !== "function") return;
+    const channel = new BroadcastChannel(DATASET_CHANNEL);
+    datasetChannel.current = channel;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      const generation = (
+        typeof event.data === "object"
+        && event.data !== null
+        && "datasetGeneration" in event.data
+        && typeof event.data.datasetGeneration === "string"
+      )
+        ? event.data.datasetGeneration
+        : "";
+      if (
+        generation
+        && manifestGeneration.current
+        && generation !== manifestGeneration.current
+      ) {
+        reloadChangedDataset();
+      }
+    };
+    return () => {
+      if (datasetChannel.current === channel) datasetChannel.current = null;
+      channel.close();
+    };
+  }, [reloadChangedDataset]);
+
+  const revalidateDataset = useCallback(async () => {
+    const expectedGeneration = manifestGeneration.current;
+    if (
+      !expectedGeneration
+      || datasetCheckPending.current
+      || datasetReloadPending.current
+    ) {
+      return;
+    }
+    datasetCheckPending.current = true;
+    try {
+      const current = await getManifest();
+      if (manifestGeneration.current !== expectedGeneration) return;
+      if (current.dataset_generation !== expectedGeneration) {
+        activateManifest(current);
+        setNotice("Trajectory changed · updated");
+        datasetChannel.current?.postMessage({
+          datasetGeneration: current.dataset_generation,
+        });
+      }
+    } catch {
+      // A transient focus check should not replace the loaded trajectory.
+    } finally {
+      datasetCheckPending.current = false;
+    }
+  }, [activateManifest]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void revalidateDataset();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") void revalidateDataset();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [revalidateDataset]);
 
   useEffect(() => {
     document.documentElement.dataset.appearance = "light";
@@ -179,6 +300,10 @@ export default function App() {
       })
       .catch((error: unknown) => {
         if (!active) return;
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
         setFrameError(message(error));
         setFrameLoading(false);
         setPlaying(false);
@@ -186,7 +311,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [frameIndex, manifest, rendering]);
+  }, [frameIndex, manifest, reloadChangedDataset, rendering]);
 
   const setFrame = useCallback(
     (value: number) => {
@@ -211,6 +336,7 @@ export default function App() {
   }, []);
 
   const openWorkbench = useCallback((tab: WorkbenchTab, focus = false) => {
+    setPlaybackOptionsOpen(false);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
     setWorkbenchTab(tab);
@@ -227,6 +353,7 @@ export default function App() {
   }, [workbenchTab]);
 
   const selectAtom = useCallback((selection: AtomSelection | null, additive = false) => {
+    setPlaybackOptionsOpen(false);
     if (selection === null) {
       setSelectedAtoms([]);
       setSelectionPositions(null);
@@ -262,6 +389,7 @@ export default function App() {
     if (rendering) return;
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     fileInputRef.current?.click();
   }, [rendering]);
@@ -270,12 +398,14 @@ export default function App() {
     if (rendering) return;
     setPlaying(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setCommandOpen(true);
   }, [rendering]);
 
   const showShortcuts = useCallback(() => {
     if (rendering) return;
     setCommandOpen(false);
+    setPlaybackOptionsOpen(false);
     setShortcutsOpen(true);
   }, [rendering]);
 
@@ -341,6 +471,7 @@ export default function App() {
     setPlaying(false);
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     setMeasurementSeries(null);
     if (!cellAvailable || !pbc.some(Boolean)) setMinimumImage(false);
@@ -361,7 +492,11 @@ export default function App() {
       wrap: presentation.wrap,
       minimumImage,
       signal: controller.signal,
-      loadFrame: getFrame,
+      loadFrame: (index, signal) => getFrame(
+        index,
+        signal,
+        manifest.dataset_generation,
+      ),
       onProgress: (progress) => {
         if (measurementRequest.current === request && !controller.signal.aborted) {
           setMeasurementSeries(progress);
@@ -375,6 +510,10 @@ export default function App() {
       })
       .catch((error: unknown) => {
         if (measurementRequest.current !== request || controller.signal.aborted) return;
+        if (error instanceof DatasetChangedError) {
+          reloadChangedDataset();
+          return;
+        }
         setMeasurementPlotOpen(false);
         setMeasurementSeries(null);
         setNotice(`Plot unavailable · ${message(error)}`);
@@ -387,6 +526,7 @@ export default function App() {
     measurementPlotOpen,
     minimumImage,
     presentation.wrap,
+    reloadChangedDataset,
     selectedAtoms,
   ]);
 
@@ -415,6 +555,7 @@ export default function App() {
     if (!canRender || rendering) return;
     setCommandOpen(false);
     setShortcutsOpen(false);
+    setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     void exportPng({
       width: 2400,
@@ -447,8 +588,26 @@ export default function App() {
   }, [capabilities, cellAvailable, forceAvailable, frame, manifest, profile]);
 
   useEffect(() => {
-    if (!playing || rendering || !manifest || manifest.frame_count < 2) return;
+    if (!playing || rendering || !manifest || manifest.frame_count < 2) {
+      playbackClock.current = { key: "", requestTimeMs: null };
+      return;
+    }
     if (frameLoading || loadedFrame?.index !== frameIndex) return;
+    const clockKey = [
+      manifest.dataset_generation ?? manifest.name,
+      playbackFps,
+      playbackMode,
+      playbackStride,
+    ].join(":");
+    if (playbackClock.current.key !== clockKey) {
+      playbackClock.current = { key: clockKey, requestTimeMs: null };
+    }
+    const schedule = schedulePlaybackFrame(
+      performance.now(),
+      playbackClock.current.requestTimeMs,
+      playbackFps,
+    );
+    playbackClock.current.requestTimeMs = schedule.requestTimeMs;
     const timer = window.setTimeout(() => {
       const next = advancePlaybackFrame(frameIndex, manifest.frame_count, {
         mode: playbackMode,
@@ -458,7 +617,7 @@ export default function App() {
       setFrameIndex(next.frameIndex);
       setPlaybackDirection(next.direction);
       if (!next.continuePlaying) setPlaying(false);
-    }, playbackIntervalMs(playbackFps));
+    }, schedule.delayMs);
     return () => window.clearTimeout(timer);
   }, [
     frameIndex,
@@ -486,6 +645,9 @@ export default function App() {
       const value = await openFiles(selected, controller.signal);
       if (request !== openRequest.current) return;
       activateManifest(value);
+      datasetChannel.current?.postMessage({
+        datasetGeneration: value.dataset_generation,
+      });
       setNotice(`Opened ${value.name} · ${value.frame_count.toLocaleString()} frames`);
     } catch (error) {
       if (request !== openRequest.current || controller.signal.aborted) return;
@@ -506,18 +668,33 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [notice, opening, rendering]);
 
-  const dismissActive = useCallback(() => {
+  const dismissActive = useCallback((): boolean => {
     vimSequenceRef.current = { prefix: null, at: 0 };
-    if (commandOpen) setCommandOpen(false);
-    else if (shortcutsOpen) setShortcutsOpen(false);
-    else if (workbenchTab) closeWorkbench(true);
-    else if (measurementPlotOpen) closeMeasurementPlot(true);
-    else if (selectedAtoms.length > 0) setSelectedAtoms([]);
+    if (commandOpen) {
+      setCommandOpen(false);
+    } else if (shortcutsOpen) {
+      setShortcutsOpen(false);
+    } else if (playbackOptionsOpen) {
+      setPlaybackOptionsOpen(false);
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(".timeline-options > summary")?.focus();
+      });
+    } else if (workbenchTab) {
+      closeWorkbench(true);
+    } else if (measurementPlotOpen) {
+      closeMeasurementPlot(true);
+    } else if (selectedAtoms.length > 0) {
+      setSelectedAtoms([]);
+    } else {
+      return false;
+    }
+    return true;
   }, [
     closeMeasurementPlot,
     closeWorkbench,
     commandOpen,
     measurementPlotOpen,
+    playbackOptionsOpen,
     selectedAtoms.length,
     shortcutsOpen,
     workbenchTab,
@@ -575,7 +752,7 @@ export default function App() {
         return;
       }
       if (event.key === "Escape") {
-        dismissActive();
+        if (dismissActive()) event.preventDefault();
         return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -1019,6 +1196,7 @@ export default function App() {
             fps={playbackFps}
             stride={playbackStride}
             mode={playbackMode}
+            optionsOpen={playbackOptionsOpen}
             onFrame={(index) => {
               setPlaying(false);
               setFrame(index);
@@ -1026,6 +1204,7 @@ export default function App() {
             onPlay={() => canPlay && setPlaying((value) => !value)}
             onFps={setPlaybackFps}
             onStride={setPlaybackStride}
+            onOptionsOpen={setPlaybackOptionsOpen}
             onMode={(mode) => {
               setPlaybackMode(mode);
               setPlaybackDirection(1);
@@ -1543,9 +1722,9 @@ function SelectionBar({
       >
         {minimumImage ? "Minimum image" : "Displayed images"}
       </button>
-    ) : (
-      <span className="selection-hint">Shift-click to measure</span>
-    )}
+    ) : validSelections.length === 1 ? (
+      <span className="selection-hint">Shift-click or tap more</span>
+    ) : null}
     {canPlot && (
       <button
         className="selection-plot-button"
@@ -1556,7 +1735,9 @@ function SelectionBar({
         {plotOpen ? "Hide plot" : "Plot"}
       </button>
     )}
-    <button type="button" onClick={onDetails}>Details</button>
+    {validSelections.length === 1 && (
+      <button type="button" onClick={onDetails}>Details</button>
+    )}
     <button className="icon-button" type="button" onClick={onClear} aria-label="Clear selection"><Icon name="close" /></button>
   </section>;
 }
@@ -1617,10 +1798,12 @@ function Timeline({
   fps,
   stride,
   mode,
+  optionsOpen,
   onFrame,
   onPlay,
   onFps,
   onStride,
+  onOptionsOpen,
   onMode,
 }: {
   busy: boolean;
@@ -1634,10 +1817,12 @@ function Timeline({
   fps: number;
   stride: number;
   mode: PlaybackMode;
+  optionsOpen: boolean;
   onFrame: (index: number) => void;
   onPlay: () => void;
   onFps: (fps: number) => void;
   onStride: (stride: number) => void;
+  onOptionsOpen: (open: boolean) => void;
   onMode: (mode: PlaybackMode) => void;
 }) {
   const displayedFrame = String(displayedFrameIndex + 1).padStart(String(frameCount).length, "0");
@@ -1686,7 +1871,11 @@ function Timeline({
         >{frameLabel}</output>
         {metadata && <span className="frame-metadata">{metadata}</span>}
         {frameError && <span className="frame-error" title={frameError}>Frame unavailable</span>}
-        <details className="timeline-options">
+        <details
+          className="timeline-options"
+          open={optionsOpen}
+          onToggle={(event) => onOptionsOpen(event.currentTarget.open)}
+        >
           <summary aria-label="Playback options"><Icon name="more" /></summary>
           <div>
             <label><span>Speed</span><select value={fps} onChange={(event) => onFps(Number(event.target.value))}>

@@ -5,6 +5,7 @@ import {
   atomSelectionForInstance,
   centeredFramePositions,
   clearOrbitMotion,
+  isAdditivePick,
   periodicBondSegments,
   sceneCapabilities,
 } from "./MoleculeScene";
@@ -93,6 +94,34 @@ const basePresentation: ScenePresentation = {
   color: "element",
   quality: "auto",
 };
+
+describe("selection pointer intent", () => {
+  const intent = (
+    pointerType: string,
+    modifiers: Partial<Pick<PointerEvent, "shiftKey" | "metaKey" | "ctrlKey">> = {},
+  ) => ({
+    pointerType,
+    shiftKey: false,
+    metaKey: false,
+    ctrlKey: false,
+    ...modifiers,
+  });
+
+  it("keeps an unmodified mouse click as replacement selection", () => {
+    expect(isAdditivePick(intent("mouse"))).toBe(false);
+  });
+
+  it("keeps desktop modifier clicks additive", () => {
+    expect(isAdditivePick(intent("mouse", { shiftKey: true }))).toBe(true);
+    expect(isAdditivePick(intent("mouse", { metaKey: true }))).toBe(true);
+    expect(isAdditivePick(intent("mouse", { ctrlKey: true }))).toBe(true);
+  });
+
+  it("makes touch and pen taps additive without a modifier", () => {
+    expect(isAdditivePick(intent("touch"))).toBe(true);
+    expect(isAdditivePick(intent("pen"))).toBe(true);
+  });
+});
 
 function frame(positions: number[], cell?: number[], pbc: boolean[] = [false, false, false]): FrameData {
   const arrays = new Map<string, Float32Array>([["positions", new Float32Array(positions)]]);

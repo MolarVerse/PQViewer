@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DatasetChangedError } from "./api";
 import {
   calculateMeasurementSeries,
   measurementSeriesCsv,
@@ -263,6 +264,25 @@ describe("measurement series", () => {
 
     await expect(promise).rejects.toThrow("Trajectory frames could not be loaded");
     expect(calls).toBe(3);
+  });
+
+  it("stops immediately when the trajectory generation changes", async () => {
+    let calls = 0;
+    const promise = calculateMeasurementSeries({
+      manifest: trajectoryManifest(2),
+      frameCount: 2,
+      selections: primaryPair,
+      wrap: "none",
+      minimumImage: false,
+      signal: new AbortController().signal,
+      loadFrame: async () => {
+        calls += 1;
+        throw new DatasetChangedError("Trajectory changed. Reload the manifest.");
+      },
+    });
+
+    await expect(promise).rejects.toBeInstanceOf(DatasetChangedError);
+    expect(calls).toBe(1);
   });
 
   it("loads sequentially and emits throttled immutable progress", async () => {

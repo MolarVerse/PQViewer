@@ -1,4 +1,4 @@
-import { frameArray } from "./api";
+import { DatasetChangedError, frameArray } from "./api";
 import {
   createCellBasis,
   prepareScene,
@@ -161,6 +161,7 @@ export async function calculateMeasurementSeries({
       }
     } catch (error) {
       if (signal.aborted || isAbortError(error)) throw abortReason(signal, error);
+      if (error instanceof DatasetChangedError) throw error;
       if (!frameLoaded) {
         consecutiveLoadFailures += 1;
         if (consecutiveLoadFailures >= 3) {

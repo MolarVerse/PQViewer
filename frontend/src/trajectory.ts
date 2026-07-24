@@ -13,6 +13,11 @@ export interface PlaybackStep {
   continuePlaying: boolean;
 }
 
+export interface PlaybackSchedule {
+  delayMs: number;
+  requestTimeMs: number;
+}
+
 export const DEFAULT_PLAYBACK_FPS = 12;
 export const MIN_PLAYBACK_FPS = 1;
 export const MAX_PLAYBACK_FPS = 60;
@@ -31,6 +36,32 @@ export function normalizePlaybackFps(
 
 export function playbackIntervalMs(fps: number): number {
   return 1000 / normalizePlaybackFps(fps);
+}
+
+export function schedulePlaybackFrame(
+  nowMs: number,
+  previousRequestTimeMs: number | null,
+  fps: number,
+): PlaybackSchedule {
+  const now = Number.isFinite(nowMs) ? Math.max(0, nowMs) : 0;
+  const interval = playbackIntervalMs(fps);
+  const previous = (
+    previousRequestTimeMs !== null
+    && Number.isFinite(previousRequestTimeMs)
+    && previousRequestTimeMs >= 0
+    && previousRequestTimeMs <= now
+  )
+    ? previousRequestTimeMs
+    : null;
+  const target = previous === null ? now + interval : previous + interval;
+
+  if (target <= now) {
+    return { delayMs: 0, requestTimeMs: now };
+  }
+  return {
+    delayMs: target - now,
+    requestTimeMs: target,
+  };
 }
 
 export function normalizePlaybackStride(value: number, fallback = 1): number {

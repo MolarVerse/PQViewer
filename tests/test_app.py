@@ -86,17 +86,34 @@ def test_api_and_static_spa(tmp_path):
     assert client.get("/api/health").json() == {"status": "ok"}
     manifest = client.get("/api/manifest").json()
     assert manifest["series"][0]["unit"] == "kcal/mol"
+    generation = manifest["dataset_generation"]
+    assert isinstance(generation, str)
+    assert generation
     assert client.get("/api/manifest").headers["cache-control"] == "no-store"
 
     frame = client.get("/api/frames/1")
     assert frame.status_code == 200
     assert frame.headers["content-type"] == "application/octet-stream"
     assert frame.content == b"frame:1"
+    assert client.get(
+        "/api/frames/1",
+        params={"dataset_generation": generation},
+    ).content == b"frame:1"
     assert client.get("/api/frames/2").status_code == 404
 
     refreshed = client.post("/api/refresh")
     assert refreshed.json()["frame_count"] == 3
     assert refreshed.json()["added_frames"] == 1
+    refreshed_generation = refreshed.json()["dataset_generation"]
+    assert refreshed_generation != generation
+    assert client.get(
+        "/api/frames/1",
+        params={"dataset_generation": generation},
+    ).status_code == 409
+    assert client.get(
+        "/api/frames/1",
+        params={"dataset_generation": refreshed_generation},
+    ).content == b"frame:1"
     assert dataset.refresh_count == 1
 
     assert "PQViewer" in client.get("/").text
@@ -139,6 +156,69 @@ def test_app_starts_empty_and_opens_a_trajectory():
 
     assert application.state.upload_temp is None
     assert not upload_directory.exists()
+
+
+def test_stale_frame_generation_never_reads_a_replacement_dataset(
+    monkeypatch,
+):
+    application = create_app()
+
+    with TestClient(application) as client:
+        initial_generation = client.get("/api/manifest").json()[
+            "dataset_generation"
+        ]
+        first = client.post(
+            "/api/open",
+            files={"files": ("first.xyz", "1\n\nH 0 0 0\n", "text/plain")},
+        )
+        first_generation = first.json()["dataset_generation"]
+
+        assert first_generation != initial_generation
+        assert client.get(
+            "/api/frames/0",
+            params={"dataset_generation": first_generation},
+        ).status_code == 200
+
+        second = client.post(
+            "/api/open",
+            files={"files": ("second.xyz", "1\n\nO 1 0 0\n", "text/plain")},
+        )
+        second_generation = second.json()["dataset_generation"]
+        replacement_get_frame = application.state.dataset.get_frame
+        replacement_reads = []
+
+        def read_replacement(frame_index):
+            replacement_reads.append(frame_index)
+            return replacement_get_frame(frame_index)
+
+        monkeypatch.setattr(
+            application.state.dataset,
+            "get_frame",
+            read_replacement,
+        )
+
+        stale = client.get(
+            "/api/frames/0",
+            params={"dataset_generation": first_generation},
+        )
+        assert second_generation not in {
+            initial_generation,
+            first_generation,
+        }
+        assert stale.status_code == 409
+        assert stale.json() == {
+            "detail": "Trajectory changed. Reload the manifest."
+        }
+        assert replacement_reads == []
+        assert client.get(
+            "/api/frames/0",
+            params={"dataset_generation": second_generation},
+        ).status_code == 200
+        assert client.get("/api/frames/0").status_code == 200
+        assert replacement_reads == [0, 0]
+        assert client.get("/api/manifest").json()[
+            "dataset_generation"
+        ] == second_generation
 
 
 def test_api_accepts_a_force_companion(tmp_path):
