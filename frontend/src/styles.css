@@ -4524,6 +4524,107 @@ input[type="range"]::-moz-range-thumb {
   border-top: 1px solid var(--line);
 }
 
+.periodic-control-label {
+  display: block;
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.workbench-section > .section-label + .periodic-control-label {
+  margin-top: 0;
+}
+
+.periodic-inline-control,
+.periodic-repeat-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.periodic-inline-control .periodic-control-label,
+.periodic-repeat-heading .periodic-control-label {
+  margin: 0;
+}
+
+.periodic-repeat-heading > span:last-child {
+  color: var(--quiet);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.periodic-axis-options {
+  display: flex;
+  gap: 4px;
+}
+
+.periodic-axis-options button,
+.periodic-repeat-row button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.periodic-axis-options button:hover:not(:disabled),
+.periodic-repeat-row button:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.periodic-axis-options button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.periodic-repeat-grid {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.periodic-repeat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 38px 30px;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+}
+
+.periodic-repeat-row > span {
+  color: var(--text);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.periodic-repeat-row output {
+  color: var(--text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.periodic-repeat-row.is-disabled > span,
+.periodic-repeat-row.is-disabled output {
+  color: var(--quiet);
+}
+
+.periodic-axis-options button:disabled,
+.periodic-repeat-row button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
 .panel-select-row {
   min-height: 34px;
 }
@@ -4589,6 +4690,17 @@ input[type="range"]::-moz-range-thumb {
   .panel-button .icon,
   .render-button .icon {
     display: none;
+  }
+
+  .periodic-axis-options button,
+  .periodic-repeat-row button {
+    width: 42px;
+    height: 42px;
+  }
+
+  .periodic-repeat-row {
+    grid-template-columns: minmax(0, 1fr) 42px 46px 42px;
+    min-height: 42px;
   }
 }
 

@@ -69,7 +69,7 @@ export interface FrameHeader {
 
 export interface FrameData {
   header: FrameHeader;
-  arrays: Map<string, Float32Array>;
+  arrays: Map<string, Float32Array | Int32Array>;
 }
 
 export interface DisplaySeries {
@@ -94,7 +94,9 @@ export interface ScenePresentation {
   mode: RepresentationMode;
   water: "show" | "hide" | "only";
   hydrogens: boolean;
-  wrap: "atom" | "molecule" | "none";
+  wrap: "atom" | "molecule" | "unwrapped" | "none";
+  cellOrigin: CellOffset;
+  mirror: [boolean, boolean, boolean];
   images: {
     min: CellOffset;
     max: CellOffset;

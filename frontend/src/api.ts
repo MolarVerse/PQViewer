@@ -5,6 +5,8 @@ const DEFAULT_FRAME_CACHE_LIMIT = 96;
 const DEFAULT_FRAME_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_PENDING_PREFETCH_LIMIT = 4;
 
+export type FrameCoordinateMode = "source" | "unwrapped";
+
 export async function getManifest(): Promise<Manifest> {
   const response = await fetch("/api/manifest", { headers: { Accept: "application/json" } });
   if (!response.ok) throw new Error(await responseMessage(response, "Could not load the trajectory"));
@@ -41,10 +43,14 @@ export async function getFrame(
   index: number,
   signal?: AbortSignal,
   datasetGeneration?: string,
+  coordinates: FrameCoordinateMode = "source",
 ): Promise<FrameData> {
-  const query = datasetGeneration
-    ? `?dataset_generation=${encodeURIComponent(datasetGeneration)}`
-    : "";
+  const parameters: string[] = [];
+  if (datasetGeneration) {
+    parameters.push(`dataset_generation=${encodeURIComponent(datasetGeneration)}`);
+  }
+  if (coordinates === "unwrapped") parameters.push("coordinates=unwrapped");
+  const query = parameters.length > 0 ? `?${parameters.join("&")}` : "";
   const response = await fetch(`/api/frames/${index}${query}`, {
     headers: { Accept: "application/octet-stream" },
     signal,
@@ -73,18 +79,21 @@ export function decodeFrame(buffer: ArrayBuffer): FrameData {
   }
 
   if (!Array.isArray(header.arrays)) throw new Error("Frame arrays are missing");
-  const arrays = new Map<string, Float32Array>();
+  const arrays = new Map<string, Float32Array | Int32Array>();
   for (const descriptor of header.arrays) {
     const start = payloadStart + descriptor.byte_offset;
     const end = start + descriptor.byte_length;
     if (start < payloadStart || end > buffer.byteLength || end < start) {
       throw new Error(`Array ${descriptor.name} is truncated`);
     }
-    if (!isFloat32(descriptor.dtype)) {
+    if (!isFloat32(descriptor.dtype) && !isInt32(descriptor.dtype)) {
       throw new Error(`Array ${descriptor.name} uses unsupported type ${descriptor.dtype}`);
     }
     const bytes = buffer.slice(start, end);
-    arrays.set(descriptor.name.toLowerCase(), new Float32Array(bytes));
+    arrays.set(
+      descriptor.name.toLowerCase(),
+      isInt32(descriptor.dtype) ? new Int32Array(bytes) : new Float32Array(bytes),
+    );
   }
   return { header, arrays };
 }
@@ -100,6 +109,7 @@ export interface FrameCacheOptions {
   maxFrames?: number;
   maxBytes?: number;
   datasetGeneration?: string;
+  coordinates?: FrameCoordinateMode;
 }
 
 export class FrameCache {
@@ -107,6 +117,7 @@ export class FrameCache {
   private readonly maxFrames: number;
   private readonly maxBytes: number;
   private readonly datasetGeneration?: string;
+  private readonly coordinates: FrameCoordinateMode;
   private resolvedBytes = 0;
   private frameByteEstimate = 0;
 
@@ -114,6 +125,7 @@ export class FrameCache {
     this.maxFrames = positiveInteger(options.maxFrames, DEFAULT_FRAME_CACHE_LIMIT);
     this.maxBytes = positiveInteger(options.maxBytes, DEFAULT_FRAME_CACHE_BYTES);
     this.datasetGeneration = normalizedGeneration(options.datasetGeneration);
+    this.coordinates = options.coordinates ?? "source";
   }
 
   get(index: number): Promise<FrameData> {
@@ -156,7 +168,7 @@ export class FrameCache {
   private load(index: number, prefetch: boolean): Promise<FrameData> {
     const controller = new AbortController();
     let entry!: FrameCacheEntry;
-    const promise = getFrame(index, controller.signal, this.datasetGeneration)
+    const promise = getFrame(index, controller.signal, this.datasetGeneration, this.coordinates)
       .then((frame) => {
         entry.controller = null;
         entry.byteLength = decodedFrameByteLength(frame);
@@ -247,7 +259,16 @@ export function frameArray(frame: FrameData | null, names: string[]): Float32Arr
   if (!frame) return null;
   for (const name of names) {
     const value = frame.arrays.get(name.toLowerCase());
-    if (value) return value;
+    if (value instanceof Float32Array) return value;
+  }
+  return null;
+}
+
+export function frameIntArray(frame: FrameData | null, names: string[]): Int32Array | null {
+  if (!frame) return null;
+  for (const name of names) {
+    const value = frame.arrays.get(name.toLowerCase());
+    if (value instanceof Int32Array) return value;
   }
   return null;
 }
@@ -295,6 +316,10 @@ async function responseMessage(response: Response, fallback: string): Promise<st
 
 function isFloat32(dtype: string): boolean {
   return ["float32", "f4", "<f4", "float", "single"].includes(dtype.toLowerCase());
+}
+
+function isInt32(dtype: string): boolean {
+  return ["int32", "i4", "<i4", "int"].includes(dtype.toLowerCase());
 }
 
 function numericValues(values: unknown[]): Array<number | null> {

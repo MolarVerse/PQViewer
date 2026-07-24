@@ -17,6 +17,7 @@ import {
   cellImageCorners,
   centeredFramePositions,
   detectWaterAtoms,
+  fractionalStructureCenter,
   framePbc,
   frameGeometryLayout,
   hasFrameCell,
@@ -31,6 +32,7 @@ import {
   prepareTopology,
   publicationBondGeometry,
   sameFrameGeometryLayout,
+  transformDisplayVector,
   unwrapPointNear,
   usesHighDetailGeometry,
   usesPointAtoms,
@@ -100,6 +102,7 @@ export function selectionMarkerState(
 
 export {
   centeredFramePositions,
+  fractionalStructureCenter,
   framePbc,
   hasFrameCell,
   periodicBondSegments,
@@ -942,6 +945,8 @@ function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
     manifest,
     presentation: {
       ...presentation,
+      cellOrigin: [...presentation.cellOrigin] as CellOffset,
+      mirror: [...presentation.mirror] as [boolean, boolean, boolean],
       images: {
         min: [...presentation.images.min] as CellOffset,
         max: [...presentation.images.max] as CellOffset,
@@ -1329,7 +1334,7 @@ function buildPublicationCells(
   const seen = new Set<string>();
   for (const image of model.images) {
     const values: number[] = [];
-    appendCellLines(values, model.basis, image);
+    appendCellLines(values, model.basis, image, model.cellCenter);
     for (let offset = 0; offset < values.length; offset += 6) {
       const from = values.slice(offset, offset + 3);
       const to = values.slice(offset + 3, offset + 6);
@@ -1798,7 +1803,7 @@ function updateBonds(object: THREE.Object3D, segments: Segment[]): void {
 function updateCells(cell: THREE.LineSegments, model: PreparedScene): void {
   if (!model.basis) return;
   const values: number[] = [];
-  model.images.forEach((image) => appendCellLines(values, model.basis!, image));
+  model.images.forEach((image) => appendCellLines(values, model.basis!, image, model.cellCenter));
   const positions = cell.geometry.getAttribute("position") as THREE.BufferAttribute;
   (positions.array as Float32Array).set(values);
   positions.needsUpdate = true;
@@ -1810,7 +1815,6 @@ function renderConfigKey(presentation: ScenePresentation): string {
     presentation.mode,
     presentation.water,
     presentation.hydrogens,
-    presentation.wrap,
     presentation.images.min,
     presentation.images.max,
     presentation.cell,
@@ -1939,7 +1943,7 @@ function updateBondMatrices(mesh: THREE.InstancedMesh, segments: Segment[]): voi
 function buildCells(model: PreparedScene, palette: ScenePalette): THREE.LineSegments | null {
   if (!model.basis || model.images.length === 0) return null;
   const values: number[] = [];
-  model.images.forEach((image) => appendCellLines(values, model.basis!, image));
+  model.images.forEach((image) => appendCellLines(values, model.basis!, image, model.cellCenter));
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3).setUsage(THREE.DynamicDrawUsage));
   return new THREE.LineSegments(
@@ -1948,8 +1952,13 @@ function buildCells(model: PreparedScene, palette: ScenePalette): THREE.LineSegm
   );
 }
 
-function appendCellLines(values: number[], basis: CellBasis, offset: CellOffset): void {
-  const corners = cellImageCorners(basis, offset);
+function appendCellLines(
+  values: number[],
+  basis: CellBasis,
+  offset: CellOffset,
+  center: THREE.Vector3,
+): void {
+  const corners = cellImageCorners(basis, offset, center);
   const index = (a: number, b: number, c: number) => a * 4 + b * 2 + c;
   const edges: Array<[number, number]> = [];
   for (let a = 0; a <= 1; a += 1) {
@@ -2022,7 +2031,7 @@ function vectorArrows(
     const offset = atom * 3;
     direction.set(vectors[offset], vectors[offset + 1], vectors[offset + 2]);
     const magnitude = direction.length();
-    direction.normalize();
+    transformDisplayVector(direction.normalize(), model);
     setInstancePosition(atomPosition, model, instance);
     const length = magnitude * scale;
     const head = Math.min(Math.min(0.24, Math.max(0.075, length * 0.24)), length * 0.5);
@@ -2533,7 +2542,7 @@ function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | nu
   }
   if (presentation.cell && model.basis) {
     const cellBounds = new THREE.Box3();
-    model.images.forEach((image) => expandByCell(cellBounds, model.basis!, image));
+    model.images.forEach((image) => expandByCell(cellBounds, model.basis!, image, model.cellCenter));
     const atomSpan = bounds.getSize(new THREE.Vector3()).length();
     const cellSpan = cellBounds.getSize(new THREE.Vector3()).length();
     if (includeCellInFit(atomSpan, cellSpan, model.images)) bounds.union(cellBounds);
@@ -2585,11 +2594,25 @@ export function clearOrbitMotion(controls: OrbitControls): void {
 
 function layoutKey(model: PreparedScene, presentation: ScenePresentation): string {
   const imageLayout = imageLayoutShape(model.images);
-  return `${presentation.mode}:${presentation.wrap}:${presentation.cell}:${model.visibleAtoms.length}:${imageLayout.count}:${imageLayout.span.join(",")}`;
+  return [
+    presentation.mode,
+    presentation.wrap,
+    presentation.cellOrigin.join(","),
+    presentation.mirror.join(","),
+    presentation.cell,
+    model.visibleAtoms.length,
+    imageLayout.count,
+    imageLayout.span.join(","),
+  ].join(":");
 }
 
-function expandByCell(bounds: THREE.Box3, basis: CellBasis, offset: CellOffset): void {
-  cellImageCorners(basis, offset).forEach((corner) => bounds.expandByPoint(corner));
+function expandByCell(
+  bounds: THREE.Box3,
+  basis: CellBasis,
+  offset: CellOffset,
+  center: THREE.Vector3,
+): void {
+  cellImageCorners(basis, offset, center).forEach((corner) => bounds.expandByPoint(corner));
 }
 
 function boxCorners(bounds: THREE.Box3): THREE.Vector3[] {

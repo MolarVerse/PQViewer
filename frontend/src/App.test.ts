@@ -1,15 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   autoProfile,
+  canUseRepeatCounts,
+  cellOriginForFrame,
   compactFrameNumber,
   filterCommandActions,
   frameCountLabel,
   frameMetadata,
   meaningfulResidueId,
+  measureDisplayedPositions,
   measurementPbc,
   noticeDurationMs,
   profilePresentation,
+  repeatCountsFromImages,
+  repeatImages,
+  sameCellOrigin,
   selectedProfilePresentation,
+  usesPeriodicFigureContext,
 } from "./App";
 import type { FrameData, FrameHeader, SceneCapabilities, ScenePresentation } from "./types";
 
@@ -19,6 +26,8 @@ const presentation: ScenePresentation = {
   hydrogens: false,
   wrap: "molecule",
   images: { min: [-1, -1, -1], max: [1, 1, 1] },
+  cellOrigin: [0, 0, 0],
+  mirror: [false, false, false],
   cell: false,
   forces: true,
   velocities: false,
@@ -198,6 +207,107 @@ describe("measurement periodicity", () => {
     ]);
   });
 
+  it("uses the displayed triclinic cell for mirrored measurements", () => {
+    const positions = new Float64Array([
+      -1.02351986, 0.37777104, 0.51216186,
+      1.83639872, 0.40532119, -0.91651061,
+    ]);
+    const mirrored = new Float64Array([
+      1.02351986, 0.37777104, 0.51216186,
+      -1.83639872, 0.40532119, -0.91651061,
+    ]);
+    const cell = new Float64Array([
+      4, 0, 0,
+      1.5, 3, 0,
+      0.5, 0.25, 2.5,
+    ]);
+    const mirroredCell = new Float64Array([
+      -4, 0, 0,
+      -1.5, 3, 0,
+      -0.5, 0.25, 2.5,
+    ]);
+    const pbc = [true, true, true] as const;
+    const normal = measureDisplayedPositions(positions, true, cell, pbc);
+    const reflected = measureDisplayedPositions(mirrored, true, mirroredCell, pbc);
+    const staleCell = measureDisplayedPositions(mirrored, true, cell, pbc);
+
+    expect(normal.ok).toBe(true);
+    expect(reflected.ok).toBe(true);
+    expect(staleCell.ok).toBe(true);
+    if (!normal.ok || !reflected.ok || !staleCell.ok) return;
+    expect(reflected.value).toBeCloseTo(normal.value, 7);
+    expect(staleCell.value).not.toBeCloseTo(normal.value, 3);
+  });
+
+});
+
+describe("periodic display controls", () => {
+  const cell = new Float32Array([
+    4, 0, 0,
+    1, 3, 0,
+    0.5, 0.25, 2.5,
+  ]);
+  const positions = new Float32Array([
+    2.8, -0.3, 3,
+    -0.5, 1.15, -0.5,
+  ]);
+  const frame: FrameData = {
+    header: { arrays: [], pbc: [true, true, true] },
+    arrays: new Map([
+      ["positions", positions],
+      ["cell", cell],
+    ]),
+  };
+
+  it("centers triclinic cells from immutable source coordinates", () => {
+    const structure = cellOriginForFrame(frame);
+    expect(structure?.[0]).toBeCloseTo(0.2, 6);
+    expect(structure?.[1]).toBeCloseTo(0.1, 6);
+    expect(structure?.[2]).toBeCloseTo(0.5, 6);
+
+    const selection = cellOriginForFrame(frame, [{ atom: 0, image: [1, 0, -1] }]);
+    expect(selection?.[0]).toBeCloseTo(1.6, 6);
+    expect(selection?.[1]).toBeCloseTo(-0.2, 6);
+    expect(selection?.[2]).toBeCloseTo(0.2, 6);
+    expect(sameCellOrigin(selection!, [1.6, -0.2, 0.2])).toBe(true);
+  });
+
+  it("keeps repeats bounded by PBC and the atom budget", () => {
+    expect(repeatImages([3, 3, 3], [true, false, true])).toEqual({
+      min: [-1, 0, -1],
+      max: [1, 0, 1],
+    });
+    expect(repeatImages([2, 4, 5], [true, true, true])).toEqual({
+      min: [0, -1, -2],
+      max: [1, 2, 2],
+    });
+    expect(repeatCountsFromImages(
+      { min: [-1, -1, -1], max: [1, 1, 1] },
+      [true, false, true],
+    )).toEqual([3, 1, 3]);
+    expect(canUseRepeatCounts([5, 5, 5], [true, true, true], 1_000)).toBe(true);
+    expect(canUseRepeatCounts([5, 5, 5], [true, true, true], 10_000)).toBe(false);
+    expect(canUseRepeatCounts([2, 1, 1], [false, true, true], 10)).toBe(false);
+  });
+
+  it("includes periodic context in atom-wrapped and unwrapped figures", () => {
+    expect(usesPeriodicFigureContext(
+      { ...presentation, mode: "ball-stick", wrap: "atom" },
+      [true, false, false],
+    )).toBe(true);
+    expect(usesPeriodicFigureContext(
+      { ...presentation, mode: "ball-stick", wrap: "unwrapped" },
+      [true, false, false],
+    )).toBe(true);
+    expect(usesPeriodicFigureContext(
+      { ...presentation, mode: "ball-stick", wrap: "molecule" },
+      [true, false, false],
+    )).toBe(false);
+    expect(usesPeriodicFigureContext(
+      { ...presentation, mode: "spacefill", wrap: "unwrapped" },
+      [true, false, false],
+    )).toBe(false);
+  });
 });
 
 function frameWithHeader(header: Partial<FrameHeader>): FrameData {

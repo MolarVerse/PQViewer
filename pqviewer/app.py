@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 import secrets
 from tempfile import TemporaryDirectory
 from threading import RLock
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -197,6 +197,7 @@ def create_app(
     def frame(
         frame_index: int,
         dataset_generation: str | None = None,
+        coordinates: Literal["source", "unwrapped"] = "source",
     ) -> Response:
         try:
             with application.state.dataset_lock:
@@ -208,7 +209,13 @@ def create_app(
                         status_code=409,
                         detail=STALE_DATASET_DETAIL,
                     )
-                value = application.state.dataset.get_frame(frame_index)
+                if coordinates == "source":
+                    value = application.state.dataset.get_frame(frame_index)
+                else:
+                    value = application.state.dataset.get_frame(
+                        frame_index,
+                        coordinates=coordinates,
+                    )
         except IndexError as error:
             raise HTTPException(status_code=404, detail="Frame not found.") from error
 
