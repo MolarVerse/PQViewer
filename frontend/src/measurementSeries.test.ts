@@ -67,6 +67,21 @@ describe("measurement series", () => {
     });
   });
 
+  it("keeps trajectory measurements physical in unwrapped display mode", async () => {
+    const frame = trajectoryFrame([4.8, 0, 0, -4.8, 0, 0]);
+    const result = await calculateMeasurementSeries({
+      manifest: trajectoryManifest(1),
+      frameCount: 1,
+      selections: primaryPair,
+      wrap: "unwrapped",
+      minimumImage: true,
+      signal: new AbortController().signal,
+      loadFrame: async () => frame,
+    });
+
+    expect(result.values[0]).toBeCloseTo(0.4, 5);
+  });
+
   it("wraps selected atoms in a centered triclinic cell without preparing the full scene", async () => {
     const triclinic = new Float32Array([
       4, 0, 0,

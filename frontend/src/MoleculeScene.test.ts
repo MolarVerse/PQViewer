@@ -21,6 +21,7 @@ import {
   createCellBasis,
   detectWaterAtoms,
   displayedBaseImages,
+  fractionalStructureCenter,
   frameGeometryLayout,
   imageLayoutShape,
   includeCellInFit,
@@ -37,11 +38,12 @@ import {
   publicationBondGeometry,
   representationRadius,
   sameFrameGeometryLayout,
+  transformDisplayVector,
   usesHighDetailGeometry,
   usesPointAtoms,
 } from "./scene/model";
 import type { PreparedScene } from "./scene/model";
-import type { FrameData, Manifest, ScenePresentation } from "./types";
+import type { CellOffset, FrameData, Manifest, ScenePresentation } from "./types";
 
 const triclinicCell = new Float32Array([
   4, 0, 0,
@@ -91,6 +93,8 @@ const basePresentation: ScenePresentation = {
   water: "show",
   hydrogens: true,
   wrap: "atom",
+  cellOrigin: [0, 0, 0],
+  mirror: [false, false, false],
   images: { min: [0, 0, 0], max: [0, 0, 0] },
   cell: true,
   forces: false,
@@ -186,6 +190,8 @@ describe("selection marker scaling", () => {
       positions,
       baseImages: new Int32Array(count * 3),
       basis: null,
+      cellCenter: new THREE.Vector3(),
+      displayTransform: new THREE.Matrix3(),
       pbc: [false, false, false],
       bonds: [],
       waterAtoms: new Set(),
@@ -356,7 +362,7 @@ describe("keyboard atom navigation", () => {
 });
 
 function frame(positions: number[], cell?: number[], pbc: boolean[] = [false, false, false]): FrameData {
-  const arrays = new Map<string, Float32Array>([["positions", new Float32Array(positions)]]);
+  const arrays = new Map<string, Float32Array | Int32Array>([["positions", new Float32Array(positions)]]);
   if (cell) arrays.set("cell", new Float32Array(cell));
   return { header: { arrays: [], pbc }, arrays };
 }
@@ -474,7 +480,7 @@ describe("periodic geometry", () => {
     });
   });
 
-  it("wraps a rounded centered-boundary coordinate to the canonical negative image", () => {
+  it("preserves a rounded coordinate just below the centered boundary", () => {
     const cell = new Float32Array([
       10.003, 0.00001, 0.00006,
       0.00016, 9.087, 0.00037,
@@ -502,10 +508,10 @@ describe("periodic geometry", () => {
       [true, true, true],
     );
 
-    expect(wrappedFraction.x).toBeCloseTo(-0.5, 6);
+    expect(wrappedFraction.x).toBeCloseTo(0.5, 6);
     expect(wrappedFraction.y).toBeCloseTo(0, 6);
     expect(wrappedFraction.z).toBeCloseTo(0, 6);
-    expect([...baseImages]).toEqual([-1, 0, 0]);
+    expect([...baseImages]).toEqual([0, 0, 0]);
   });
 
   it("splits a minimum-image bond at the centered cell boundary", () => {
@@ -657,6 +663,260 @@ describe("periodic geometry", () => {
     expect(Math.max(...fractions.map((point) => point.y))).toBeCloseTo(0.5, 6);
     expect(Math.min(...fractions.map((point) => point.z))).toBeCloseTo(-0.5, 6);
     expect(Math.max(...fractions.map((point) => point.z))).toBeCloseTo(0.5, 6);
+  });
+
+  it("uses the exact centered half-open interval", () => {
+    const source = frame(
+      [5, 0, 0, -5, 0, 0, 15, 0, 0],
+      [10, 0, 0, 0, 10, 0, 0, 0, 10],
+      [true, true, true],
+    );
+    const scene = prepareScene(manifest([6, 6, 6]), source, basePresentation)!;
+
+    expect([...scene.positions]).toEqual([
+      -5, 0, 0,
+      -5, 0, 0,
+      -5, 0, 0,
+    ]);
+    expect([...scene.baseImages]).toEqual([
+      -1, 0, 0,
+      0, 0, 0,
+      -2, 0, 0,
+    ]);
+  });
+
+  it("consumes exact backend image shifts without mutating source arrays", () => {
+    const positions = new Float32Array([
+      ...toCartesian([0.5, -0.5, 0.25]).toArray(),
+      ...toCartesian([1.5, 0.2, -0.1]).toArray(),
+    ]);
+    const shifts = new Int32Array([
+      -1, 0, 0,
+      -2, 0, 0,
+    ]);
+    const source = frame([...positions], [...triclinicCell], [true, true, true]);
+    source.arrays.set("centered_image_shifts", shifts);
+    const beforePositions = [...positions];
+    const beforeShifts = [...shifts];
+
+    const scene = prepareScene(manifest([6, 6]), source, basePresentation)!;
+
+    expect([...scene.baseImages]).toEqual(beforeShifts);
+    expect(toFractional(new THREE.Vector3().fromArray(scene.positions, 0)).x).toBeCloseTo(-0.5, 6);
+    expect(toFractional(new THREE.Vector3().fromArray(scene.positions, 3)).x).toBeCloseTo(-0.5, 6);
+    expect([...positions]).toEqual(beforePositions);
+    expect([...shifts]).toEqual(beforeShifts);
+  });
+
+  it("moves the centered cell in fractional coordinates", () => {
+    const source = frame(
+      [10, 0, 0, 9, 0, 0],
+      [10, 0, 0, 0, 8, 0, 0, 0, 6],
+      [true, true, true],
+    );
+    const presentation: ScenePresentation = {
+      ...basePresentation,
+      cellOrigin: [0.5, 0, 0],
+    };
+    const scene = prepareScene(manifest([6, 6]), source, presentation)!;
+    const corners = cellImageCorners(scene.basis!, [0, 0, 0], scene.cellCenter);
+
+    expect([...scene.positions]).toEqual([0, 0, 0, 9, 0, 0]);
+    expect([...scene.baseImages]).toEqual([-1, 0, 0, 0, 0, 0]);
+    expect(scene.cellCenter.toArray()).toEqual([5, 0, 0]);
+    expect(Math.min(...corners.map((point) => point.x))).toBeCloseTo(0, 7);
+    expect(Math.max(...corners.map((point) => point.x))).toBeCloseTo(10, 7);
+  });
+
+  it("mirrors the Cartesian scene through the current cell center", () => {
+    const origin: CellOffset = [0.2, -0.1, 0.3];
+    const positions = new Float32Array([
+      ...toCartesian([0.35, -0.2, 0.1]).toArray(),
+      ...toCartesian([-0.15, 0.25, 0.4]).toArray(),
+    ]);
+    const source = frame([...positions], [...triclinicCell], [true, true, true]);
+    const normal = prepareScene(manifest([6, 8], [[0, 1]]), source, {
+      ...basePresentation,
+      cellOrigin: origin,
+    })!;
+    const mirrored = prepareScene(manifest([6, 8], [[0, 1]]), source, {
+      ...basePresentation,
+      cellOrigin: origin,
+      mirror: [true, false, false],
+    })!;
+    const center = normal.cellCenter;
+    const normalDistance = new THREE.Vector3().fromArray(normal.positions, 0)
+      .distanceTo(new THREE.Vector3().fromArray(normal.positions, 3));
+    const mirroredDistance = new THREE.Vector3().fromArray(mirrored.positions, 0)
+      .distanceTo(new THREE.Vector3().fromArray(mirrored.positions, 3));
+
+    expect(mirrored.cellCenter.toArray()).toEqual(center.toArray());
+    expect(mirroredDistance).toBeCloseTo(normalDistance, 6);
+    expect(mirrored.displayTransform.determinant()).toBeCloseTo(-1, 12);
+    expect([...mirrored.baseImages]).toEqual([...normal.baseImages]);
+    for (let left = 0; left < 3; left += 1) {
+      for (let right = 0; right < 3; right += 1) {
+        expect(mirrored.basis!.vectors[left].dot(mirrored.basis!.vectors[right]))
+          .toBeCloseTo(normal.basis!.vectors[left].dot(normal.basis!.vectors[right]), 6);
+      }
+    }
+
+    const vector = new THREE.Vector3(0.4, -1.2, 2.1);
+    const reflected = transformDisplayVector(vector.clone(), mirrored);
+    expect(reflected.length()).toBeCloseTo(vector.length(), 12);
+    expectVectorClose(transformDisplayVector(reflected, mirrored), vector);
+
+    const normalCorners = cellImageCorners(normal.basis!, [0, 0, 0], center);
+    const mirroredCorners = cellImageCorners(mirrored.basis!, [0, 0, 0], center);
+    normalCorners.forEach((corner, index) => {
+      const expected = corner.clone().sub(center)
+        .applyMatrix3(mirrored.displayTransform)
+        .add(center);
+      expectVectorClose(mirroredCorners[index], expected);
+    });
+    expect([...source.arrays.get("positions")!]).toEqual([...positions]);
+  });
+
+  it("keeps reflected publication bonds and context physically equivalent", () => {
+    const origin: CellOffset = [0.2, -0.1, 0.3];
+    const source = frame(
+      [
+        ...toCartesian([0.65, -0.08, 0.25]).toArray(),
+        ...toCartesian([-0.25, -0.06, 0.27]).toArray(),
+      ],
+      [...triclinicCell],
+      [true, true, true],
+    );
+    const presentation: ScenePresentation = {
+      ...basePresentation,
+      cellOrigin: origin,
+    };
+    const reflectedPresentation: ScenePresentation = {
+      ...presentation,
+      mirror: [true, false, true],
+    };
+    const normal = prepareScene(manifest([6, 6], [[0, 1]]), source, presentation)!;
+    const reflected = prepareScene(
+      manifest([6, 6], [[0, 1]]),
+      source,
+      reflectedPresentation,
+    )!;
+    const normalPublication = publicationBondGeometry(normal, presentation, true);
+    const reflectedPublication = publicationBondGeometry(reflected, reflectedPresentation, true);
+
+    expect(reflectedPublication.contextAtoms.map(({ atomIndex, image }) => ({ atomIndex, image })))
+      .toEqual(normalPublication.contextAtoms.map(({ atomIndex, image }) => ({ atomIndex, image })));
+    expect(reflectedPublication.segments).toHaveLength(normalPublication.segments.length);
+    normalPublication.segments.forEach((segment, index) => {
+      const reflectedSegment = reflectedPublication.segments[index];
+      const expectedFrom = segment.from.clone().sub(normal.cellCenter)
+        .applyMatrix3(reflected.displayTransform)
+        .add(normal.cellCenter);
+      const expectedTo = segment.to.clone().sub(normal.cellCenter)
+        .applyMatrix3(reflected.displayTransform)
+        .add(normal.cellCenter);
+      expectVectorClose(reflectedSegment.from, expectedFrom);
+      expectVectorClose(reflectedSegment.to, expectedTo);
+      expect(reflectedSegment.from.distanceTo(reflectedSegment.to))
+        .toBeCloseTo(segment.from.distanceTo(segment.to), 6);
+    });
+  });
+
+  it("uses unwrapped coordinates and their exact image identities", () => {
+    const source = frame(
+      [-4, 0, 0],
+      [10, 0, 0, 0, 10, 0, 0, 0, 10],
+      [true, true, true],
+    );
+    source.arrays.set("unwrapped_image_shifts", new Int32Array([1, 0, 0]));
+    const scene = prepareScene(manifest([6]), source, {
+      ...basePresentation,
+      wrap: "unwrapped",
+    })!;
+
+    expect([...scene.positions]).toEqual([6, 0, 0]);
+    expect([...scene.baseImages]).toEqual([1, 0, 0]);
+    expect(atomSelectionForInstance(
+      scene.instanceToAtom,
+      scene.instanceImages,
+      0,
+      scene.baseImages,
+    )).toEqual({ atom: 0, image: [1, 0, 0] });
+  });
+
+  it("keeps bonds short in unwrapped viewport and publication geometry", () => {
+    const source = frame(
+      [4.9, 0, 0, -4.9, 0, 0],
+      [10, 0, 0, 0, 10, 0, 0, 0, 10],
+      [true, true, true],
+    );
+    source.header.coordinates = "unwrapped";
+    source.arrays.set("unwrapped_image_shifts", new Int32Array(6));
+    const presentation: ScenePresentation = {
+      ...basePresentation,
+      wrap: "unwrapped",
+    };
+    const scene = prepareScene(manifest([6, 6], [[0, 1]]), source, presentation)!;
+
+    const viewport = prepareFrameGeometry(scene, presentation, null);
+    expect(viewport.bondSegments).toHaveLength(2);
+    expectVectorClose(
+      viewport.bondSegments[0].from,
+      new THREE.Vector3().fromArray(scene.positions, 0),
+    );
+    expectVectorClose(
+      viewport.bondSegments[1].from,
+      new THREE.Vector3().fromArray(scene.positions, 3),
+    );
+    viewport.bondSegments.forEach((segment) => {
+      expect(segment.from.distanceTo(segment.to)).toBeCloseTo(0.1, 5);
+    });
+    const publication = publicationBondGeometry(scene, presentation, true);
+    expect(publication.segments).toHaveLength(2);
+    expect(publication.segments.every(
+      (segment) => Math.abs(segment.from.distanceTo(segment.to) - 0.2) < 1e-5,
+    )).toBe(true);
+  });
+
+  it("centers an unwrapped structure on its displayed image", () => {
+    const source = frame(
+      [-4.8, 0, 0],
+      [10, 0, 0, 0, 10, 0, 0, 0, 10],
+      [true, true, true],
+    );
+    source.header.coordinates = "unwrapped";
+    source.arrays.set("unwrapped_positions", new Float32Array([5.2, 0, 0]));
+    source.arrays.set("unwrapped_image_shifts", new Int32Array([1, 0, 0]));
+
+    const center = fractionalStructureCenter(source, 1);
+
+    expect(center?.[0]).toBeCloseTo(0.52, 6);
+    expect(center?.[1]).toBeCloseTo(0, 6);
+    expect(center?.[2]).toBeCloseTo(0, 6);
+  });
+
+  it("centers structures and image-aware selections from raw coordinates", () => {
+    const source = frame(
+      [
+        ...toCartesian([0.75, 0.2, -0.1]).toArray(),
+        ...toCartesian([-0.25, 0.4, 0.3]).toArray(),
+      ],
+      [...triclinicCell],
+      [true, true, true],
+    );
+
+    const full = fractionalStructureCenter(source, 2);
+    expect(full?.[0]).toBeCloseTo(0.25, 6);
+    expect(full?.[1]).toBeCloseTo(0.3, 6);
+    expect(full?.[2]).toBeCloseTo(0.1, 6);
+    const selected = fractionalStructureCenter(source, 2, [
+      { atom: 0, image: [-1, 0, 0] },
+      { atom: 1, image: [1, 0, 0] },
+    ]);
+    expect(selected?.[0]).toBeCloseTo(0.25, 6);
+    expect(selected?.[1]).toBeCloseTo(0.3, 6);
+    expect(selected?.[2]).toBeCloseTo(0.1, 6);
+    expect(fractionalStructureCenter(source, 2, [])).toBeNull();
   });
 
   it("keeps a semantic molecule whole across the centered boundary", () => {
@@ -882,6 +1142,8 @@ describe("scientific representations", () => {
       positions: new Float32Array(),
       baseImages: new Int32Array(),
       basis: null,
+      cellCenter: new THREE.Vector3(),
+      displayTransform: new THREE.Matrix3(),
       pbc: [false, false, false],
       bonds: [],
       waterAtoms: new Set(),
@@ -942,6 +1204,8 @@ describe("scientific representations", () => {
       positions: new Float32Array(300),
       baseImages: new Int32Array(300),
       basis: null,
+      cellCenter: new THREE.Vector3(),
+      displayTransform: new THREE.Matrix3(),
       pbc: [false, false, false],
       bonds: denseBonds,
       waterAtoms: new Set(),

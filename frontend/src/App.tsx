@@ -15,7 +15,12 @@ import {
   measurementSeriesSvg,
 } from "./measurementSeries";
 import type { MeasurementSeriesProgress } from "./measurementSeries";
-import { framePbc, hasFrameCell, MoleculeScene } from "./MoleculeScene";
+import {
+  fractionalStructureCenter,
+  framePbc,
+  hasFrameCell,
+  MoleculeScene,
+} from "./MoleculeScene";
 import type { MoleculeSceneHandle, PngExportOptions, RenderedSceneInfo, ViewPreset } from "./MoleculeScene";
 import {
   advanceFrameIndex,
@@ -28,6 +33,7 @@ import {
   measureAtomSelection,
   updateSceneSelection,
 } from "./selection";
+import { MAX_ATOM_INSTANCES, MAX_PERIODIC_IMAGES } from "./scene/model";
 import {
   cloneSelections,
   createNamedSelection,
@@ -86,6 +92,8 @@ const defaultPresentation: ScenePresentation = {
   hydrogens: true,
   wrap: "molecule",
   images: { min: [0, 0, 0], max: [0, 0, 0] },
+  cellOrigin: [0, 0, 0],
+  mirror: [false, false, false],
   cell: true,
   forces: true,
   velocities: false,
@@ -162,6 +170,8 @@ export default function App() {
     key: "",
     requestTimeMs: null,
   });
+  const frameCoordinateMode = presentation.wrap === "unwrapped" ? "unwrapped" : "source";
+  const frameCoordinateModeRef = useRef<"source" | "unwrapped">("source");
   const playbackState = useRef({
     playing,
     mode: playbackMode,
@@ -179,6 +189,7 @@ export default function App() {
   const activateManifest = useCallback((value: Manifest) => {
     cache.current.clear();
     cache.current = new FrameCache({ datasetGeneration: value.dataset_generation });
+    frameCoordinateModeRef.current = "source";
     datasetReloadPending.current = false;
     manifestGeneration.current = value.dataset_generation ?? "";
     setManifest(value);
@@ -200,6 +211,10 @@ export default function App() {
     setCommandOpen(false);
     setShortcutsOpen(false);
     setSceneInfo(null);
+    setPresentation((current) => ({
+      ...current,
+      ...defaultPeriodicPresentation(),
+    }));
     setLoadState("ready");
     setLoadError("");
     setProfile("auto");
@@ -212,6 +227,7 @@ export default function App() {
     datasetReloadPending.current = true;
     manifestGeneration.current = "";
     cache.current.clear();
+    frameCoordinateModeRef.current = "source";
     setManifest(null);
     setFrameIndex(0);
     setLoadedFrame(null);
@@ -312,7 +328,13 @@ export default function App() {
     document.documentElement.style.colorScheme = "light";
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", "#f6f8f8");
     try {
-      window.localStorage.setItem("pqviewer-presentation", JSON.stringify(presentation));
+      window.localStorage.setItem("pqviewer-presentation", JSON.stringify({
+        mode: presentation.mode,
+        water: presentation.water,
+        cell: presentation.cell,
+        forces: presentation.forces,
+        velocities: presentation.velocities,
+      }));
     } catch {}
   }, [presentation]);
 
@@ -340,6 +362,17 @@ export default function App() {
       active = false;
     };
   }, [activateManifest, requestKey]);
+
+  useEffect(() => {
+    if (!manifest || frameCoordinateModeRef.current === frameCoordinateMode) return;
+    cache.current.clear();
+    cache.current = new FrameCache({
+      datasetGeneration: manifest.dataset_generation,
+      coordinates: frameCoordinateMode,
+    });
+    frameCoordinateModeRef.current = frameCoordinateMode;
+    setFrameError("");
+  }, [frameCoordinateMode, manifest]);
 
   useEffect(() => {
     if (!manifest || manifest.frame_count === 0) return;
@@ -373,6 +406,20 @@ export default function App() {
           reloadChangedDataset();
           return;
         }
+        if (frameCoordinateMode === "unwrapped") {
+          setPresentation((current) => (
+            current.wrap === "unwrapped"
+              ? { ...current, wrap: "atom" }
+              : current
+          ));
+          setNotice({
+            message: `Unwrapped coordinates unavailable · showing atoms`,
+            tone: "error",
+          });
+          setFrameLoading(false);
+          setPlaying(false);
+          return;
+        }
         setFrameError(message(error));
         setFrameLoading(false);
         setPlaying(false);
@@ -380,7 +427,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [frameIndex, manifest, reloadChangedDataset, rendering]);
+  }, [frameCoordinateMode, frameIndex, manifest, reloadChangedDataset, rendering]);
 
   const setFrame = useCallback(
     (value: number) => {
@@ -550,6 +597,18 @@ export default function App() {
   const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
   const velocityAvailable = Boolean(velocities && velocities.length >= (manifest?.topology.atom_count ?? 0) * 3);
   const pbc = measurementPbc(frame);
+  const periodicCentersNeeded = cellAvailable && (
+    workbenchTab === "view"
+    || commandOpen
+  );
+  const structureCellOrigin = useMemo(
+    () => periodicCentersNeeded ? cellOriginForFrame(frame) : null,
+    [frame, periodicCentersNeeded],
+  );
+  const selectionCellOrigin = useMemo(
+    () => periodicCentersNeeded ? cellOriginForFrame(frame, selectedAtoms) : null,
+    [frame, periodicCentersNeeded, selectedAtoms],
+  );
   const selectionTopology = useMemo<SelectionTopology | null>(
     () => selectionContext ? createSelectionTopology(selectionContext) : null,
     [
@@ -599,6 +658,7 @@ export default function App() {
     presentation.hydrogens,
     presentation.images.min.join(","),
     presentation.images.max.join(","),
+    presentation.cellOrigin.join(","),
   ].join(":");
   useEffect(() => {
     if (!selectionIndex || selectedAtoms.length === 0) return;
@@ -846,10 +906,7 @@ export default function App() {
     void exportPng({
       width: 2400,
       height: 1800,
-      periodicContext: pbc.some(Boolean)
-        && presentation.wrap === "atom"
-        && presentation.mode !== "spacefill"
-        && presentation.mode !== "ribbon",
+      periodicContext: usesPeriodicFigureContext(presentation, pbc),
     });
   }, [canRender, exportPng, pbc, presentation.mode, presentation.wrap, rendering]);
 
@@ -1223,9 +1280,10 @@ export default function App() {
       ...(forceAvailable ? [{ id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", keywords: "vectors arrows", detail: "F", run: run(() => updatePresentation({ forces: !presentation.forces })) }] : []),
       ...(velocityAvailable ? [{ id: "velocities", label: presentation.velocities ? "Hide velocities" : "Show velocities", keywords: "vectors arrows motion speed", run: run(() => updatePresentation({ velocities: !presentation.velocities })) }] : []),
       ...(cellAvailable ? ([
-        ["atom", "Wrap atoms"],
-        ["molecule", "Keep molecules whole"],
-        ["none", "Original coordinates"],
+        ["atom", "Atom coordinates"],
+        ["molecule", "Molecule coordinates"],
+        ["unwrapped", "Unwrapped coordinates"],
+        ["none", "Source coordinates"],
       ] as const).map(([wrap, label]) => ({
         id: `wrap-${wrap}`,
         label,
@@ -1233,6 +1291,58 @@ export default function App() {
         detail: presentation.wrap === wrap ? "Current" : undefined,
         run: run(() => updatePresentation({ wrap })),
       })) : []),
+      ...(cellAvailable ? [{
+        id: "cell-center-pq",
+        label: "Center cell at PQ origin",
+        keywords: "periodic centered cell origin zero",
+        detail: sameCellOrigin(presentation.cellOrigin, [0, 0, 0]) ? "Current" : undefined,
+        run: run(() => updatePresentation({ cellOrigin: [0, 0, 0] })),
+      }, {
+        id: "cell-center-structure",
+        label: "Center cell on structure",
+        keywords: "periodic centered centroid atoms",
+        disabled: structureCellOrigin === null,
+        detail: structureCellOrigin && sameCellOrigin(presentation.cellOrigin, structureCellOrigin)
+          ? "Current"
+          : undefined,
+        run: run(() => {
+          if (structureCellOrigin) updatePresentation({ cellOrigin: structureCellOrigin });
+        }),
+      }, {
+        id: "cell-center-selection",
+        label: "Center cell on selection",
+        keywords: "periodic centered centroid selected atoms",
+        disabled: selectionCellOrigin === null,
+        detail: selectionCellOrigin && sameCellOrigin(presentation.cellOrigin, selectionCellOrigin)
+          ? "Current"
+          : selectedAtoms.length === 0 ? "Select atoms first" : undefined,
+        run: run(() => {
+          if (selectionCellOrigin) updatePresentation({ cellOrigin: selectionCellOrigin });
+        }),
+      }, ...(["a", "b", "c"] as const).map((axis, index) => ({
+        id: `mirror-${axis}`,
+        label: `Mirror ${axis}`,
+        keywords: "periodic reflect flip cell axis",
+        detail: presentation.mirror[index] ? "On" : "Off",
+        run: run(() => updatePresentation({
+          mirror: presentation.mirror.map((value, current) => (
+            current === index ? !value : value
+          )) as [boolean, boolean, boolean],
+        })),
+      })), {
+        id: "repeat-3-3-1",
+        label: "Repeat 3 × 3 × 1",
+        keywords: "periodic supercell images replicate",
+        disabled: !canUseRepeatCounts([3, 3, 1], pbc, manifest?.topology.atom_count ?? 0),
+        run: run(() => updatePresentation({
+          images: repeatImages([3, 3, 1], pbc),
+        })),
+      }, {
+        id: "periodic-reset",
+        label: "Reset periodic display",
+        keywords: "periodic cell coordinates mirror repeat default",
+        run: run(() => updatePresentation(defaultPeriodicPresentation())),
+      }] : []),
       ...selectableElements.map((atomicNumber) => ({
         id: `select-element-${atomicNumber}`,
         label: `Select ${ELEMENT_NAMES[atomicNumber]}`,
@@ -1334,6 +1444,7 @@ export default function App() {
     forceAvailable,
     frameIndex,
     manifest?.frame_count,
+    manifest?.topology.atom_count,
     measurementPlotOpen,
     minimumImage,
     namedSelections,
@@ -1354,6 +1465,7 @@ export default function App() {
     selectionContext,
     selectionIndex,
     selectionIntent,
+    selectionCellOrigin,
     setFrame,
     shortcutLabels,
     showOpen,
@@ -1369,6 +1481,7 @@ export default function App() {
     workbenchVisible,
     selectedAtom,
     selectedAtoms.length,
+    structureCellOrigin,
   ]);
   const commandContextIds = useMemo(() => [
     ...(selectedAtoms.length === 1 && selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
@@ -1537,6 +1650,10 @@ export default function App() {
               cellAvailable={cellAvailable}
               forceAvailable={forceAvailable}
               velocityAvailable={velocityAvailable}
+              pbc={pbc}
+              atomCount={manifest.topology.atom_count}
+              structureCellOrigin={structureCellOrigin}
+              selectionCellOrigin={selectionCellOrigin}
               forceScale={forceScale}
               velocityScale={velocityScale}
               onPresentation={updatePresentation}
@@ -1560,9 +1677,9 @@ export default function App() {
         {manifest && pinnedMeasurements.length > 0 && selectionIndex && (
           <PinnedMeasurements
             manifest={manifest}
-            frame={frame}
             pins={pinnedMeasurements}
             index={selectionIndex}
+            cell={selectionContext?.cell ?? null}
             pbc={pbc}
             activeId={selectionIntent === "measurement"
               ? pinnedMeasurements.find((pin) => (
@@ -1578,9 +1695,10 @@ export default function App() {
         {manifest && selectedAtoms.length > 0 && (
           <SelectionBar
             manifest={manifest}
-            frame={frame}
             selectedAtoms={selectedAtoms}
             displayedPositions={activeSelectionPositions}
+            cell={selectionContext?.cell ?? null}
+            pbc={pbc}
             selectionFormula={selectionFormula}
             namedSelections={namedSelections}
             selectionAnchor={selectionAnchor}
@@ -1992,6 +2110,10 @@ function ScenePanel({
   cellAvailable,
   forceAvailable,
   velocityAvailable,
+  pbc,
+  atomCount,
+  structureCellOrigin,
+  selectionCellOrigin,
   forceScale,
   velocityScale,
   onPresentation,
@@ -2003,6 +2125,10 @@ function ScenePanel({
   cellAvailable: boolean;
   forceAvailable: boolean;
   velocityAvailable: boolean;
+  pbc: [boolean, boolean, boolean];
+  atomCount: number;
+  structureCellOrigin: CellOffset | null;
+  selectionCellOrigin: CellOffset | null;
   forceScale: number;
   velocityScale: number;
   onPresentation: (change: Partial<ScenePresentation>) => void;
@@ -2010,11 +2136,23 @@ function ScenePanel({
   onVelocityScale: (scale: number) => void;
 }) {
   const modes: RepresentationMode[] = ["ball-stick", "spacefill", "lines", ...(capabilities.ribbon ? ["ribbon" as const] : [])];
-  const imagePreset = presentation.images.min[0] === -1 && presentation.images.max[0] === 1
-    ? "centered"
-    : presentation.images.max.some((value) => value === 1)
-      ? "positive"
-      : "primary";
+  const repeatCounts = repeatCountsFromImages(presentation.images, pbc);
+  const imageBudget = Math.min(
+    MAX_PERIODIC_IMAGES,
+    Math.max(1, Math.floor(MAX_ATOM_INSTANCES / Math.max(1, atomCount))),
+  );
+  const pqCentered = sameCellOrigin(presentation.cellOrigin, [0, 0, 0]);
+  const selectionCentered = !pqCentered
+    && Boolean(selectionCellOrigin && sameCellOrigin(presentation.cellOrigin, selectionCellOrigin));
+  const structureCentered = !pqCentered
+    && !selectionCentered
+    && Boolean(structureCellOrigin && sameCellOrigin(presentation.cellOrigin, structureCellOrigin));
+  const setRepeatCount = (axis: number, count: number) => {
+    const next = [...repeatCounts] as CellOffset;
+    next[axis] = Math.max(1, Math.min(5, Math.round(count)));
+    if (!canUseRepeatCounts(next, pbc, atomCount)) return;
+    onPresentation({ images: repeatImages(next, pbc) });
+  };
 
   return (
     <div className="scene-panel">
@@ -2043,11 +2181,12 @@ function ScenePanel({
 
       {cellAvailable && <section className="workbench-section">
         <span className="section-label">Periodic system</span>
-        <div className="segmented-options">
+        <span className="periodic-control-label">Coordinates</span>
+        <div className="segmented-options periodic-coordinate-options">
           {([
-            ["atom", "Wrap atoms"],
-            ["molecule", "Whole molecules"],
-            ["none", "Original"],
+            ["atom", "Atoms"],
+            ["molecule", "Molecules"],
+            ["unwrapped", "Unwrapped"],
           ] as const).map(([wrap, label]) => <button
             key={wrap}
             type="button"
@@ -2056,11 +2195,93 @@ function ScenePanel({
             onClick={() => onPresentation({ wrap })}
           >{label}</button>)}
         </div>
-        <span className="section-label section-label-spaced">Images</span>
-        <div className="segmented-options">
-          <button type="button" className={imagePreset === "primary" ? "is-active" : ""} aria-pressed={imagePreset === "primary"} onClick={() => onPresentation({ images: { min: [0, 0, 0], max: [0, 0, 0] } })}>Primary</button>
-          <button type="button" className={imagePreset === "positive" ? "is-active" : ""} aria-pressed={imagePreset === "positive"} onClick={() => onPresentation({ images: { min: [0, 0, 0], max: [1, 1, 1] } })}>+abc</button>
-          <button type="button" className={imagePreset === "centered" ? "is-active" : ""} aria-pressed={imagePreset === "centered"} onClick={() => onPresentation({ images: { min: [-1, -1, -1], max: [1, 1, 1] } })}>±abc</button>
+
+        <span className="periodic-control-label">Center cell</span>
+        <div className="segmented-options periodic-center-options">
+          <button
+            type="button"
+            className={pqCentered ? "is-active" : ""}
+            aria-pressed={pqCentered}
+            onClick={() => onPresentation({ cellOrigin: [0, 0, 0] })}
+          >PQ</button>
+          <button
+            type="button"
+            className={structureCentered ? "is-active" : ""}
+            aria-pressed={structureCentered}
+            disabled={!structureCellOrigin}
+            onClick={() => {
+              if (structureCellOrigin) onPresentation({ cellOrigin: structureCellOrigin });
+            }}
+          >Structure</button>
+          <button
+            type="button"
+            className={selectionCentered ? "is-active" : ""}
+            aria-pressed={selectionCentered}
+            disabled={!selectionCellOrigin}
+            title={selectionCellOrigin ? "Center on the selected atoms" : "Select atoms first"}
+            onClick={() => {
+              if (selectionCellOrigin) onPresentation({ cellOrigin: selectionCellOrigin });
+            }}
+          >Selection</button>
+        </div>
+
+        <div className="periodic-inline-control">
+          <span className="periodic-control-label">Mirror</span>
+          <div className="periodic-axis-options" aria-label="Mirror cell axes">
+            {(["a", "b", "c"] as const).map((axis, index) => <button
+              key={axis}
+              type="button"
+              className={presentation.mirror[index] ? "is-active" : ""}
+              aria-label={`Mirror ${axis}`}
+              aria-pressed={presentation.mirror[index]}
+              onClick={() => onPresentation({
+                mirror: presentation.mirror.map((value, current) => (
+                  current === index ? !value : value
+                )) as [boolean, boolean, boolean],
+              })}
+            >{axis}</button>)}
+          </div>
+        </div>
+
+        <div className="periodic-repeat-heading">
+          <span className="periodic-control-label">Repeat</span>
+          <span>{repeatCounts.reduce((total, value) => total * value, 1)} / {imageBudget} cells</span>
+        </div>
+        <div className="periodic-repeat-grid">
+          {(["a", "b", "c"] as const).map((axis, index) => {
+            const count = repeatCounts[index];
+            const next = [...repeatCounts] as CellOffset;
+            next[index] = count + 1;
+            const axisAvailable = pbc[index];
+            const nextAllowed = canUseRepeatCounts(next, pbc, atomCount);
+            const nextImageCount = next.reduce((total, value) => total * value, 1);
+            const increaseTitle = !axisAvailable
+              ? `${axis} is not periodic`
+              : count >= 5
+                ? "Maximum 5 repeats"
+                : nextAllowed
+                  ? `Repeat ${axis}`
+                  : atomCount * nextImageCount > MAX_ATOM_INSTANCES
+                    ? `${MAX_ATOM_INSTANCES.toLocaleString()} atom display limit`
+                    : `${MAX_PERIODIC_IMAGES} cell display limit`;
+            return <div className={!axisAvailable ? "periodic-repeat-row is-disabled" : "periodic-repeat-row"} key={axis}>
+              <span>{axis}</span>
+              <button
+                type="button"
+                aria-label={`Decrease ${axis} repeats`}
+                disabled={!axisAvailable || count <= 1}
+                onClick={() => setRepeatCount(index, count - 1)}
+              >−</button>
+              <output aria-label={`${axis} repeats`}>{count}×</output>
+              <button
+                type="button"
+                aria-label={`Increase ${axis} repeats`}
+                disabled={!axisAvailable || count >= 5 || !nextAllowed}
+                title={increaseTitle}
+                onClick={() => setRepeatCount(index, count + 1)}
+              >+</button>
+            </div>;
+          })}
         </div>
       </section>}
     </div>
@@ -2136,9 +2357,10 @@ function DropOverlay({ replacing }: { replacing: boolean }) {
 
 function SelectionBar({
   manifest,
-  frame,
   selectedAtoms,
   displayedPositions,
+  cell,
+  pbc,
   selectionFormula,
   namedSelections,
   selectionAnchor,
@@ -2160,9 +2382,10 @@ function SelectionBar({
   onSummary,
 }: {
   manifest: Manifest;
-  frame: FrameData | null;
   selectedAtoms: AtomSelection[];
   displayedPositions: Float64Array | null;
+  cell: ArrayLike<number> | null;
+  pbc: readonly [boolean, boolean, boolean];
   selectionFormula: string;
   namedSelections: NamedSelection[];
   selectionAnchor: AtomSelection | null;
@@ -2198,8 +2421,6 @@ function SelectionBar({
     ({ atom }) => atom >= 0 && atom < manifest.topology.atom_count,
   );
   const validAtoms = validSelections.map(({ atom }) => atom);
-  const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
-  const pbc = measurementPbc(frame);
   const periodicMeasurement = Boolean(
     measurementEnabled
     &&
@@ -2208,7 +2429,6 @@ function SelectionBar({
     && validSelections.length >= 2
     && validSelections.length <= 4,
   );
-  const supportsDisplayedImages = periodicMeasurement;
   const measurementPositions = displayedPositions
     && displayedPositions.length === validSelections.length * 3
     && validSelections.length === selectedAtoms.length
@@ -2218,12 +2438,11 @@ function SelectionBar({
     && measurementEnabled
     && validSelections.length >= 2
     && validSelections.length <= 4
-    ? measureAtomSelection(
+      ? measureDisplayedPositions(
         measurementPositions,
-        validSelections.map((_, index) => index),
-        periodicMeasurement && (!supportsDisplayedImages || minimumImage) && cell
-          ? { mode: "minimum-image", cell, pbc }
-          : { mode: "direct" },
+        periodicMeasurement && minimumImage,
+        cell,
+        pbc,
       )
     : null;
   const atomLabels = validSelections.map((selection) => atomSelectionLabel(manifest, selection));
@@ -2271,7 +2490,7 @@ function SelectionBar({
       <strong title={title}>{title}</strong>
       {value && <output>{value}</output>}
     </div>
-    {supportsDisplayedImages ? (
+    {periodicMeasurement ? (
       <button
         className="measurement-mode"
         type="button"
@@ -2397,18 +2616,18 @@ function SelectionBar({
 
 function PinnedMeasurements({
   manifest,
-  frame,
   pins,
   index,
+  cell,
   pbc,
   activeId,
   onRestore,
   onRemove,
 }: {
   manifest: Manifest;
-  frame: FrameData | null;
   pins: PinnedMeasurement[];
   index: SelectionIndex;
+  cell: ArrayLike<number> | null;
   pbc: readonly [boolean, boolean, boolean];
   activeId: number | null;
   onRestore: (pin: PinnedMeasurement) => void;
@@ -2416,7 +2635,7 @@ function PinnedMeasurements({
 }) {
   return <section className="pinned-measurements" aria-label="Pinned measurements">
     {pins.map((pin) => {
-      const readout = measurementReadout(manifest, frame, index, pin, pbc);
+      const readout = measurementReadout(manifest, index, pin, cell, pbc);
       return <div key={pin.id}>
         <button
           className="selection-chip"
@@ -2696,6 +2915,92 @@ export function measurementPbc(frame: FrameData | null): [boolean, boolean, bool
   return framePbc(frame);
 }
 
+export function cellOriginForFrame(
+  frame: FrameData | null,
+  selections?: readonly AtomSelection[],
+): CellOffset | null {
+  const positions = frameArray(frame, ["positions", "position", "coordinates", "coords"]);
+  if (!positions) return null;
+  return fractionalStructureCenter(
+    frame,
+    Math.floor(positions.length / 3),
+    selections ?? null,
+  );
+}
+
+export function sameCellOrigin(
+  left: readonly number[],
+  right: readonly number[],
+): boolean {
+  return left.length >= 3
+    && right.length >= 3
+    && [0, 1, 2].every((axis) => Math.abs(left[axis] - right[axis]) <= 1e-6);
+}
+
+export function repeatCountsFromImages(
+  images: ScenePresentation["images"],
+  pbc: readonly [boolean, boolean, boolean],
+): CellOffset {
+  return images.min.map((minimum, axis) => (
+    pbc[axis]
+      ? Math.max(1, Math.min(5, Math.round(Math.abs(images.max[axis] - minimum) + 1)))
+      : 1
+  )) as CellOffset;
+}
+
+export function repeatImages(
+  counts: readonly [number, number, number],
+  pbc: readonly [boolean, boolean, boolean],
+): ScenePresentation["images"] {
+  const normalized = counts.map((count, axis) => (
+    pbc[axis] ? Math.max(1, Math.min(5, Math.round(count))) : 1
+  )) as CellOffset;
+  return {
+    min: normalized.map((count) => {
+      const half = Math.floor((count - 1) / 2);
+      return half === 0 ? 0 : -half;
+    }) as CellOffset,
+    max: normalized.map((count) => Math.ceil((count - 1) / 2)) as CellOffset,
+  };
+}
+
+export function canUseRepeatCounts(
+  counts: readonly [number, number, number],
+  pbc: readonly [boolean, boolean, boolean],
+  atomCount: number,
+): boolean {
+  if (counts.some((count) => !Number.isInteger(count) || count < 1 || count > 5)) return false;
+  if (counts.some((count, axis) => !pbc[axis] && count !== 1)) return false;
+  const imageCount = counts.reduce((total, count) => total * count, 1);
+  const imageBudget = Math.min(
+    MAX_PERIODIC_IMAGES,
+    Math.max(1, Math.floor(MAX_ATOM_INSTANCES / Math.max(1, atomCount))),
+  );
+  return imageCount <= imageBudget;
+}
+
+export function usesPeriodicFigureContext(
+  presentation: ScenePresentation,
+  pbc: readonly boolean[],
+): boolean {
+  return pbc.some(Boolean)
+    && (presentation.wrap === "atom" || presentation.wrap === "unwrapped")
+    && presentation.mode !== "spacefill"
+    && presentation.mode !== "ribbon";
+}
+
+function defaultPeriodicPresentation(): Pick<
+  ScenePresentation,
+  "wrap" | "images" | "cellOrigin" | "mirror"
+> {
+  return {
+    wrap: "atom",
+    images: { min: [0, 0, 0], max: [0, 0, 0] },
+    cellOrigin: [0, 0, 0],
+    mirror: [false, false, false],
+  };
+}
+
 function scopeLabel(scope: ScientificSelectionScope): string {
   return {
     atom: "Atom",
@@ -2752,23 +3057,39 @@ function formulaForSelections(
   return hillFormula(atomicNumbers);
 }
 
+
+export function measureDisplayedPositions(
+  positions: ArrayLike<number>,
+  minimumImage: boolean,
+  cell: ArrayLike<number> | null,
+  pbc: readonly [boolean, boolean, boolean],
+) {
+  const count = Math.floor(positions.length / 3);
+  return measureAtomSelection(
+    positions,
+    Array.from({ length: count }, (_, index) => index),
+    minimumImage && cell && pbc.some(Boolean)
+      ? { mode: "minimum-image", cell, pbc }
+      : { mode: "direct" },
+  );
+}
+
+
 function measurementReadout(
   manifest: Manifest,
-  frame: FrameData | null,
   index: SelectionIndex,
   pin: PinnedMeasurement,
+  cell: ArrayLike<number> | null,
   pbc: readonly [boolean, boolean, boolean],
 ): { title: string; value: string } {
   const labels = pin.selections.map((selection) => atomSelectionLabel(manifest, selection));
   const positions = positionsForSelections(index, pin.selections);
-  const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
   const measurement = positions
-    ? measureAtomSelection(
+    ? measureDisplayedPositions(
         positions,
-        pin.selections.map((_, selectionIndex) => selectionIndex),
-        pin.minimumImage && cell && pbc.some(Boolean)
-          ? { mode: "minimum-image", cell, pbc }
-          : { mode: "direct" },
+        pin.minimumImage,
+        cell,
+        pbc,
       )
     : null;
   if (!measurement?.ok) {
@@ -3075,6 +3396,8 @@ function initialPresentation(): ScenePresentation {
       hydrogens: defaultPresentation.hydrogens,
       wrap: defaultPresentation.wrap,
       images: defaultPresentation.images,
+      cellOrigin: [0, 0, 0],
+      mirror: [false, false, false],
       cell: typeof parsed.cell === "boolean" ? parsed.cell : defaultPresentation.cell,
       forces: typeof parsed.forces === "boolean" ? parsed.forces : defaultPresentation.forces,
       velocities: typeof parsed.velocities === "boolean" ? parsed.velocities : defaultPresentation.velocities,

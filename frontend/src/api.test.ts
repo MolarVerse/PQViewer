@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DatasetChangedError, FrameCache, getFrame } from "./api";
+import { DatasetChangedError, FrameCache, decodeFrame, getFrame } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -24,6 +24,24 @@ function framePacket(byteLength: number): ArrayBuffer {
   const packet = new Uint8Array(4 + header.length + byteLength);
   new DataView(packet.buffer).setUint32(0, header.length, true);
   packet.set(header, 4);
+  return packet.buffer;
+}
+
+function integerFramePacket(): ArrayBuffer {
+  const values = new Int32Array([1, -2, 3]);
+  const header = new TextEncoder().encode(JSON.stringify({
+    arrays: [{
+      name: "centered_image_shifts",
+      dtype: "int32",
+      shape: [1, 3],
+      byte_offset: 0,
+      byte_length: values.byteLength,
+    }],
+  }));
+  const packet = new Uint8Array(4 + header.length + values.byteLength);
+  new DataView(packet.buffer).setUint32(0, header.length, true);
+  packet.set(header, 4);
+  packet.set(new Uint8Array(values.buffer), 4 + header.length);
   return packet.buffer;
 }
 
@@ -63,6 +81,29 @@ describe("dataset generation", () => {
       });
     }
   });
+
+  it("requests deterministic unwrapped coordinates explicitly", async () => {
+    const fetch = vi.fn((_input: string | URL | Request) => Promise.resolve(
+      new Response(emptyFramePacket(), { status: 200 }),
+    ));
+    vi.stubGlobal("fetch", fetch);
+
+    await getFrame(4, undefined, "run 8", "unwrapped");
+
+    expect(String(fetch.mock.calls[0][0])).toBe(
+      "/api/frames/4?dataset_generation=run%208&coordinates=unwrapped",
+    );
+  });
+});
+
+describe("frame decoding", () => {
+  it("preserves exact integer image shifts", () => {
+    const frame = decodeFrame(integerFramePacket());
+
+    expect(frame.arrays.get("centered_image_shifts")).toEqual(
+      new Int32Array([1, -2, 3]),
+    );
+  });
 });
 
 describe("FrameCache", () => {
@@ -80,6 +121,23 @@ describe("FrameCache", () => {
     expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
       "/api/frames/1?dataset_generation=dataset%2F42",
       "/api/frames/2?dataset_generation=dataset%2F42",
+    ]);
+  });
+
+  it("binds all cache requests to one coordinate mode", async () => {
+    const fetch = vi.fn((_input: string | URL | Request) => Promise.resolve(
+      new Response(emptyFramePacket(), { status: 200 }),
+    ));
+    vi.stubGlobal("fetch", fetch);
+    const cache = new FrameCache({ coordinates: "unwrapped" });
+
+    await cache.get(0);
+    cache.prefetch(1, 2);
+    await cache.get(1);
+
+    expect(fetch.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/frames/0?coordinates=unwrapped",
+      "/api/frames/1?coordinates=unwrapped",
     ]);
   });
 

@@ -417,7 +417,7 @@ function validateRequest(
   if (selections.length < 2 || selections.length > 4) {
     throw new RangeError("A measurement needs two to four selected atoms");
   }
-  if (!["atom", "molecule", "none"].includes(wrap)) {
+  if (!["atom", "molecule", "unwrapped", "none"].includes(wrap)) {
     throw new TypeError("Unknown coordinate wrapping mode");
   }
 }

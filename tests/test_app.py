@@ -122,6 +122,36 @@ def test_api_and_static_spa(tmp_path):
     assert client.get("/assets/missing.js").status_code == 404
 
 
+def test_frame_api_selects_unwrapped_coordinates(tmp_path):
+    class CoordinateDataset(DatasetStub):
+        coordinates = "source"
+
+        def get_frame(self, index: int, *, coordinates: str = "source") -> int:
+            self.coordinates = coordinates
+            return super().get_frame(index)
+
+    dataset = CoordinateDataset()
+    client = TestClient(
+        create_app(
+            dataset=dataset,
+            frame_encoder=lambda frame: f"frame:{frame}".encode(),
+            static_dir=tmp_path,
+        )
+    )
+
+    response = client.get(
+        "/api/frames/1",
+        params={"coordinates": "unwrapped"},
+    )
+
+    assert response.status_code == 200
+    assert dataset.coordinates == "unwrapped"
+    assert client.get(
+        "/api/frames/1",
+        params={"coordinates": "invalid"},
+    ).status_code == 422
+
+
 def test_empty_trajectory_has_a_manifest_and_no_frames(tmp_path):
     trajectory = tmp_path / "empty.xyz"
     trajectory.write_text("", encoding="utf-8")

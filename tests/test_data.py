@@ -68,7 +68,7 @@ def test_indexes_manifest_and_random_access(tmp_path: Path) -> None:
     manifest = dataset.manifest()
     frame = dataset.get_frame(1)
 
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
     assert manifest["frame_count"] == 2
     assert manifest["topology"] == {
         "atom_count": 2,
@@ -127,6 +127,7 @@ O 1 0 0 0.4 0.5 0.6 4 5 6 -0.2
         "forces",
         "velocities",
         "charges",
+        "centered_image_shifts",
     ]
     offset = 0
     for item in header["arrays"]:

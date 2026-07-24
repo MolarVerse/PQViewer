@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { frameArray } from "../api";
+import { frameArray, frameIntArray } from "../api";
 import type {
+  AtomSelection,
   CellOffset,
   FrameData,
   Manifest,
@@ -49,6 +50,8 @@ export interface PreparedScene {
   positions: Float32Array;
   baseImages: Int32Array;
   basis: CellBasis | null;
+  cellCenter: THREE.Vector3;
+  displayTransform: THREE.Matrix3;
   pbc: Pbc;
   bonds: Array<[number, number]>;
   waterAtoms: Set<number>;
@@ -127,20 +130,31 @@ export function prepareScene(
   if (!source) return null;
 
   const count = Math.min(manifest.topology.atom_count, Math.floor(source.length / 3));
-  const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
-  const pbc = resolvePbc(frame, basis);
-  const bondPositions = wrapPositions(source, count, basis, pbc);
+  const sourceBasis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
+  const pbc = resolvePbc(frame, sourceBasis);
   const topology = preparedTopology?.count === count
     ? preparedTopology
     : prepareTopology(manifest, frame);
   if (!topology) return null;
   const { atomicNumbers, bonds, waterAtoms } = topology;
-  const positions = presentation.wrap === "none"
-    ? new Float32Array(source.subarray(0, count * 3))
-    : presentation.wrap === "molecule"
-      ? wrapMolecules(source, count, basis, pbc, topology.moleculeGroups, bonds)
-      : bondPositions;
-  const baseImages = displayedBaseImages(source, positions, count, basis, pbc);
+  const cellOrigin = normalizedCellOrigin(presentation.cellOrigin);
+  const coordinates = displayCoordinates(
+    frame,
+    source,
+    count,
+    sourceBasis,
+    pbc,
+    topology,
+    presentation.wrap,
+    cellOrigin,
+  );
+  const cellCenter = sourceBasis
+    ? toCartesian(new THREE.Vector3(...cellOrigin), sourceBasis)
+    : new THREE.Vector3();
+  const displayTransform = mirrorTransform(sourceBasis, presentation.mirror);
+  const positions = transformPositions(coordinates.positions, count, displayTransform, cellCenter);
+  const basis = transformBasis(sourceBasis, displayTransform);
+  const baseImages = coordinates.baseImages;
   const visibleAtoms = visibleAtomIndices(atomicNumbers, waterAtoms, presentation);
   const images = periodicImageOffsets(presentation.images.min, presentation.images.max, pbc, visibleAtoms.length);
   const { instanceToAtom, instanceImages } = instanceMapping(visibleAtoms, images);
@@ -152,6 +166,8 @@ export function prepareScene(
     positions,
     baseImages,
     basis,
+    cellCenter,
+    displayTransform,
     pbc,
     bonds,
     waterAtoms,
@@ -172,7 +188,8 @@ export function prepareTopology(manifest: Manifest, frame: FrameData | null): Pr
   const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
   const pbc = resolvePbc(frame, basis);
   const declared = normalizeBonds(manifest.topology.bonds, count);
-  const positions = wrapPositions(source, count, basis, pbc);
+  const positions = centeredFramePositions(frame, count)
+    ?? wrapPositions(source, count, basis, pbc, [0, 0, 0]);
   const bonds = manifest.topology.bond_source === "topology"
     ? declared
     : declared.length > 0
@@ -190,8 +207,75 @@ export function prepareTopology(manifest: Manifest, frame: FrameData | null): Pr
 export function centeredFramePositions(frame: FrameData | null, count: number): Float32Array | null {
   const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
   if (!positions) return null;
+  const centered = frameArray(frame, ["centered_positions", "centered_position"]);
+  const safeCount = Math.min(count, Math.floor(positions.length / 3));
+  if (centered && centered.length >= safeCount * 3) {
+    return new Float32Array(centered.subarray(0, safeCount * 3));
+  }
   const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
-  return wrapPositions(positions, Math.min(count, Math.floor(positions.length / 3)), basis, resolvePbc(frame, basis));
+  const shifts = frameIntArray(frame, ["centered_image_shifts", "centered_images"]);
+  if (shifts && shifts.length >= safeCount * 3) {
+    return positionsFromImageShifts(
+      positions,
+      shifts,
+      safeCount,
+      basis,
+      resolvePbc(frame, basis),
+    );
+  }
+  return wrapPositions(positions, safeCount, basis, resolvePbc(frame, basis), [0, 0, 0]);
+}
+
+export function fractionalStructureCenter(
+  frame: FrameData | null,
+  count: number,
+  selections: readonly AtomSelection[] | null = null,
+): CellOffset | null {
+  const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+  const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
+  if (!positions || !basis) return null;
+  const safeCount = Math.min(Math.max(0, Math.floor(count)), Math.floor(positions.length / 3));
+  const center = new THREE.Vector3();
+  const point = new THREE.Vector3();
+  let used = 0;
+  if (selections === null) {
+    const unwrapped = frame?.header.coordinates === "unwrapped";
+    const preferred = unwrapped
+      ? frameArray(frame, ["unwrapped_positions", "unwrapped_position"])
+      : null;
+    const displayPositions = preferred && preferred.length >= safeCount * 3
+      ? preferred
+      : positions;
+    const shifts = unwrapped && displayPositions === positions
+      ? frameIntArray(frame, ["unwrapped_image_shifts", "unwrapped_images"])
+      : null;
+    for (let atom = 0; atom < safeCount; atom += 1) {
+      const offset = atom * 3;
+      point.fromArray(displayPositions, offset);
+      center.x += point.dot(basis.reciprocal[0]) + (shifts?.[offset] ?? 0);
+      center.y += point.dot(basis.reciprocal[1]) + (shifts?.[offset + 1] ?? 0);
+      center.z += point.dot(basis.reciprocal[2]) + (shifts?.[offset + 2] ?? 0);
+      used += 1;
+    }
+  } else {
+    for (const { atom, image } of selections) {
+      if (
+        !Number.isInteger(atom)
+        || atom < 0
+        || atom >= safeCount
+        || image.length !== 3
+        || !image.every(Number.isInteger)
+      ) continue;
+      point.fromArray(positions, atom * 3);
+      center.x += point.dot(basis.reciprocal[0]) + image[0];
+      center.y += point.dot(basis.reciprocal[1]) + image[1];
+      center.z += point.dot(basis.reciprocal[2]) + image[2];
+      used += 1;
+    }
+  }
+  if (used === 0) return null;
+  center.multiplyScalar(1 / used);
+  return [center.x, center.y, center.z];
 }
 
 export function hasFrameCell(frame: FrameData | null): boolean {
@@ -205,9 +289,18 @@ export function framePbc(frame: FrameData | null): Pbc {
 
 export function createCellBasis(cell: Float32Array | null): CellBasis | null {
   if (!cell || cell.length < 9) return null;
-  const a = new THREE.Vector3(cell[0], cell[1], cell[2]);
-  const b = new THREE.Vector3(cell[3], cell[4], cell[5]);
-  const c = new THREE.Vector3(cell[6], cell[7], cell[8]);
+  return createBasisFromVectors(
+    new THREE.Vector3(cell[0], cell[1], cell[2]),
+    new THREE.Vector3(cell[3], cell[4], cell[5]),
+    new THREE.Vector3(cell[6], cell[7], cell[8]),
+  );
+}
+
+function createBasisFromVectors(
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  c: THREE.Vector3,
+): CellBasis | null {
   const bCrossC = new THREE.Vector3().crossVectors(b, c);
   const determinant = a.dot(bCrossC);
   if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-10) return null;
@@ -392,8 +485,10 @@ export function sceneBondSegments(
     for (const [a, b] of model.bonds) {
       if (!visible.has(a) || !visible.has(b)) continue;
       const base = presentation.wrap === "atom"
-        ? periodicBondSegments(model.positions, a, b, model.basis, model.pbc)
-        : [directBondSegment(model.positions, a, b)];
+        ? periodicBondSegments(model.positions, a, b, model.basis, model.pbc, model.cellCenter)
+        : presentation.wrap === "unwrapped"
+          ? unwrappedBondSegments(model.positions, a, b, model.basis, model.pbc)
+          : [directBondSegment(model.positions, a, b)];
       base.forEach(({ from, to }) => segments.push({ from: from.add(shift), to: to.add(shift) }));
     }
   }
@@ -424,7 +519,7 @@ export function publicationBondGeometry(
     .map(([a, b]) => ({
       a,
       b,
-      shift: presentation.wrap === "atom"
+      shift: presentation.wrap === "atom" || presentation.wrap === "unwrapped"
         ? minimumImageBondShift(model.positions, a, b, model.basis, model.pbc)
         : [0, 0, 0] as CellOffset,
     }));
@@ -532,7 +627,8 @@ export function detectWaterAtoms(
   if (!source || count === 0) return result;
   const basis = createCellBasis(frameArray(frame, ["cell", "cell_vectors", "box"]));
   const pbc = resolvePbc(frame, basis);
-  const positions = wrapPositions(source, count, basis, pbc);
+  const positions = centeredFramePositions(frame, count)
+    ?? wrapPositions(source, count, basis, pbc, [0, 0, 0]);
   const bonds = knownBonds ?? normalizeBonds(manifest.topology.bonds, count);
   const fallbackBonds = knownBonds !== undefined || bonds.length > 0
     ? bonds
@@ -585,13 +681,14 @@ export function periodicBondSegments(
   bIndex: number,
   basis: CellBasis | null,
   pbc: Pbc,
+  center = new THREE.Vector3(),
 ): Segment[] {
   const a = new THREE.Vector3().fromArray(positions, aIndex * 3);
   const b = new THREE.Vector3().fromArray(positions, bIndex * 3);
   if (!basis || !pbc.some(Boolean)) return [{ from: a, to: b }];
 
-  const start = toFractional(a, basis);
-  const directDelta = toFractional(b, basis).sub(start);
+  const start = toFractional(a.clone().sub(center), basis);
+  const directDelta = toFractional(b.clone().sub(center), basis).sub(start);
   const delta = minimumImageFraction(directDelta, basis, pbc);
   const crossings = [0, 1];
   const starts = [start.x, start.y, start.z];
@@ -620,8 +717,8 @@ export function periodicBondSegments(
       pbc[1] ? centeredLatticeShift(middle.y) : 0,
       pbc[2] ? centeredLatticeShift(middle.z) : 0,
     );
-    const from = toCartesian(start.clone().addScaledVector(delta, fromTime).sub(shift), basis);
-    const to = toCartesian(start.clone().addScaledVector(delta, toTime).sub(shift), basis);
+    const from = toCartesian(start.clone().addScaledVector(delta, fromTime).sub(shift), basis).add(center);
+    const to = toCartesian(start.clone().addScaledVector(delta, toTime).sub(shift), basis).add(center);
     if (from.distanceToSquared(to) > 1e-10) result.push({ from, to });
   }
   return result;
@@ -631,7 +728,11 @@ export function imageTranslation(offset: CellOffset, basis: CellBasis | null): T
   return basis ? toCartesian(new THREE.Vector3(...offset), basis) : new THREE.Vector3();
 }
 
-export function cellImageCorners(basis: CellBasis, offset: CellOffset): THREE.Vector3[] {
+export function cellImageCorners(
+  basis: CellBasis,
+  offset: CellOffset,
+  center = new THREE.Vector3(),
+): THREE.Vector3[] {
   const corners: THREE.Vector3[] = [];
   for (let a = 0; a <= 1; a += 1) {
     for (let b = 0; b <= 1; b += 1) {
@@ -639,7 +740,8 @@ export function cellImageCorners(basis: CellBasis, offset: CellOffset): THREE.Ve
         corners.push(imageTranslation(
           [offset[0] + a, offset[1] + b, offset[2] + c],
           basis,
-        ).addScaledVector(basis.vectors[0], -0.5)
+        ).add(center)
+          .addScaledVector(basis.vectors[0], -0.5)
           .addScaledVector(basis.vectors[1], -0.5)
           .addScaledVector(basis.vectors[2], -0.5));
       }
@@ -667,6 +769,240 @@ export function directBondSegment(positions: Float32Array, a: number, b: number)
   };
 }
 
+
+function unwrappedBondSegments(
+  positions: Float32Array,
+  a: number,
+  b: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): Segment[] {
+  const direct = directBondSegment(positions, a, b);
+  const image = minimumImageBondShift(positions, a, b, basis, pbc);
+  if (image.every((value) => value === 0)) return [direct];
+  const translation = imageTranslation(image, basis);
+  const fromMiddle = direct.from.clone()
+    .add(direct.to)
+    .add(translation)
+    .multiplyScalar(0.5);
+  const toMiddle = direct.to.clone()
+    .add(direct.from)
+    .sub(translation)
+    .multiplyScalar(0.5);
+  return [
+    { from: direct.from, to: fromMiddle },
+    { from: direct.to, to: toMiddle },
+  ];
+}
+
+
+interface DisplayCoordinates {
+  positions: Float32Array;
+  baseImages: Int32Array;
+}
+
+function displayCoordinates(
+  frame: FrameData | null,
+  source: Float32Array,
+  count: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+  topology: PreparedTopology,
+  wrap: ScenePresentation["wrap"],
+  cellOrigin: CellOffset,
+): DisplayCoordinates {
+  if (wrap === "unwrapped") {
+    const shifts = frameIntArray(frame, ["unwrapped_image_shifts", "unwrapped_images"]);
+    const preferred = frameArray(frame, ["unwrapped_positions", "unwrapped_position"]);
+    const positions = preferred && preferred.length >= count * 3
+      ? new Float32Array(preferred.subarray(0, count * 3))
+      : shifts && shifts.length >= count * 3
+        ? positionsFromImageShifts(source, shifts, count, basis, pbc)
+        : new Float32Array(source.subarray(0, count * 3));
+    return {
+      positions,
+      baseImages: preferredImageShifts(
+        shifts,
+        source,
+        positions,
+        count,
+        basis,
+        pbc,
+      ),
+    };
+  }
+  if (wrap === "none") {
+    return {
+      positions: new Float32Array(source.subarray(0, count * 3)),
+      baseImages: new Int32Array(count * 3),
+    };
+  }
+  if (wrap === "molecule") {
+    const positions = wrapMolecules(
+      source,
+      count,
+      basis,
+      pbc,
+      topology.moleculeGroups,
+      topology.bonds,
+      cellOrigin,
+    );
+    return {
+      positions,
+      baseImages: displayedBaseImages(source, positions, count, basis, pbc),
+    };
+  }
+  if (isZeroOffset(cellOrigin)) {
+    const centered = frameArray(frame, ["centered_positions", "centered_position"]);
+    const shifts = frameIntArray(frame, ["centered_image_shifts", "centered_images"]);
+    if (
+      (centered && centered.length >= count * 3)
+      || (shifts && shifts.length >= count * 3)
+    ) {
+      const positions = centered && centered.length >= count * 3
+        ? new Float32Array(centered.subarray(0, count * 3))
+        : positionsFromImageShifts(source, shifts!, count, basis, pbc);
+      return {
+        positions,
+        baseImages: preferredImageShifts(
+          shifts,
+          source,
+          positions,
+          count,
+          basis,
+          pbc,
+        ),
+      };
+    }
+  }
+  const positions = wrapPositions(source, count, basis, pbc, cellOrigin);
+  return {
+    positions,
+    baseImages: displayedBaseImages(source, positions, count, basis, pbc),
+  };
+}
+
+function positionsFromImageShifts(
+  source: Float32Array,
+  shifts: Int32Array,
+  count: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): Float32Array {
+  const result = new Float32Array(source.subarray(0, count * 3));
+  if (!basis) return result;
+  const point = new THREE.Vector3();
+  for (let atom = 0; atom < count; atom += 1) {
+    const offset = atom * 3;
+    point.fromArray(source, offset);
+    if (pbc[0]) point.addScaledVector(basis.vectors[0], shifts[offset]);
+    if (pbc[1]) point.addScaledVector(basis.vectors[1], shifts[offset + 1]);
+    if (pbc[2]) point.addScaledVector(basis.vectors[2], shifts[offset + 2]);
+    point.toArray(result, offset);
+  }
+  return result;
+}
+
+function preferredImageShifts(
+  preferred: Int32Array | null,
+  source: Float32Array,
+  displayed: Float32Array,
+  count: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+): Int32Array {
+  return preferred && preferred.length >= count * 3
+    ? new Int32Array(preferred.subarray(0, count * 3))
+    : displayedBaseImages(source, displayed, count, basis, pbc);
+}
+
+function normalizedCellOrigin(value: CellOffset | undefined): CellOffset {
+  if (!value || value.length !== 3) return [0, 0, 0];
+  return value.map((component) => Number.isFinite(component) ? component : 0) as CellOffset;
+}
+
+function isZeroOffset(value: CellOffset): boolean {
+  return value[0] === 0 && value[1] === 0 && value[2] === 0;
+}
+
+function mirrorTransform(
+  basis: CellBasis | null,
+  mirror: [boolean, boolean, boolean] | undefined,
+): THREE.Matrix3 {
+  const flags = mirror ?? [false, false, false];
+  if (!basis || !flags.some(Boolean)) return new THREE.Matrix3().identity();
+  const axes = orthonormalCellAxes(basis);
+  const matrix = new THREE.Matrix3().set(
+    0, 0, 0,
+    0, 0, 0,
+    0, 0, 0,
+  );
+  const elements = matrix.elements;
+  axes.forEach((axis, index) => {
+    const sign = flags[index] ? -1 : 1;
+    elements[0] += sign * axis.x * axis.x;
+    elements[1] += sign * axis.y * axis.x;
+    elements[2] += sign * axis.z * axis.x;
+    elements[3] += sign * axis.x * axis.y;
+    elements[4] += sign * axis.y * axis.y;
+    elements[5] += sign * axis.z * axis.y;
+    elements[6] += sign * axis.x * axis.z;
+    elements[7] += sign * axis.y * axis.z;
+    elements[8] += sign * axis.z * axis.z;
+  });
+  return matrix;
+}
+
+function orthonormalCellAxes(basis: CellBasis): [THREE.Vector3, THREE.Vector3, THREE.Vector3] {
+  const a = basis.vectors[0].clone().normalize();
+  const b = basis.vectors[1].clone().addScaledVector(a, -basis.vectors[1].dot(a));
+  if (b.lengthSq() < 1e-20) {
+    b.copy(Math.abs(a.x) < 0.8 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0))
+      .addScaledVector(a, -b.dot(a));
+  }
+  b.normalize();
+  const c = new THREE.Vector3().crossVectors(a, b).normalize();
+  if (c.dot(basis.vectors[2]) < 0) c.negate();
+  b.crossVectors(c, a).normalize();
+  return [a, b, c];
+}
+
+function transformPositions(
+  source: Float32Array,
+  count: number,
+  transform: THREE.Matrix3,
+  center: THREE.Vector3,
+): Float32Array {
+  const result = new Float32Array(source.subarray(0, count * 3));
+  if (transform.equals(new THREE.Matrix3().identity())) return result;
+  // Reflections are Cartesian and pass through the displayed cell center.
+  const point = new THREE.Vector3();
+  for (let atom = 0; atom < count; atom += 1) {
+    point.fromArray(source, atom * 3)
+      .sub(center)
+      .applyMatrix3(transform)
+      .add(center)
+      .toArray(result, atom * 3);
+  }
+  return result;
+}
+
+export function transformDisplayVector(
+  vector: THREE.Vector3,
+  model: Pick<PreparedScene, "displayTransform">,
+): THREE.Vector3 {
+  return vector.applyMatrix3(model.displayTransform);
+}
+
+function transformBasis(basis: CellBasis | null, transform: THREE.Matrix3): CellBasis | null {
+  if (!basis) return null;
+  return createBasisFromVectors(
+    basis.vectors[0].clone().applyMatrix3(transform),
+    basis.vectors[1].clone().applyMatrix3(transform),
+    basis.vectors[2].clone().applyMatrix3(transform),
+  );
+}
+
 function visibleAtomIndices(
   atomicNumbers: number[],
   waterAtoms: Set<number>,
@@ -690,8 +1026,11 @@ function wrapMolecules(
   pbc: Pbc,
   groups: Array<[number, number[]]>,
   bonds: Array<[number, number]>,
+  cellOrigin: CellOffset,
 ): Float32Array {
-  if (!basis || !pbc.some(Boolean) || groups.length === 0) return wrapPositions(source, count, basis, pbc);
+  if (!basis || !pbc.some(Boolean) || groups.length === 0) {
+    return wrapPositions(source, count, basis, pbc, cellOrigin);
+  }
   const result = new Float32Array(source.subarray(0, count * 3));
   const grouped = new Set<number>();
   const point = new THREE.Vector3();
@@ -740,9 +1079,9 @@ function wrapMolecules(
     atoms.forEach((atom) => centroid.add(unwrapped.get(atom)!));
     centroid.multiplyScalar(1 / atoms.length);
     const shift = new THREE.Vector3(
-      pbc[0] ? centeredLatticeShift(centroid.x) : 0,
-      pbc[1] ? centeredLatticeShift(centroid.y) : 0,
-      pbc[2] ? centeredLatticeShift(centroid.z) : 0,
+      pbc[0] ? centeredLatticeShift(centroid.x - cellOrigin[0]) : 0,
+      pbc[1] ? centeredLatticeShift(centroid.y - cellOrigin[1]) : 0,
+      pbc[2] ? centeredLatticeShift(centroid.z - cellOrigin[2]) : 0,
     );
     atoms.forEach((atom) => toCartesian(unwrapped.get(atom)!.clone().sub(shift), basis).toArray(result, atom * 3));
   }
@@ -750,9 +1089,9 @@ function wrapMolecules(
     if (grouped.has(atom)) continue;
     point.fromArray(source, atom * 3);
     const fractional = toFractional(point, basis);
-    if (pbc[0]) fractional.x -= centeredLatticeShift(fractional.x);
-    if (pbc[1]) fractional.y -= centeredLatticeShift(fractional.y);
-    if (pbc[2]) fractional.z -= centeredLatticeShift(fractional.z);
+    if (pbc[0]) fractional.x -= centeredLatticeShift(fractional.x - cellOrigin[0]);
+    if (pbc[1]) fractional.y -= centeredLatticeShift(fractional.y - cellOrigin[1]);
+    if (pbc[2]) fractional.z -= centeredLatticeShift(fractional.z - cellOrigin[2]);
     toCartesian(fractional, basis).toArray(result, atom * 3);
   }
   return result;
@@ -767,16 +1106,22 @@ function moleculeGroups(
   return semanticGroups(manifest, count);
 }
 
-function wrapPositions(source: Float32Array, count: number, basis: CellBasis | null, pbc: Pbc): Float32Array {
+function wrapPositions(
+  source: Float32Array,
+  count: number,
+  basis: CellBasis | null,
+  pbc: Pbc,
+  cellOrigin: CellOffset,
+): Float32Array {
   const result = new Float32Array(source.subarray(0, count * 3));
   if (!basis || !pbc.some(Boolean)) return result;
   const point = new THREE.Vector3();
   for (let index = 0; index < count; index += 1) {
     point.fromArray(source, index * 3);
     const fractional = toFractional(point, basis);
-    if (pbc[0]) fractional.x -= centeredLatticeShift(fractional.x);
-    if (pbc[1]) fractional.y -= centeredLatticeShift(fractional.y);
-    if (pbc[2]) fractional.z -= centeredLatticeShift(fractional.z);
+    if (pbc[0]) fractional.x -= centeredLatticeShift(fractional.x - cellOrigin[0]);
+    if (pbc[1]) fractional.y -= centeredLatticeShift(fractional.y - cellOrigin[1]);
+    if (pbc[2]) fractional.z -= centeredLatticeShift(fractional.z - cellOrigin[2]);
     toCartesian(fractional, basis).toArray(result, index * 3);
   }
   return result;
@@ -996,8 +1341,8 @@ function toCartesian(fractional: THREE.Vector3, basis: CellBasis): THREE.Vector3
 }
 
 function centeredLatticeShift(value: number): number {
-  const tolerance = 1e-7 * Math.max(1, Math.abs(value));
-  return Math.floor(value + 0.5 + tolerance);
+  const base = Math.floor(value);
+  return base + (value - base >= 0.5 ? 1 : 0);
 }
 
 function minimumImageFraction(delta: THREE.Vector3, basis: CellBasis, pbc: Pbc): THREE.Vector3 {

@@ -10,29 +10,50 @@ from typing import Any
 import numpy as np
 
 from .data import FrameData, SCHEMA_VERSION
+from .periodic import checked_int32
 
 
 def encode_frame(frame: FrameData) -> bytes:
-    """Encode a frame as a JSON header followed by float32 arrays."""
+    """Encode a frame as a JSON header followed by numeric arrays."""
     arrays = (
-        ("positions", frame.positions),
-        ("cell", frame.cell),
-        ("forces", frame.forces),
-        ("velocities", frame.velocities),
-        ("charges", frame.charges),
+        ("positions", frame.positions, "float32", np.dtype("<f4")),
+        ("cell", frame.cell, "float32", np.dtype("<f4")),
+        ("forces", frame.forces, "float32", np.dtype("<f4")),
+        ("velocities", frame.velocities, "float32", np.dtype("<f4")),
+        ("charges", frame.charges, "float32", np.dtype("<f4")),
+        (
+            "unwrapped_positions",
+            frame.unwrapped_positions,
+            "float32",
+            np.dtype("<f4"),
+        ),
+        (
+            "centered_image_shifts",
+            frame.centered_image_shifts,
+            "int32",
+            np.dtype("<i4"),
+        ),
+        (
+            "unwrapped_image_shifts",
+            frame.unwrapped_image_shifts,
+            "int32",
+            np.dtype("<i4"),
+        ),
     )
     payload_parts: list[bytes] = []
     array_metadata: list[dict[str, Any]] = []
     offset = 0
 
-    for name, values in arrays:
+    for name, values, dtype_name, dtype in arrays:
         if values is None:
             continue
-        array = np.ascontiguousarray(values, dtype=np.dtype("<f4"))
+        if dtype_name == "int32":
+            values = checked_int32(values)
+        array = np.ascontiguousarray(values, dtype=dtype)
         chunk = array.tobytes(order="C")
         array_metadata.append({
             "name": name,
-            "dtype": "float32",
+            "dtype": dtype_name,
             "byte_order": "little",
             "shape": list(array.shape),
             "byte_offset": offset,
@@ -48,6 +69,7 @@ def encode_frame(frame: FrameData) -> bytes:
     header = {
         "schema_version": SCHEMA_VERSION,
         "index": frame.index,
+        "coordinates": frame.coordinates,
         "pbc": list(frame.pbc),
         "scalars": scalar_values,
         "scalar_units": {

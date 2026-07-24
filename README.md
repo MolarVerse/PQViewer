@@ -27,6 +27,9 @@ pqviewer path/to/md.xyz
 Try the included trajectory with `pqviewer examples/water.xyz`.
 Use `pqviewer examples/periodic-boundary.extxyz` to inspect centered wrapping,
 forces, step/time metadata, and minimum-image measurements.
+Use `pqviewer examples/periodic-crossing.extxyz` to inspect continuous
+unwrapped motion, or `pqviewer examples/acof-triclinic.xyz` for a triclinic
+framework.
 Run `pqviewer` without a path to open an empty workspace.
 
 Same-stem PQ companions are detected automatically; override them explicitly:
@@ -51,6 +54,11 @@ Files can also be opened together from the interface or dropped on the canvas.
 representation, water, cell, force and velocity vectors, periodic wrapping, and
 neighboring images. Ribbon appears when residue and backbone topology are
 present. Periodic coordinates follow PQ's centered `−½…+½` convention.
+Choose atom, whole-molecule, or continuous unwrapped coordinates. The cell can
+stay at the PQ origin or center on the structure or selection. Cartesian mirror
+controls preserve distances, while per-axis repeats stay within the renderer's
+cell and atom limits. Source coordinates remain available through command
+search.
 
 Click an atom for a compact readout. Shift-click additional atoms to measure a
 distance, angle, or ordered dihedral. On touch screens, tap atoms in order and
