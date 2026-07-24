@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
+  buildPlotShelfGeometry,
   buildMeasurementPlotGeometry,
   clientXToPlotX,
   downsampleMeasurementSegments,
+  exactFrameAt,
   measurementDiscontinuityThreshold,
   measurementPlotLayout,
   nearestFrameForPlotX,
+  PlotShelf,
+  plotDataIndexForFrame,
+  plotShelfYDomain,
+  seekableFrameBounds,
+  seekablePlotIndices,
   splitMeasurementSegments,
 } from "./MeasurementPlot";
+import type { PlotShelfData } from "./trajectoryStudy";
 
 describe("measurement plot geometry", () => {
   it("keeps null values as visible trace gaps", () => {
@@ -70,6 +79,24 @@ describe("measurement plot seeking", () => {
 
   it("uses frame position when the axis is constant", () => {
     expect(nearestFrameForPlotX(74, [1, 1, 1, 1, 1], 0, 100)).toBe(3);
+  });
+
+  it("maps sparse plot points to exact trajectory frames", () => {
+    const frames = [0, null, 7, 14];
+
+    expect(plotDataIndexForFrame(7, frames, 4)).toBe(2);
+    expect(plotDataIndexForFrame(8, frames, 4)).toBe(-1);
+    expect(seekablePlotIndices(frames, 4)).toEqual([0, 2, 3]);
+    expect(exactFrameAt(frames, 3)).toBe(14);
+    expect(exactFrameAt(frames, 1)).toBeNull();
+  });
+
+  it("bounds very long frame maps without spreading them into function arguments", () => {
+    const frames = Array.from({ length: 150_000 }, (_, index) => index * 2);
+    const indices = seekablePlotIndices(frames, frames.length);
+
+    expect(seekableFrameBounds(frames, indices)).toEqual([0, 299_998]);
+    expect(plotDataIndexForFrame(20, frames, frames.length)).toBe(10);
   });
 });
 
@@ -135,5 +162,121 @@ describe("measurement plot sampling", () => {
       [3],
       [5],
     ]);
+  });
+
+  it("shares one y-domain and a bounded DOM budget across eight lines", () => {
+    const xValues = Array.from({ length: 10_000 }, (_, index) => index);
+    const lines = Array.from({ length: 8 }, (_, line) => ({
+      id: `line-${line}`,
+      label: `Line ${line}`,
+      values: xValues.map((value) => Math.sin(value / 10) + line * 10),
+    }));
+    const geometry = buildPlotShelfGeometry(xValues, lines, {
+      left: 0,
+      right: 800,
+      top: 0,
+      bottom: 120,
+      maxPoints: 1_600,
+    });
+    const renderedPoints = geometry.lines.reduce(
+      (total, line) => total + line.segments.reduce(
+        (sum, segment) => sum + segment.points.length,
+        0,
+      ),
+      0,
+    );
+
+    expect(geometry.lines).toHaveLength(8);
+    expect(renderedPoints).toBeLessThanOrEqual(1_600);
+    expect(geometry.yDomain[0]).toBeLessThan(0);
+    expect(geometry.yDomain[1]).toBeGreaterThan(70);
+    expect(geometry.lines.every(({ segments }) => (
+      segments.every(({ points }) => points.every(({ y }) => y >= 0 && y <= 120))
+    ))).toBe(true);
+  });
+
+  it("keeps nonnegative scientific plots on a zero baseline", () => {
+    const lines = [{ id: "rdf", label: "g(r)", values: [0, 4, 20] }];
+    const yDomain = plotShelfYDomain(lines, 0);
+    const geometry = buildPlotShelfGeometry([0, 1, 2], lines, {
+      left: 0,
+      right: 100,
+      top: 0,
+      bottom: 50,
+      yDomain,
+    });
+
+    expect(yDomain[0]).toBe(0);
+    expect(geometry.yDomain[0]).toBe(0);
+    expect(geometry.yDomain[1]).toBeGreaterThan(20);
+  });
+});
+
+describe("plot shelf accessibility", () => {
+  const plot: PlotShelfData = {
+    requestId: 9,
+    kind: "comparison",
+    title: "Pinned distances",
+    xLabel: "Time",
+    xUnit: "ps",
+    yLabel: "Distance",
+    yUnit: "Å",
+    xValues: [0, 0.5, 1],
+    frameIndices: [2, 7, 12],
+    lines: [
+      {
+        id: "co",
+        label: "C1–O2",
+        values: [1, 1.5, 2],
+        selection: [
+          { atom: 0, image: [0, 0, 0] },
+          { atom: 1, image: [0, 0, 0] },
+        ],
+      },
+      { id: "ch", label: "C1–H3", values: [2, null, 4] },
+    ],
+    loadedCount: 3,
+    totalCount: 3,
+    complete: true,
+  };
+
+  it("exposes exact frame and every current series value", () => {
+    const markup = renderToStaticMarkup(
+      <PlotShelf
+        plot={plot}
+        currentFrame={7}
+        onFrame={() => undefined}
+        onRestoreLine={() => undefined}
+        onClose={() => undefined}
+        headerActions={<button type="button" aria-label="Change plotted property">Property</button>}
+        onExportCsv={() => undefined}
+        onExportSvg={() => undefined}
+        onExportPdf={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('role="slider"');
+    expect(markup).toContain('aria-valuenow="7"');
+    expect(markup).toContain("Frame 8; Time 0.5 ps; C1–O2 1.5 Å; C1–H3 unavailable");
+    expect(markup).toContain("Restore C1–O2; current value 1.5 Å");
+    expect(markup).toContain('aria-label="C1–H3 current value"');
+    expect(markup).toContain('class="measurement-plot__header-actions"');
+    expect(markup).toContain('aria-label="Plot controls"');
+    expect(markup).toContain('aria-label="Change plotted property"');
+    expect(markup).toContain('aria-label="Close plot"');
+  });
+
+  it("keeps non-trajectory plots readable without a false seek control", () => {
+    const markup = renderToStaticMarkup(
+      <PlotShelf
+        plot={{ ...plot, kind: "rdf", frameIndices: undefined }}
+        onExportCsv={() => undefined}
+        onExportSvg={() => undefined}
+        onExportPdf={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('role="img"');
+    expect(markup).not.toContain('role="slider"');
   });
 });

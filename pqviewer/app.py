@@ -18,6 +18,7 @@ from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 
+from .analysis import register_analysis_routes
 from .data import EmptyTrajectoryDataset
 from .packet import encode_frame
 from .recipe import recipe_copy
@@ -327,6 +328,8 @@ def create_app(
             previous_temp.cleanup()
         response.headers["Cache-Control"] = "no-store"
         return opened_manifest
+
+    register_analysis_routes(application)
 
     frontend = (
         Path(static_dir)
