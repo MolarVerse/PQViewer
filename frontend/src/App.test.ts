@@ -9,7 +9,6 @@ import {
   measurementPbc,
   noticeDurationMs,
   profilePresentation,
-  selectionVisibleInImages,
   selectedProfilePresentation,
 } from "./App";
 import type { FrameData, FrameHeader, SceneCapabilities, ScenePresentation } from "./types";
@@ -199,28 +198,6 @@ describe("measurement periodicity", () => {
     ]);
   });
 
-  it("drops selections when their image is no longer displayed", () => {
-    const selection = { atom: 3, image: [1, 0, 0] as [number, number, number] };
-
-    expect(selectionVisibleInImages(
-      selection,
-      [0, 0, 0],
-      [1, 1, 1],
-      [true, true, true],
-    )).toBe(true);
-    expect(selectionVisibleInImages(
-      selection,
-      [0, 0, 0],
-      [0, 0, 0],
-      [true, true, true],
-    )).toBe(false);
-    expect(selectionVisibleInImages(
-      selection,
-      [0, 0, 0],
-      [1, 1, 1],
-      [false, true, true],
-    )).toBe(false);
-  });
 });
 
 function frameWithHeader(header: Partial<FrameHeader>): FrameData {

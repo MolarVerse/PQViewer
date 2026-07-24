@@ -29,6 +29,25 @@ import {
   updateSceneSelection,
 } from "./selection";
 import {
+  cloneSelections,
+  createNamedSelection,
+  createSelectionTopology,
+  ELEMENT_NAMES,
+  ELEMENT_SYMBOLS,
+  hillFormula,
+  mergeSelections,
+  parseWithinSelectionCommand,
+  replaceSelections,
+  SelectionIndex,
+} from "./scientificSelection";
+import type {
+  NamedSelection,
+  SceneSelectionContext,
+  ScientificSelectionScope,
+  SelectionSummary,
+  SelectionTopology,
+} from "./scientificSelection";
+import {
   DEFAULT_PLAYBACK_FPS,
   playbackPrefetchIndices,
   playbackTimerDelay,
@@ -48,10 +67,16 @@ import type {
 
 type LoadState = "loading" | "ready" | "error";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
-type WorkbenchTab = "view" | "inspect";
+type WorkbenchTab = "view" | "inspect" | "summary";
+type SelectionIntent = "measurement" | "set";
 type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 type NoticeState = { message: string; tone: "status" | "error" };
 type FocusTarget = Element & { focus: (options?: FocusOptions) => void };
+type PinnedMeasurement = {
+  id: number;
+  selections: AtomSelection[];
+  minimumImage: boolean;
+};
 
 const DATASET_CHANNEL = "pqviewer-dataset";
 
@@ -89,7 +114,11 @@ export default function App() {
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
-  const [selectionPositions, setSelectionPositions] = useState<Float64Array | null>(null);
+  const [selectionIntent, setSelectionIntent] = useState<SelectionIntent>("measurement");
+  const [selectionAnchor, setSelectionAnchor] = useState<AtomSelection | null>(null);
+  const [selectionContext, setSelectionContext] = useState<SceneSelectionContext | null>(null);
+  const [namedSelections, setNamedSelections] = useState<NamedSelection[]>([]);
+  const [pinnedMeasurements, setPinnedMeasurements] = useState<PinnedMeasurement[]>([]);
   const [minimumImage, setMinimumImage] = useState(true);
   const [measurementPlotOpen, setMeasurementPlotOpen] = useState(false);
   const [measurementSeries, setMeasurementSeries] = useState<MeasurementSeriesProgress | null>(null);
@@ -120,6 +149,11 @@ export default function App() {
   const openRequest = useRef(0);
   const openController = useRef<AbortController | null>(null);
   const measurementRequest = useRef(0);
+  const nextPinnedMeasurement = useRef(1);
+  const selectionAnchorAudit = useRef<{ selections: AtomSelection[] | null; key: string }>({
+    selections: null,
+    key: "",
+  });
   const datasetReloadPending = useRef(false);
   const datasetCheckPending = useRef(false);
   const manifestGeneration = useRef("");
@@ -151,7 +185,11 @@ export default function App() {
     setFrameIndex(0);
     setLoadedFrame(null);
     setSelectedAtoms([]);
-    setSelectionPositions(null);
+    setSelectionIntent("measurement");
+    setSelectionAnchor(null);
+    setSelectionContext(null);
+    setNamedSelections([]);
+    setPinnedMeasurements([]);
     setMinimumImage(true);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
@@ -180,7 +218,11 @@ export default function App() {
     setFrameError("");
     setFrameLoading(false);
     setSelectedAtoms([]);
-    setSelectionPositions(null);
+    setSelectionIntent("measurement");
+    setSelectionAnchor(null);
+    setSelectionContext(null);
+    setNamedSelections([]);
+    setPinnedMeasurements([]);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
     setPlaying(false);
@@ -375,21 +417,23 @@ export default function App() {
     setWorkbenchTab(null);
     if (restoreFocus) requestAnimationFrame(() => {
       if (closingTab === "inspect") document.querySelector<HTMLCanvasElement>(".molecule-canvas")?.focus();
+      else if (closingTab === "summary") document.querySelector<HTMLButtonElement>(".selection-summary-button")?.focus();
       else panelButtonRef.current?.focus();
     });
   }, [workbenchTab]);
 
   const selectAtom = useCallback((selection: AtomSelection | null, additive = false) => {
     setPlaybackOptionsOpen(false);
+    setSelectionIntent("measurement");
     if (selection === null) {
       setSelectedAtoms([]);
-      setSelectionPositions(null);
+      setSelectionAnchor(null);
       setMeasurementPlotOpen(false);
       setMeasurementSeries(null);
-      setWorkbenchTab((current) => current === "inspect" ? null : current);
+      setWorkbenchTab((current) => current === "inspect" || current === "summary" ? null : current);
       return;
     }
-    setSelectionPositions(null);
+    setSelectionAnchor({ atom: selection.atom, image: [...selection.image] });
     setSelectedAtoms((current) => updateSceneSelection(
       current,
       selection,
@@ -397,15 +441,43 @@ export default function App() {
     ));
   }, []);
 
+  const selectManyAtoms = useCallback((
+    selections: AtomSelection[],
+    additive = false,
+  ) => {
+    if (selections.length === 0) return;
+    setPlaybackOptionsOpen(false);
+    setSelectionIntent("set");
+    setMeasurementPlotOpen(false);
+    setMeasurementSeries(null);
+    setSelectedAtoms((current) => (
+      additive
+        ? mergeSelections(current, selections, "toggle")
+        : replaceSelections(selections)
+    ));
+    const anchor = selections.at(-1);
+    if (anchor) setSelectionAnchor({ atom: anchor.atom, image: [...anchor.image] });
+  }, []);
+
   useEffect(() => {
     if (selectedAtoms.length === 0) {
-      setWorkbenchTab((current) => current === "inspect" ? null : current);
+      setSelectionAnchor(null);
+      setWorkbenchTab((current) => current === "inspect" || current === "summary" ? null : current);
+    } else if (
+      !selectionAnchor
+      || !selectedAtoms.some((selection) => sameAtomSelectionValue(selection, selectionAnchor))
+    ) {
+      const anchor = selectedAtoms.at(-1)!;
+      setSelectionAnchor({ atom: anchor.atom, image: [...anchor.image] });
     }
     if (selectedAtoms.length < 2 || selectedAtoms.length > 4) {
       setMeasurementPlotOpen(false);
       setMeasurementSeries(null);
     }
-  }, [selectedAtoms.length]);
+    if (selectedAtoms.length <= 4) {
+      setWorkbenchTab((current) => current === "summary" ? null : current);
+    }
+  }, [selectedAtoms, selectionAnchor]);
 
   const selectView = useCallback((preset: ViewPreset) => {
     setViewPreset(preset);
@@ -478,10 +550,82 @@ export default function App() {
   const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
   const velocityAvailable = Boolean(velocities && velocities.length >= (manifest?.topology.atom_count ?? 0) * 3);
   const pbc = measurementPbc(frame);
+  const selectionTopology = useMemo<SelectionTopology | null>(
+    () => selectionContext ? createSelectionTopology(selectionContext) : null,
+    [
+      manifest,
+      selectionContext?.atomResidueIndex,
+      selectionContext?.bonds,
+      selectionContext?.count,
+    ],
+  );
+  const selectionIndex = useMemo(
+    () => selectionContext && selectionTopology
+      ? new SelectionIndex(selectionContext, selectionTopology)
+      : null,
+    [selectionContext, selectionTopology],
+  );
+  const scientificSelectionPositions = useMemo(
+    () => selectionIndex && selectedAtoms.length <= 4
+      ? positionsForSelections(selectionIndex, selectedAtoms)
+      : null,
+    [selectedAtoms, selectionIndex],
+  );
+  const activeSelectionPositions = scientificSelectionPositions;
+  const selectionFormula = useMemo(
+    () => selectionContext
+      ? formulaForSelections(selectionContext, selectedAtoms)
+      : "",
+    [selectedAtoms, selectionContext?.atomicNumbers],
+  );
+  const selectionSummary = useMemo(
+    () => workbenchTab === "summary"
+      ? selectionIndex?.summarize(selectedAtoms) ?? null
+      : null,
+    [selectedAtoms, selectionIndex, workbenchTab],
+  );
+  const selectableElements = useMemo(() => {
+    if (!selectionContext) return [];
+    const numbers = new Set<number>();
+    for (let atom = 0; atom < selectionContext.count; atom += 1) {
+      const atomicNumber = selectionContext.atomicNumbers[atom];
+      if (atomicNumber > 0 && atomicNumber < ELEMENT_SYMBOLS.length) numbers.add(atomicNumber);
+    }
+    return [...numbers].sort((left, right) => left - right);
+  }, [selectionContext?.atomicNumbers, selectionContext?.count]);
+  const selectionVisibilityKey = [
+    presentation.wrap,
+    presentation.water,
+    presentation.hydrogens,
+    presentation.images.min.join(","),
+    presentation.images.max.join(","),
+  ].join(":");
+  useEffect(() => {
+    if (!selectionIndex || selectedAtoms.length === 0) return;
+    if (
+      selectionAnchorAudit.current.selections === selectedAtoms
+      && selectionAnchorAudit.current.key === selectionVisibilityKey
+    ) return;
+    selectionAnchorAudit.current = {
+      selections: selectedAtoms,
+      key: selectionVisibilityKey,
+    };
+    if (selectionAnchor && selectionIndex.isVisible(selectionAnchor)) return;
+    const visible = [...selectedAtoms].reverse().find((selection) => (
+      selectionIndex.isVisible(selection)
+    ));
+    if (visible) setSelectionAnchor({ atom: visible.atom, image: [...visible.image] });
+  }, [
+    selectedAtoms,
+    selectionAnchor,
+    selectionIndex,
+    selectionVisibilityKey,
+  ]);
   const capabilities = sceneInfo?.capabilities ?? null;
   const canPlay = (manifest?.frame_count ?? 0) > 1;
   const canRender = Boolean(frame && capabilities && !frameLoading);
   const canPlotMeasurement = canPlay
+    && selectionIntent === "measurement"
     && selectedAtoms.length >= 2
     && selectedAtoms.length <= 4
     && selectedAtoms.every(({ atom }) => atom >= 0 && atom < (manifest?.topology.atom_count ?? 0));
@@ -496,6 +640,130 @@ export default function App() {
     () => plotFrameAxis.map(() => null),
     [plotFrameAxis],
   );
+
+  const applyScientificSelection = useCallback((
+    selections: readonly AtomSelection[],
+    message?: string,
+    intent: SelectionIntent = "set",
+  ) => {
+    const next = replaceSelections(selections);
+    setSelectedAtoms(next);
+    setSelectionIntent(intent);
+    if (intent === "set") {
+      setMeasurementPlotOpen(false);
+      setMeasurementSeries(null);
+    }
+    const anchor = next.at(-1);
+    setSelectionAnchor(anchor ? { atom: anchor.atom, image: [...anchor.image] } : null);
+    if (message) setNotice({ message, tone: "status" });
+  }, []);
+
+  const selectScope = useCallback((scope: ScientificSelectionScope) => {
+    const anchor = selectionAnchor ?? selectedAtoms.at(-1) ?? null;
+    if (!selectionIndex || !anchor) return;
+    const scoped = selectionIndex.selectScope(anchor, scope);
+    if (scoped === null) {
+      setNotice({
+        message: scope === "residue"
+          ? "Residue data is unavailable for this atom."
+          : "Bond connectivity is unavailable for this structure.",
+        tone: "status",
+      });
+      return;
+    }
+    if (scoped.length === 0) {
+      setNotice({ message: "The anchor is not visible in the current view.", tone: "status" });
+      return;
+    }
+    applyScientificSelection(scoped, `${scopeLabel(scope)} · ${atomCountLabel(scoped.length)}`);
+  }, [applyScientificSelection, selectedAtoms, selectionAnchor, selectionIndex]);
+
+  const selectWithinDistance = useCallback((distance: number) => {
+    if (!selectionIndex || selectedAtoms.length === 0 || !Number.isFinite(distance) || distance <= 0) return;
+    const nearby = selectionIndex.withinDistanceOf(selectedAtoms, distance);
+    if (nearby.length === 0) {
+      setNotice({ message: "No visible atoms are within that distance.", tone: "status" });
+      return;
+    }
+    applyScientificSelection(
+      nearby,
+      `Within ${formatNumber(distance)} Å · ${atomCountLabel(nearby.length)}`,
+    );
+  }, [applyScientificSelection, selectedAtoms, selectionIndex]);
+
+  const selectElement = useCallback((atomicNumber: number) => {
+    if (!selectionIndex) return;
+    const selections = selectionIndex.selectElement(atomicNumber);
+    if (selections.length === 0) {
+      setNotice({
+        message: `No visible ${ELEMENT_NAMES[atomicNumber]} atoms.`,
+        tone: "status",
+      });
+      return;
+    }
+    applyScientificSelection(
+      selections,
+      `${ELEMENT_SYMBOLS[atomicNumber]} · ${atomCountLabel(selections.length)}`,
+    );
+  }, [applyScientificSelection, selectionIndex]);
+
+  const selectWater = useCallback(() => {
+    if (!selectionIndex) return;
+    const selections = selectionIndex.selectWater();
+    if (selections.length === 0) {
+      setNotice({ message: "No visible water molecules found.", tone: "status" });
+      return;
+    }
+    applyScientificSelection(selections, `Water · ${atomCountLabel(selections.length)}`);
+  }, [applyScientificSelection, selectionIndex]);
+
+  const saveNamedSelection = useCallback((name: string): boolean => {
+    if (selectedAtoms.length === 0) return false;
+    try {
+      const named = createNamedSelection(name, selectedAtoms);
+      setNamedSelections((current) => [
+        ...current.filter((item) => item.name.toLowerCase() !== named.name.toLowerCase()),
+        named,
+      ]);
+      setNotice({ message: `Saved selection · ${named.name}`, tone: "status" });
+      return true;
+    } catch (error) {
+      setNotice({ message: message(error), tone: "error" });
+      return false;
+    }
+  }, [selectedAtoms]);
+
+  const recallNamedSelection = useCallback((named: NamedSelection) => {
+    applyScientificSelection(named.selections, `Selection · ${named.name}`);
+  }, [applyScientificSelection]);
+
+  const removeNamedSelection = useCallback((name: string) => {
+    setNamedSelections((current) => current.filter((item) => item.name !== name));
+  }, []);
+
+  const pinSelectedMeasurement = useCallback(() => {
+    if (
+      selectionIntent !== "measurement"
+      || selectedAtoms.length < 2
+      || selectedAtoms.length > 4
+    ) return;
+    const id = nextPinnedMeasurement.current;
+    nextPinnedMeasurement.current += 1;
+    setPinnedMeasurements((current) => [
+      ...current,
+      {
+        id,
+        selections: cloneSelections(selectedAtoms),
+        minimumImage,
+      },
+    ].slice(-8));
+    setNotice({ message: "Measurement pinned.", tone: "status" });
+  }, [minimumImage, selectedAtoms, selectionIntent]);
+
+  const restorePinnedMeasurement = useCallback((pin: PinnedMeasurement) => {
+    setMinimumImage(pin.minimumImage);
+    applyScientificSelection(pin.selections, undefined, "measurement");
+  }, [applyScientificSelection]);
 
   const closeMeasurementPlot = useCallback((restoreFocus = false) => {
     setMeasurementPlotOpen(false);
@@ -569,27 +837,6 @@ export default function App() {
     selectedAtoms,
   ]);
 
-  useEffect(() => {
-    setSelectedAtoms((current) => {
-      const visible = current.filter((selection) => selectionVisibleInImages(
-        selection,
-        presentation.images.min,
-        presentation.images.max,
-        pbc,
-      ));
-      return visible.length === current.length ? current : visible;
-    });
-  }, [
-    pbc[0],
-    pbc[1],
-    pbc[2],
-    presentation.images.max[0],
-    presentation.images.max[1],
-    presentation.images.max[2],
-    presentation.images.min[0],
-    presentation.images.min[1],
-    presentation.images.min[2],
-  ]);
   const showRender = useCallback(() => {
     if (!canRender || rendering) return;
     setCommandOpen(false);
@@ -919,6 +1166,22 @@ export default function App() {
     vimMode,
   ]);
 
+  const resolveCommandAction = useCallback((query: string): CommandAction | null => {
+    const distance = parseWithinSelectionCommand(query);
+    if (distance === null) return null;
+    return {
+      id: `select-within-${distance}`,
+      label: `Select within ${formatNumber(distance)} Å of selection`,
+      keywords: "nearby radius distance atoms",
+      detail: selectedAtoms.length > 0 && selectionIndex ? "Run" : "Select atoms first",
+      disabled: selectedAtoms.length === 0 || !selectionIndex,
+      run: () => {
+        selectWithinDistance(distance);
+        setCommandOpen(false);
+      },
+    };
+  }, [selectWithinDistance, selectedAtoms.length, selectionIndex]);
+
   const commands = useMemo<CommandAction[]>(() => {
     const run = (action: () => void) => () => {
       action();
@@ -970,6 +1233,65 @@ export default function App() {
         detail: presentation.wrap === wrap ? "Current" : undefined,
         run: run(() => updatePresentation({ wrap })),
       })) : []),
+      ...selectableElements.map((atomicNumber) => ({
+        id: `select-element-${atomicNumber}`,
+        label: `Select ${ELEMENT_NAMES[atomicNumber]}`,
+        keywords: `${ELEMENT_SYMBOLS[atomicNumber]} element atoms`,
+        detail: ELEMENT_SYMBOLS[atomicNumber],
+        run: run(() => selectElement(atomicNumber)),
+      })),
+      ...(selectionContext?.waterAtoms.size ? [{
+        id: "select-water",
+        label: "Select water",
+        keywords: "solvent molecule H2O atoms",
+        run: run(selectWater),
+      }] : []),
+      ...(selectionAnchor ? ([
+        ["atom", "Select anchor atom"],
+        ["element", "Select anchor element"],
+        ["molecule", "Select anchor molecule"],
+        ["residue", "Select anchor residue"],
+        ["component", "Select connected component"],
+      ] as const).map(([scope, label]) => ({
+        id: `select-scope-${scope}`,
+        label,
+        keywords: "selection scope expand atoms",
+        disabled: (scope === "component" && !selectionIndex?.hasConnectivity),
+        run: run(() => selectScope(scope)),
+      })) : []),
+      ...namedSelections.map((named, index) => ({
+        id: `selection-saved-${index}`,
+        label: `Recall selection · ${named.name}`,
+        keywords: "saved named atoms",
+        detail: atomCountLabel(named.selections.length),
+        run: run(() => recallNamedSelection(named)),
+      })),
+      ...(selectionIntent === "measurement"
+        && selectedAtoms.length >= 2
+        && selectedAtoms.length <= 4 ? [{
+        id: "pin-measurement",
+        label: "Pin measurement",
+        keywords: "selection distance angle dihedral keep",
+        run: run(pinSelectedMeasurement),
+      }] : []),
+      ...(selectionIntent === "measurement"
+        && cellAvailable
+        && pbc.some(Boolean)
+        && selectedAtoms.length >= 2
+        && selectedAtoms.length <= 4 ? [{
+        id: "measurement-geometry",
+        label: minimumImage ? "Use displayed-image geometry" : "Use minimum-image geometry",
+        keywords: "selection measurement periodic distance image",
+        detail: minimumImage ? "Minimum image" : "Displayed images",
+        run: run(() => setMinimumImage((current) => !current)),
+      }] : []),
+      ...pinnedMeasurements.map((pin) => ({
+        id: `measurement-pinned-${pin.id}`,
+        label: `Recall pinned measurement ${pin.id}`,
+        keywords: "selection distance angle dihedral",
+        detail: `${pin.selections.length} atoms`,
+        run: run(() => restorePinnedMeasurement(pin)),
+      })),
       ...(canPlotMeasurement ? [{
         id: "plot-measurement",
         label: measurementPlotOpen ? "Hide measurement plot" : "Plot measurement",
@@ -1013,10 +1335,25 @@ export default function App() {
     frameIndex,
     manifest?.frame_count,
     measurementPlotOpen,
+    minimumImage,
+    namedSelections,
     openWorkbench,
+    pinSelectedMeasurement,
     playing,
+    pinnedMeasurements,
+    pbc,
     presentation,
+    recallNamedSelection,
+    restorePinnedMeasurement,
     selectView,
+    selectElement,
+    selectScope,
+    selectWater,
+    selectableElements,
+    selectionAnchor,
+    selectionContext,
+    selectionIndex,
+    selectionIntent,
     setFrame,
     shortcutLabels,
     showOpen,
@@ -1035,12 +1372,23 @@ export default function App() {
   ]);
   const commandContextIds = useMemo(() => [
     ...(selectedAtoms.length === 1 && selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
+    ...(selectionAnchor ? ["select-scope-element", "select-scope-molecule"] : []),
+    ...(selectionIntent === "measurement"
+      && selectedAtoms.length >= 2
+      && selectedAtoms.length <= 4 ? ["pin-measurement"] : []),
     ...(canPlotMeasurement ? ["plot-measurement"] : []),
     ...(canPlay ? ["play", "previous", "next"] : []),
     "fit",
     "display",
     "export",
-  ], [canPlay, canPlotMeasurement, selectedAtom, selectedAtoms.length]);
+  ], [
+    canPlay,
+    canPlotMeasurement,
+    selectedAtom,
+    selectedAtoms.length,
+    selectionAnchor,
+    selectionIntent,
+  ]);
   const workspaceClass = [
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
@@ -1159,8 +1507,9 @@ export default function App() {
             velocityScale={velocityScale}
             appearance="light"
             onSelect={selectAtom}
+            onSelectMany={selectManyAtoms}
             onSceneInfo={setSceneInfo}
-            onSelectionPositions={setSelectionPositions}
+            onSelectionContext={setSelectionContext}
           />
         ) : (
           <div className="canvas-field" />
@@ -1168,7 +1517,15 @@ export default function App() {
 
         {manifest && capabilities && <aside ref={workbenchRef} className={workbenchTab === "inspect" ? "workbench atom-card" : "workbench"} id="workbench" aria-labelledby="workbench-title" hidden={!workbenchVisible} tabIndex={-1}>
           <div className="workbench-heading">
-            <strong id="workbench-title">{workbenchTab === "view" ? "View" : selectedAtom === null ? "Atom" : `${atomSymbol(manifest, selectedAtom)} · ${selectedAtom + 1}`}</strong>
+            <strong id="workbench-title">{
+              workbenchTab === "view"
+                ? "View"
+                : workbenchTab === "summary"
+                  ? "Selection"
+                  : selectedAtom === null
+                    ? "Atom"
+                    : `${atomSymbol(manifest, selectedAtom)} · ${selectedAtom + 1}`
+            }</strong>
             <button className="icon-button" type="button" disabled={rendering} onClick={() => {
               closeWorkbench(true);
             }} aria-label="Close"><Icon name="close" /></button>
@@ -1190,19 +1547,46 @@ export default function App() {
               manifest={manifest}
               frame={frame}
               selectedAtom={selectedAtom}
-              selectedPosition={selectedPosition(selectionPositions, selectedAtoms.length - 1)}
+              selectedPosition={selectedPosition(activeSelectionPositions, selectedAtoms.length - 1)}
               cellAvailable={cellAvailable}
+            />}
+            {workbenchTab === "summary" && <SelectionSummaryPanel
+              summary={selectionSummary}
+              uniqueAtoms={new Set(selectedAtoms.map(({ atom }) => atom)).size}
             />}
           </div>
         </aside>}
+
+        {manifest && pinnedMeasurements.length > 0 && selectionIndex && (
+          <PinnedMeasurements
+            manifest={manifest}
+            frame={frame}
+            pins={pinnedMeasurements}
+            index={selectionIndex}
+            pbc={pbc}
+            activeId={selectionIntent === "measurement"
+              ? pinnedMeasurements.find((pin) => (
+                  pin.minimumImage === minimumImage
+                  && sameSelectionList(pin.selections, selectedAtoms)
+                ))?.id ?? null
+              : null}
+            onRestore={restorePinnedMeasurement}
+            onRemove={(id) => setPinnedMeasurements((current) => current.filter((pin) => pin.id !== id))}
+          />
+        )}
 
         {manifest && selectedAtoms.length > 0 && (
           <SelectionBar
             manifest={manifest}
             frame={frame}
             selectedAtoms={selectedAtoms}
-            displayedPositions={selectionPositions}
+            displayedPositions={activeSelectionPositions}
+            selectionFormula={selectionFormula}
+            namedSelections={namedSelections}
+            selectionAnchor={selectionAnchor}
+            connectivityAvailable={Boolean(selectionIndex?.hasConnectivity)}
             minimumImage={minimumImage}
+            measurementEnabled={selectionIntent === "measurement"}
             canPlot={canPlotMeasurement}
             plotOpen={measurementPlotOpen}
             onMinimumImage={() => setMinimumImage((current) => !current)}
@@ -1211,12 +1595,22 @@ export default function App() {
               : showMeasurementPlot()}
             onClear={() => {
               setSelectedAtoms([]);
-              setSelectionPositions(null);
+              setSelectionIntent("measurement");
+              setSelectionAnchor(null);
               closeMeasurementPlot(false);
             }}
+            onScope={selectScope}
+            onWithin={selectWithinDistance}
+            onSave={saveNamedSelection}
+            onRecall={recallNamedSelection}
+            onRemoveSaved={removeNamedSelection}
+            onPin={pinSelectedMeasurement}
             onDetails={() => workbenchVisible && workbenchTab === "inspect"
               ? closeWorkbench(false)
               : openWorkbench("inspect", true)}
+            onSummary={() => workbenchVisible && workbenchTab === "summary"
+              ? closeWorkbench(false)
+              : openWorkbench("summary", true)}
           />
         )}
 
@@ -1328,6 +1722,7 @@ export default function App() {
           actions={commands}
           contextIds={commandContextIds}
           recentIds={recentCommandIds}
+          resolveAction={resolveCommandAction}
           onClose={() => setCommandOpen(false)}
         />}
         {shortcutsOpen && <ShortcutSheet
@@ -1439,11 +1834,13 @@ function CommandPalette({
   actions,
   contextIds,
   recentIds,
+  resolveAction,
   onClose,
 }: {
   actions: CommandAction[];
   contextIds: string[];
   recentIds: string[];
+  resolveAction?: (query: string) => CommandAction | null;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -1451,10 +1848,13 @@ function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const visible = useMemo(
-    () => searchCommandActions(actions, query, { contextIds, recentIds }),
-    [actions, contextIds, query, recentIds],
-  );
+  const visible = useMemo(() => {
+    const searched = searchCommandActions(actions, query, { contextIds, recentIds });
+    const resolved = resolveAction?.(query) ?? null;
+    return resolved
+      ? [resolved, ...searched.filter((action) => action.id !== resolved.id)]
+      : searched;
+  }, [actions, contextIds, query, recentIds, resolveAction]);
 
   useModalFocus(panelRef, inputRef);
   useEffect(() => setActive(0), [visible]);
@@ -1485,7 +1885,7 @@ function CommandPalette({
           else if (event.key === "ArrowUp") { event.preventDefault(); move(-1); }
           else if (event.key === "Enter") {
             event.preventDefault();
-            visible[active]?.run();
+            if (!visible[active]?.disabled) visible[active]?.run();
           }
         }}
       /><kbd>esc</kbd></label>
@@ -1497,6 +1897,7 @@ function CommandPalette({
           type="button"
           role="option"
           aria-selected={index === active}
+          disabled={action.disabled}
           className={index === active ? "is-active" : ""}
           onPointerMove={() => setActive(index)}
           onClick={action.run}
@@ -1738,26 +2139,61 @@ function SelectionBar({
   frame,
   selectedAtoms,
   displayedPositions,
+  selectionFormula,
+  namedSelections,
+  selectionAnchor,
+  connectivityAvailable,
   minimumImage,
+  measurementEnabled,
   canPlot,
   plotOpen,
   onMinimumImage,
   onPlot,
   onClear,
+  onScope,
+  onWithin,
+  onSave,
+  onRecall,
+  onRemoveSaved,
+  onPin,
   onDetails,
+  onSummary,
 }: {
   manifest: Manifest;
   frame: FrameData | null;
   selectedAtoms: AtomSelection[];
   displayedPositions: Float64Array | null;
+  selectionFormula: string;
+  namedSelections: NamedSelection[];
+  selectionAnchor: AtomSelection | null;
+  connectivityAvailable: boolean;
   minimumImage: boolean;
+  measurementEnabled: boolean;
   canPlot: boolean;
   plotOpen: boolean;
   onMinimumImage: () => void;
   onPlot: () => void;
   onClear: () => void;
+  onScope: (scope: ScientificSelectionScope) => void;
+  onWithin: (distance: number) => void;
+  onSave: (name: string) => boolean;
+  onRecall: (selection: NamedSelection) => void;
+  onRemoveSaved: (name: string) => void;
+  onPin: () => void;
   onDetails: () => void;
+  onSummary: () => void;
 }) {
+  const [name, setName] = useState("");
+  const [distance, setDistance] = useState("3.0");
+  const toolsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const tools = toolsRef.current;
+      if (tools?.open && !tools.contains(event.target as Node)) tools.open = false;
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, []);
   const validSelections = selectedAtoms.filter(
     ({ atom }) => atom >= 0 && atom < manifest.topology.atom_count,
   );
@@ -1765,6 +2201,8 @@ function SelectionBar({
   const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
   const pbc = measurementPbc(frame);
   const periodicMeasurement = Boolean(
+    measurementEnabled
+    &&
     cell
     && pbc.some(Boolean)
     && validSelections.length >= 2
@@ -1777,6 +2215,9 @@ function SelectionBar({
     ? displayedPositions
     : null;
   const measurement = measurementPositions
+    && measurementEnabled
+    && validSelections.length >= 2
+    && validSelections.length <= 4
     ? measureAtomSelection(
         measurementPositions,
         validSelections.map((_, index) => index),
@@ -1786,7 +2227,11 @@ function SelectionBar({
       )
     : null;
   const atomLabels = validSelections.map((selection) => atomSelectionLabel(manifest, selection));
-  let title = validAtoms.length === 1 ? atomLabels[0] : `${validAtoms.length} atoms`;
+  let title = validAtoms.length === 1
+    ? atomLabels[0]
+    : selectionFormula
+      ? `${selectionFormula} · ${validAtoms.length.toLocaleString()} atoms`
+      : `${validAtoms.length.toLocaleString()} atoms`;
   let value = "";
 
   if (measurement?.ok) {
@@ -1796,10 +2241,30 @@ function SelectionBar({
     value = [measurementPositions[0], measurementPositions[1], measurementPositions[2]]
       .map((coordinate) => formatNumber(coordinate))
       .join("  ");
-  } else if (validAtoms.length > 1) {
+  } else if (
+    measurementEnabled
+    && validAtoms.length > 1
+    && validAtoms.length <= 4
+  ) {
     value = atomLabels.slice(0, 4).join(" · ");
-    if (validAtoms.length > 4) value += ` · +${validAtoms.length - 4}`;
   }
+  const anchorResidue = selectionAnchor
+    ? manifest.topology.atom_residue_index?.[selectionAnchor.atom] ?? -1
+    : -1;
+  const closeTools = () => {
+    if (toolsRef.current) toolsRef.current.open = false;
+  };
+  const applyDistance = () => {
+    const parsed = Number(distance);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    onWithin(parsed);
+    closeTools();
+  };
+  const save = () => {
+    if (!onSave(name)) return;
+    setName("");
+    closeTools();
+  };
 
   return <section className="selection-bar" aria-label="Atom selection">
     <div className="selection-readout">
@@ -1819,8 +2284,92 @@ function SelectionBar({
         <span className="measurement-mode-compact" aria-hidden="true">{minimumImage ? "Min. image" : "Images"}</span>
       </button>
     ) : validSelections.length === 1 ? (
-      <span className="selection-hint">Shift-click or tap more</span>
+      <span className="selection-hint">Shift-click or Shift-drag</span>
     ) : null}
+    <details
+      ref={toolsRef}
+      className="selection-tools"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !event.currentTarget.open) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.currentTarget.open = false;
+        event.currentTarget.querySelector<HTMLElement>("summary")?.focus();
+      }}
+    >
+      <summary>Select</summary>
+      <div className="selection-tools-popover">
+        <section>
+          <span>From anchor</span>
+          <div className="selection-scope-grid">
+            {([
+              ["atom", "Atom"],
+              ["element", "Element"],
+              ["molecule", "Molecule"],
+              ["residue", "Residue"],
+              ["component", "Component"],
+            ] as const).map(([scope, label]) => {
+              const disabled = (
+                (scope === "residue" && anchorResidue < 0)
+                || (scope === "component" && !connectivityAvailable)
+                || (scope === "molecule" && anchorResidue < 0 && !connectivityAvailable)
+              );
+              return <button
+                key={scope}
+                type="button"
+                disabled={disabled}
+                onClick={() => {
+                  onScope(scope);
+                  closeTools();
+                }}
+              >{label}</button>;
+            })}
+          </div>
+        </section>
+        <section>
+          <label htmlFor="selection-distance">Within selection</label>
+          <div className="selection-input-row">
+            <input
+              id="selection-distance"
+              inputMode="decimal"
+              value={distance}
+              aria-label="Distance in angstrom"
+              onChange={(event) => setDistance(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && applyDistance()}
+            />
+            <span>Å</span>
+            <button type="button" onClick={applyDistance}>Apply</button>
+          </div>
+        </section>
+        <section>
+          <label htmlFor="selection-name">Save selection</label>
+          <div className="selection-input-row is-name">
+            <input
+              id="selection-name"
+              value={name}
+              maxLength={80}
+              placeholder="e.g. active site"
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && save()}
+            />
+            <button type="button" disabled={!name.trim()} onClick={save}>Save</button>
+          </div>
+        </section>
+        {namedSelections.length > 0 && <section className="saved-selections">
+          <span>Saved</span>
+          {namedSelections.map((named) => <div key={named.name}>
+            <button type="button" onClick={() => {
+              onRecall(named);
+              closeTools();
+            }}>
+              <span>{named.name}</span>
+              <small>{named.selections.length.toLocaleString()}</small>
+            </button>
+            <button type="button" aria-label={`Delete ${named.name}`} onClick={() => onRemoveSaved(named.name)}><Icon name="close" /></button>
+          </div>)}
+        </section>}
+      </div>
+    </details>
     {canPlot && (
       <button
         className="selection-plot-button"
@@ -1831,11 +2380,85 @@ function SelectionBar({
         {plotOpen ? "Hide plot" : "Plot"}
       </button>
     )}
+    {measurementEnabled
+      && validSelections.length >= 2
+      && validSelections.length <= 4 && (
+      <button type="button" onClick={onPin}>Pin</button>
+    )}
     {validSelections.length === 1 && (
       <button type="button" onClick={onDetails}>Details</button>
     )}
+    {validSelections.length > 4 && (
+      <button className="selection-summary-button" type="button" onClick={onSummary}>Summary</button>
+    )}
     <button className="icon-button" type="button" onClick={onClear} aria-label="Clear selection"><Icon name="close" /></button>
   </section>;
+}
+
+function PinnedMeasurements({
+  manifest,
+  frame,
+  pins,
+  index,
+  pbc,
+  activeId,
+  onRestore,
+  onRemove,
+}: {
+  manifest: Manifest;
+  frame: FrameData | null;
+  pins: PinnedMeasurement[];
+  index: SelectionIndex;
+  pbc: readonly [boolean, boolean, boolean];
+  activeId: number | null;
+  onRestore: (pin: PinnedMeasurement) => void;
+  onRemove: (id: number) => void;
+}) {
+  return <section className="pinned-measurements" aria-label="Pinned measurements">
+    {pins.map((pin) => {
+      const readout = measurementReadout(manifest, frame, index, pin, pbc);
+      return <div key={pin.id}>
+        <button
+          className="selection-chip"
+          type="button"
+          aria-pressed={activeId === pin.id}
+          onClick={() => onRestore(pin)}
+        >
+          <span>{readout.title}</span>
+          <strong>{readout.value}</strong>
+        </button>
+        <button
+          className="pinned-measurement-remove"
+          type="button"
+          aria-label={`Remove pinned ${readout.title.toLowerCase()} · ${
+            pin.minimumImage ? "minimum image" : "displayed images"
+          } · ${readout.value}`}
+          onClick={() => onRemove(pin.id)}
+        ><Icon name="close" /></button>
+      </div>;
+    })}
+  </section>;
+}
+
+function SelectionSummaryPanel({
+  summary,
+  uniqueAtoms,
+}: {
+  summary: SelectionSummary | null;
+  uniqueAtoms: number;
+}) {
+  if (!summary) return <p className="quiet-copy">Selection geometry is unavailable.</p>;
+  return <div className="inspector-content selection-summary-panel">
+    <section className="readout-section">
+      <Readout label="Formula" value={summary.formula || "—"} />
+      <Readout label="Occurrences" value={summary.count.toLocaleString()} />
+      {uniqueAtoms !== summary.count && (
+        <Readout label="Unique atoms" value={uniqueAtoms.toLocaleString()} />
+      )}
+      <VectorReadout label="Cartesian centroid" values={summary.centroid} offset={0} unit="Å" />
+      <VectorReadout label="Extent" values={summary.extent} offset={0} unit="Å" />
+    </section>
+  </div>;
 }
 
 function Inspector({
@@ -2036,6 +2659,10 @@ export function frameCountLabel(value: number): string {
   return `${count.toLocaleString()} ${count === 1 ? "frame" : "frames"}`;
 }
 
+function atomCountLabel(value: number): string {
+  return `${value.toLocaleString()} ${value === 1 ? "atom" : "atoms"}`;
+}
+
 export function noticeDurationMs(value: string): number {
   return Math.min(10_000, Math.max(4_200, value.length * 70));
 }
@@ -2069,18 +2696,88 @@ export function measurementPbc(frame: FrameData | null): [boolean, boolean, bool
   return framePbc(frame);
 }
 
-export function selectionVisibleInImages(
-  selection: AtomSelection,
-  minimum: CellOffset,
-  maximum: CellOffset,
-  pbc: readonly [boolean, boolean, boolean],
+function scopeLabel(scope: ScientificSelectionScope): string {
+  return {
+    atom: "Atom",
+    element: "Element",
+    molecule: "Molecule",
+    residue: "Residue",
+    component: "Connected component",
+  }[scope];
+}
+
+function sameAtomSelectionValue(left: AtomSelection, right: AtomSelection): boolean {
+  return left.atom === right.atom
+    && left.image[0] === right.image[0]
+    && left.image[1] === right.image[1]
+    && left.image[2] === right.image[2];
+}
+
+function sameSelectionList(
+  left: readonly AtomSelection[],
+  right: readonly AtomSelection[],
 ): boolean {
-  return selection.image.every((value, axis) => {
-    if (!pbc[axis]) return value === 0;
-    const low = Math.min(minimum[axis], maximum[axis]);
-    const high = Math.max(minimum[axis], maximum[axis]);
-    return value >= low && value <= high;
-  });
+  return left.length === right.length
+    && left.every((selection, index) => sameAtomSelectionValue(selection, right[index]));
+}
+
+function positionsForSelections(
+  index: SelectionIndex,
+  selections: readonly AtomSelection[],
+): Float64Array | null {
+  const positions = new Float64Array(selections.length * 3);
+  for (let selectionIndex = 0; selectionIndex < selections.length; selectionIndex += 1) {
+    const position = index.displayedPosition(selections[selectionIndex]);
+    if (!position) return null;
+    positions.set(position, selectionIndex * 3);
+  }
+  return positions;
+}
+
+function formulaForSelections(
+  context: SceneSelectionContext,
+  selections: readonly AtomSelection[],
+): string {
+  const atoms = new Set<number>();
+  const atomicNumbers: number[] = [];
+  for (const selection of selections) {
+    if (
+      selection.atom < 0
+      || selection.atom >= context.count
+      || atoms.has(selection.atom)
+    ) continue;
+    atoms.add(selection.atom);
+    atomicNumbers.push(context.atomicNumbers[selection.atom]);
+  }
+  return hillFormula(atomicNumbers);
+}
+
+function measurementReadout(
+  manifest: Manifest,
+  frame: FrameData | null,
+  index: SelectionIndex,
+  pin: PinnedMeasurement,
+  pbc: readonly [boolean, boolean, boolean],
+): { title: string; value: string } {
+  const labels = pin.selections.map((selection) => atomSelectionLabel(manifest, selection));
+  const positions = positionsForSelections(index, pin.selections);
+  const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+  const measurement = positions
+    ? measureAtomSelection(
+        positions,
+        pin.selections.map((_, selectionIndex) => selectionIndex),
+        pin.minimumImage && cell && pbc.some(Boolean)
+          ? { mode: "minimum-image", cell, pbc }
+          : { mode: "direct" },
+      )
+    : null;
+  if (!measurement?.ok) {
+    return { title: labels.join("–") || "Measurement", value: "—" };
+  }
+  return {
+    title: `${measurement.kind[0].toUpperCase()}${measurement.kind.slice(1)} · ${labels.join("–")}`,
+    value: `${formatNumber(measurement.value)} ${measurement.unit === "angstrom" ? "Å" : "°"}`,
+  };
 }
 
 function selectedPosition(positions: Float64Array | null, index: number): Float64Array | null {

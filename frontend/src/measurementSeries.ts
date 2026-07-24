@@ -1,8 +1,6 @@
 import { DatasetChangedError, frameArray } from "./api";
 import {
   createCellBasis,
-  prepareScene,
-  prepareTopology,
   resolvePbc,
 } from "./scene/model";
 import {
@@ -62,21 +60,6 @@ export interface MeasurementSeriesSvgOptions {
 const MAX_COUNT_PROGRESS_UPDATES = 60;
 const MAX_LARGE_COUNT_PROGRESS_UPDATES = 20;
 
-const measurementPresentation: ScenePresentation = {
-  mode: "ball-stick",
-  water: "show",
-  hydrogens: true,
-  wrap: "none",
-  images: { min: [0, 0, 0], max: [0, 0, 0] },
-  cell: false,
-  forces: false,
-  velocities: false,
-  atomScale: 1,
-  bondScale: 1,
-  color: "element",
-  quality: "auto",
-};
-
 export async function calculateMeasurementSeries({
   manifest,
   frameCount,
@@ -102,8 +85,6 @@ export async function calculateMeasurementSeries({
   const steps = Array<number | null>(frameCount).fill(null);
   const frameValues = Object.freeze(oneBasedFrames(frameCount));
   const timeUnits = new Set<string>();
-  const presentation = { ...measurementPresentation, wrap };
-  let topology: ReturnType<typeof prepareTopology> | undefined;
   let loadedCount = 0;
   let lastProgressCount = 0;
   let consecutiveLoadFailures = 0;
@@ -138,27 +119,18 @@ export async function calculateMeasurementSeries({
       const timeUnit = metadataUnit(frame, "time");
       if (timeUnit) timeUnits.add(timeUnit);
 
-      if (wrap === "molecule") {
-        if (topology === undefined) topology = prepareTopology(manifest, frame);
-        const scene = prepareScene(manifest, frame, presentation, topology);
-        values[index] = scene
-          ? measureFrame(frame, scene.positions, scene.pbc, selected, minimumImage, "none")
-          : null;
-      } else {
-        const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
-        const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
-        const basis = createCellBasis(cell);
-        values[index] = positions
-          ? measureFrame(
-              frame,
-              positions,
-              resolvePbc(frame, basis),
-              selected,
-              minimumImage,
-              wrap,
-            )
-          : null;
-      }
+      const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+      const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+      const basis = createCellBasis(cell);
+      values[index] = positions
+        ? measureFrame(
+            frame,
+            positions,
+            resolvePbc(frame, basis),
+            selected,
+            minimumImage,
+          )
+        : null;
     } catch (error) {
       if (signal.aborted || isAbortError(error)) throw abortReason(signal, error);
       if (error instanceof DatasetChangedError) throw error;
@@ -295,14 +267,15 @@ function measureFrame(
   fallbackPbc: readonly [boolean, boolean, boolean],
   selections: readonly AtomSelection[],
   minimumImage: boolean,
-  wrap: "atom" | "none",
 ): number | null {
   const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
   const basis = createCellBasis(cell);
   const pbc = framePbc(frame, fallbackPbc);
-  const selectedPositions = wrap === "atom" && basis
-    ? selectedWrappedAtomPositions(positions, selections, basis, pbc)
-    : selectedAtomPositions(positions, selections, basis ? cell : null);
+  const selectedPositions = selectedAtomPositions(
+    positions,
+    selections,
+    basis ? cell : null,
+  );
   if (!selectedPositions) return null;
   const indices = selections.map((_, index) => index);
   if (minimumImage && (!cell || !pbc.some(Boolean))) return null;
@@ -314,51 +287,6 @@ function measureFrame(
       })
     : measureAtomSelection(selectedPositions, indices);
   return result.ok && Number.isFinite(result.value) ? result.value : null;
-}
-
-function selectedWrappedAtomPositions(
-  source: Float32Array,
-  selections: readonly AtomSelection[],
-  basis: NonNullable<ReturnType<typeof createCellBasis>>,
-  pbc: readonly [boolean, boolean, boolean],
-): Float64Array | null {
-  const result = new Float64Array(selections.length * 3);
-  for (let index = 0; index < selections.length; index += 1) {
-    const selection = selections[index];
-    const offset = selection.atom * 3;
-    if (
-      !Number.isInteger(selection.atom)
-      || selection.atom < 0
-      || offset + 2 >= source.length
-      || selection.image.length !== 3
-      || !selection.image.every(Number.isInteger)
-    ) {
-      return null;
-    }
-    const x = source[offset];
-    const y = source[offset + 1];
-    const z = source[offset + 2];
-    if (![x, y, z].every(Number.isFinite)) return null;
-    const fractional = [
-      x * basis.reciprocal[0].x + y * basis.reciprocal[0].y + z * basis.reciprocal[0].z,
-      x * basis.reciprocal[1].x + y * basis.reciprocal[1].y + z * basis.reciprocal[1].z,
-      x * basis.reciprocal[2].x + y * basis.reciprocal[2].y + z * basis.reciprocal[2].z,
-    ];
-    for (let axis = 0; axis < 3; axis += 1) {
-      if (pbc[axis]) fractional[axis] -= Math.floor(fractional[axis] + 0.5);
-      fractional[axis] += selection.image[axis];
-    }
-    result[index * 3] = fractional[0] * basis.vectors[0].x
-      + fractional[1] * basis.vectors[1].x
-      + fractional[2] * basis.vectors[2].x;
-    result[index * 3 + 1] = fractional[0] * basis.vectors[0].y
-      + fractional[1] * basis.vectors[1].y
-      + fractional[2] * basis.vectors[2].y;
-    result[index * 3 + 2] = fractional[0] * basis.vectors[0].z
-      + fractional[1] * basis.vectors[1].z
-      + fractional[2] * basis.vectors[2].z;
-  }
-  return result;
 }
 
 function framePbc(

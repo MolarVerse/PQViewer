@@ -10,13 +10,17 @@ import {
   nextKeyboardAtomSelection,
   periodicBondSegments,
   sceneCapabilities,
+  selectionMarkerState,
+  updateSelectionMarkers,
 } from "./MoleculeScene";
+import type { SelectionRenderState } from "./MoleculeScene";
 import {
   activeVectorInstances,
   backboneResidues,
   cellImageCorners,
   createCellBasis,
   detectWaterAtoms,
+  displayedBaseImages,
   frameGeometryLayout,
   imageLayoutShape,
   includeCellInFit,
@@ -123,6 +127,116 @@ describe("selection pointer intent", () => {
     expect(isAdditivePick(intent("touch"))).toBe(true);
     expect(isAdditivePick(intent("pen"))).toBe(true);
   });
+});
+
+describe("selection marker scaling", () => {
+  it("switches large selections to one reusable point buffer without retaining rings", () => {
+    expect(selectionMarkerState(512, 100_000, null)).toEqual({
+      mode: "rings",
+      pointCapacity: 0,
+      reusePointBuffer: false,
+      clearRingMarkers: false,
+    });
+    expect(selectionMarkerState(513, 100_000, null)).toEqual({
+      mode: "points",
+      pointCapacity: 513,
+      reusePointBuffer: false,
+      clearRingMarkers: true,
+    });
+
+    const initial = selectionMarkerState(100_000, 100_000, null);
+    expect(initial).toEqual({
+      mode: "points",
+      pointCapacity: 100_000,
+      reusePointBuffer: false,
+      clearRingMarkers: true,
+    });
+    expect(selectionMarkerState(100_000, 100_000, initial.pointCapacity)).toEqual({
+      ...initial,
+      reusePointBuffer: true,
+    });
+    expect(selectionMarkerState(100_000, 100_000, 99_999).reusePointBuffer).toBe(false);
+  });
+
+  it("keeps 100k marker-state updates bounded", () => {
+    const started = performance.now();
+    let state = selectionMarkerState(0, 100_000, null);
+    for (let selected = 1; selected <= 100_000; selected += 1) {
+      state = selectionMarkerState(selected, 100_000, state.pointCapacity || null);
+    }
+
+    expect(state.mode).toBe("points");
+    expect(state.pointCapacity).toBe(100_000);
+    expect(state.clearRingMarkers).toBe(true);
+    expect(performance.now() - started).toBeLessThan(500);
+  }, 1_000);
+
+  it("renders 100k selections through one reused point buffer", () => {
+    const count = 100_000;
+    const positions = new Float32Array(count * 3);
+    const instanceToAtom = new Uint32Array(count);
+    for (let atom = 0; atom < count; atom += 1) {
+      positions[atom * 3] = atom % 1_000;
+      positions[atom * 3 + 1] = Math.floor(atom / 1_000);
+      instanceToAtom[atom] = atom;
+    }
+    const model: PreparedScene = {
+      count,
+      atomicNumbers: Array(count).fill(6),
+      positions,
+      baseImages: new Int32Array(count * 3),
+      basis: null,
+      pbc: [false, false, false],
+      bonds: [],
+      waterAtoms: new Set(),
+      visibleAtoms: Array.from(instanceToAtom),
+      images: [[0, 0, 0]],
+      instanceToAtom,
+      instanceImages: new Int8Array(count * 3),
+      radii: Array(count).fill(0.3),
+      backbone: [],
+    };
+    const selectionGeometry = new THREE.RingGeometry(1, 1.2, 12);
+    const selectionMaterial = new THREE.MeshBasicMaterial();
+    const pointGeometry = new THREE.BufferGeometry();
+    const pointMaterial = new THREE.PointsMaterial();
+    const state: SelectionRenderState = {
+      selection: new THREE.Group(),
+      selectionGeometry,
+      selectionMaterial,
+      selectionPoints: new THREE.Points(pointGeometry, pointMaterial),
+      instanceToAtom,
+      instanceImages: model.instanceImages,
+      baseImages: model.baseImages,
+      model,
+    };
+    const selections = Array.from({ length: count }, (_, atom) => ({
+      atom,
+      image: [0, 0, 0] as [number, number, number],
+    }));
+
+    updateSelectionMarkers(state, selections.slice(0, 2), false);
+    expect(state.selection.children).toHaveLength(2);
+    expect(state.selectionPoints.visible).toBe(false);
+
+    const started = performance.now();
+    updateSelectionMarkers(state, selections, false);
+    const firstAttribute = pointGeometry.getAttribute("position");
+    expect(state.selection.children).toHaveLength(0);
+    expect(state.selectionPoints.visible).toBe(true);
+    expect(pointGeometry.drawRange.count).toBe(count);
+    expect(firstAttribute.count).toBe(count);
+
+    updateSelectionMarkers(state, selections, false);
+    expect(pointGeometry.getAttribute("position")).toBe(firstAttribute);
+    expect(pointGeometry.drawRange.count).toBe(count);
+    expect(performance.now() - started).toBeLessThan(3_000);
+
+    pointGeometry.dispose();
+    pointMaterial.dispose();
+    selectionGeometry.dispose();
+    selectionMaterial.dispose();
+  }, 5_000);
 });
 
 describe("keyboard atom navigation", () => {
@@ -277,6 +391,55 @@ describe("periodic geometry", () => {
     expect(atomSelectionForInstance(new Uint32Array([4]), new Int8Array([0, 0]), 0)).toBeNull();
   });
 
+  it("keeps physical image identity across display wrapping", () => {
+    const cell = new Float32Array([
+      10, 0, 0,
+      0, 10, 0,
+      0, 0, 10,
+    ]);
+    const basis = createCellBasis(cell)!;
+    const source = new Float32Array([12, 0, 0]);
+    const wrapped = new Float32Array([2, 0, 0]);
+    const baseImages = displayedBaseImages(
+      source,
+      wrapped,
+      1,
+      basis,
+      [true, true, true],
+    );
+
+    expect([...baseImages]).toEqual([-1, 0, 0]);
+    expect(atomSelectionForInstance(
+      new Uint32Array([0]),
+      new Int8Array([0, 0, 0]),
+      0,
+      baseImages,
+    )).toEqual({ atom: 0, image: [-1, 0, 0] });
+    expect(atomSelectionForInstance(
+      new Uint32Array([0]),
+      new Int8Array([-1, 0, 0]),
+      0,
+    )).toEqual({ atom: 0, image: [-1, 0, 0] });
+  });
+
+  it("stores canonical image shifts beyond display-offset integer limits", () => {
+    const cell = new Float32Array([
+      10, 0, 0,
+      0, 10, 0,
+      0, 0, 10,
+    ]);
+    const baseImages = displayedBaseImages(
+      new Float32Array([1302, 0, 0]),
+      new Float32Array([2, 0, 0]),
+      1,
+      createCellBasis(cell),
+      [true, true, true],
+    );
+
+    expect(baseImages).toBeInstanceOf(Int32Array);
+    expect([...baseImages]).toEqual([-130, 0, 0]);
+  });
+
   it("wraps triclinic fractional coordinates into [-0.5, 0.5)", () => {
     const sourceFractions: Array<[number, number, number]> = [
       [0.6, -0.6, 1.51],
@@ -309,6 +472,40 @@ describe("periodic geometry", () => {
       expect(actualFraction.z).toBeGreaterThanOrEqual(-0.5);
       expect(actualFraction.z).toBeLessThan(0.5);
     });
+  });
+
+  it("wraps a rounded centered-boundary coordinate to the canonical negative image", () => {
+    const cell = new Float32Array([
+      10.003, 0.00001, 0.00006,
+      0.00016, 9.087, 0.00037,
+      0.00048, 0.00058, 11.129,
+    ]);
+    const source = new Float32Array(toCartesian([0.5, 0, 0], cell).toArray());
+    const sourceFraction = toFractional(new THREE.Vector3().fromArray(source), cell);
+    expect(sourceFraction.x).toBeLessThan(0.5);
+    expect(sourceFraction.x).toBeGreaterThan(0.5 - 1e-10);
+
+    const frame: FrameData = {
+      header: { arrays: [], pbc: [true, true, true] },
+      arrays: new Map([
+        ["positions", source],
+        ["cell", cell],
+      ]),
+    };
+    const wrapped = centeredFramePositions(frame, 1)!;
+    const wrappedFraction = toFractional(new THREE.Vector3().fromArray(wrapped), cell);
+    const baseImages = displayedBaseImages(
+      source,
+      wrapped,
+      1,
+      createCellBasis(cell),
+      [true, true, true],
+    );
+
+    expect(wrappedFraction.x).toBeCloseTo(-0.5, 6);
+    expect(wrappedFraction.y).toBeCloseTo(0, 6);
+    expect(wrappedFraction.z).toBeCloseTo(0, 6);
+    expect([...baseImages]).toEqual([-1, 0, 0]);
   });
 
   it("splits a minimum-image bond at the centered cell boundary", () => {
@@ -683,6 +880,7 @@ describe("scientific representations", () => {
       count: atomCount,
       atomicNumbers: [],
       positions: new Float32Array(),
+      baseImages: new Int32Array(),
       basis: null,
       pbc: [false, false, false],
       bonds: [],
@@ -742,6 +940,7 @@ describe("scientific representations", () => {
       count: 100,
       atomicNumbers: Array(100).fill(6),
       positions: new Float32Array(300),
+      baseImages: new Int32Array(300),
       basis: null,
       pbc: [false, false, false],
       bonds: denseBonds,

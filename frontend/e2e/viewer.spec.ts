@@ -9,6 +9,20 @@ const repositoryRoot = path.resolve(
   "../..",
 );
 const periodicFixture = path.join(repositoryRoot, "examples/periodic-boundary.extxyz");
+const waterFixture = path.join(repositoryRoot, "examples/water.xyz");
+
+test.afterEach(async ({ request }) => {
+  const response = await request.post("/api/open", {
+    multipart: {
+      files: {
+        name: path.basename(periodicFixture),
+        mimeType: "chemical/x-xyz",
+        buffer: await readFile(periodicFixture),
+      },
+    },
+  });
+  expect(response.ok()).toBe(true);
+});
 
 async function openPeriodicFixture(page: Page): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -22,6 +36,20 @@ async function openPeriodicFixture(page: Page): Promise<void> {
   await expect.poll(
     async () => changedPixelCount(await canvas.screenshot()),
   ).toBeGreaterThan(500);
+}
+
+async function openFixture(page: Page, fixture: string, title: string): Promise<void> {
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const chooser = await chooserPromise;
+  const openPromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/open")
+      && response.request().method() === "POST",
+  );
+  await chooser.setFiles(fixture);
+  expect((await openPromise).ok()).toBe(true);
+  await expect(page).toHaveTitle(`${title} · PQViewer`);
+  await expect(page.locator("canvas")).toBeVisible();
 }
 
 function collectBrowserErrors(page: Page): string[] {
@@ -99,6 +127,17 @@ test("supports pointer and keyboard measurement with linked playback", async ({ 
   await expect(page.locator(".selection-readout strong")).toContainText("Distance");
   await expect(page.locator(".selection-readout output")).toContainText("Å");
 
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.keyboard.down("Shift");
+  await page.mouse.move(bounds!.x + 20, bounds!.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(bounds!.x + 80, bounds!.y + 70, { steps: 2 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await expect(page.locator(".selection-readout strong")).toContainText("Distance");
+  await expect(page.getByRole("button", { name: "Pin", exact: true })).toBeVisible();
+
   const options = page.locator('summary[aria-label="Playback options"]');
   await options.click();
   await page.getByRole("button", { name: "Once", exact: true }).click();
@@ -109,6 +148,145 @@ test("supports pointer and keyboard measurement with linked playback", async ({ 
     "Frame 2 of 2",
   );
   await expect(page.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("supports scientific selection, saved sets, and pinned measurements", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("O2");
+
+  await page.locator(".selection-tools > summary").click();
+  await page.getByRole("button", { name: "Component", exact: true }).click();
+  await expect(page.locator(".selection-readout strong")).toHaveText("CO · 2 atoms");
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("O2");
+
+  await page.locator(".selection-tools > summary").click();
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".selection-tools")).not.toHaveAttribute("open", "");
+  await expect(page.locator(".selection-readout strong")).toHaveText("O2");
+  await page.locator(".selection-tools > summary").click();
+  await page.getByPlaceholder("e.g. active site").fill("boundary oxygen");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Clear selection" }).click();
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("boundary oxygen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("O2");
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "select within 5 A of selection",
+  );
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("H2O · 3 atoms");
+
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  const canvas = page.locator("canvas");
+  await canvas.click({ position: { x: 532, y: 310 } });
+  await page.keyboard.down("Shift");
+  await canvas.click({ position: { x: 765, y: 392 } });
+  await page.keyboard.up("Shift");
+  await expect(page.locator(".selection-readout strong")).toContainText("Distance");
+  await expect(page.locator(".selection-readout output")).toContainText("0.4 Å");
+
+  await page.getByRole("button", { name: "Pin", exact: true }).click();
+  const pin = page.locator(".pinned-measurements .selection-chip");
+  await expect(pin).toContainText("0.4 Å");
+  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Minimum image", exact: true }).click();
+  await expect(pin).toHaveAttribute("aria-pressed", "false");
+  await page.getByRole("button", { name: "Displayed images", exact: true }).click();
+  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Next frame" }).click();
+  await expect(pin).toContainText("0.6083 Å");
+
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  await expect(pin).toBeVisible();
+  await pin.click();
+  await expect(page.locator(".selection-readout strong")).toContainText("Distance");
+  expect(errors).toEqual([]);
+});
+
+test("supports box selection and large-selection summaries", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  const canvas = page.locator("canvas");
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.keyboard.down("Shift");
+  await page.mouse.move(bounds!.x + 350, bounds!.y + 110);
+  await page.mouse.down();
+  await page.mouse.move(bounds!.x + 900, bounds!.y + 510, { steps: 4 });
+  await expect(page.getByTestId("selection-marquee")).toBeVisible();
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await expect(page.locator(".selection-readout strong")).toHaveText("CH2O · 4 atoms");
+
+  await page.keyboard.down("Shift");
+  await page.mouse.move(bounds!.x + 20, bounds!.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(bounds!.x + 80, bounds!.y + 70, { steps: 2 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await expect(page.locator(".selection-readout strong")).toHaveText("CH2O · 4 atoms");
+
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  await page.keyboard.down("Shift");
+  await page.mouse.move(bounds!.x + 900, bounds!.y + 510);
+  await page.mouse.down();
+  await page.mouse.move(bounds!.x + 350, bounds!.y + 110, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await expect(page.locator(".selection-readout strong")).toHaveText("CH2O · 4 atoms");
+
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await page.getByRole("button", { name: "±abc", exact: true }).click();
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select hydrogen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toContainText("H2 · 54 atoms");
+  await page.getByRole("button", { name: "Primary", exact: true }).click();
+  await expect(page.locator(".selection-readout strong")).toContainText("H2 · 54 atoms");
+  await page.getByRole("button", { name: "Summary", exact: true }).click();
+  await expect(page.locator("#workbench")).toContainText("Cartesian centroid");
+  await expect(page.locator("#workbench")).toContainText("Extent");
+  expect(errors).toEqual([]);
+});
+
+test("keeps water selection and periodic image identity scientifically explicit", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+  await openFixture(page, waterFixture, "water.xyz");
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select water");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("H2O · 3 atoms");
+  await expect(page.locator(".selection-readout")).not.toContainText("Angle");
+  await expect(page.getByRole("button", { name: "Pin", exact: true })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toHaveText("O1 (−a−b−c)");
+
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await page.getByRole("button", { name: "Original", exact: true }).click();
+  await expect(page.locator(".selection-readout strong")).toHaveText("O1 (−a−b−c)");
+  await page.getByRole("button", { name: "Wrap atoms", exact: true }).click();
+  await expect(page.locator(".selection-readout strong")).toHaveText("O1 (−a−b−c)");
   expect(errors).toEqual([]);
 });
 
@@ -148,5 +326,46 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   expect(overflow).toBeLessThanOrEqual(1);
   await expect(page.locator(".topbar")).toHaveScreenshot("mobile-topbar.png");
   await expect(page.locator(".timeline")).toHaveScreenshot("mobile-timeline.png");
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill("select oxygen");
+  await page.keyboard.press("Enter");
+  await page.locator(".selection-tools > summary").click();
+  for (const name of ["boundary", "oxygen shell", "active set"]) {
+    await page.getByPlaceholder("e.g. active site").fill(name);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.locator(".selection-tools > summary").click();
+  }
+  const toolsBox = await page.locator(".selection-tools-popover").boundingBox();
+  const selectionBox = await page.locator(".selection-bar").boundingBox();
+  const topbarBox = await page.locator(".topbar").boundingBox();
+  expect(toolsBox).not.toBeNull();
+  expect(selectionBox).not.toBeNull();
+  expect(topbarBox).not.toBeNull();
+  expect(toolsBox!.x).toBeGreaterThanOrEqual(0);
+  expect(toolsBox!.x + toolsBox!.width).toBeLessThanOrEqual(320);
+  expect(toolsBox!.y).toBeGreaterThanOrEqual(topbarBox!.y + topbarBox!.height);
+  expect(toolsBox!.y + toolsBox!.height).toBeLessThanOrEqual(selectionBox!.y);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("button", { name: "Clear selection" }).click();
+  const canvas = page.locator("canvas");
+  await canvas.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toContainText("Distance");
+  for (let index = 0; index < 8; index += 1) {
+    await page.getByRole("button", { name: "Pin", exact: true }).click();
+  }
+  await expect(page.locator(".pinned-measurements > div")).toHaveCount(8);
+  const pinsBox = await page.locator(".pinned-measurements").boundingBox();
+  const currentSelectionBox = await page.locator(".selection-bar").boundingBox();
+  expect(pinsBox).not.toBeNull();
+  expect(currentSelectionBox).not.toBeNull();
+  expect(pinsBox!.y + pinsBox!.height).toBeLessThan(currentSelectionBox!.y);
+  expect(await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  )).toBeLessThanOrEqual(1);
   expect(errors).toEqual([]);
 });
