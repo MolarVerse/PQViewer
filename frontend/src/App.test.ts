@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   autoProfile,
+  compactFrameNumber,
   filterCommandActions,
   frameMetadata,
   measurementPbc,
@@ -127,6 +128,14 @@ describe("command search", () => {
   it("returns every action for an empty query and none for an unknown command", () => {
     expect(filterCommandActions(actions, "  ")).toEqual(actions);
     expect(filterCommandActions(actions, "density surface")).toEqual([]);
+  });
+});
+
+describe("frame labels", () => {
+  it("keeps long trajectory counts compact", () => {
+    expect(compactFrameNumber(9_999)).toBe("9999");
+    expect(compactFrameNumber(10_000)).toBe("10k");
+    expect(compactFrameNumber(10_000_000)).toBe("10M");
   });
 });
 

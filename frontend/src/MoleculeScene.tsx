@@ -327,7 +327,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    let pixelRatio = Math.min(window.devicePixelRatio, 2);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     const scene = new THREE.Scene();
@@ -399,10 +399,18 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     };
     stateRef.current = state;
 
+    let renderWidth = 0;
+    let renderHeight = 0;
     const resize = () => {
       const width = Math.max(canvas.clientWidth, 1);
       const height = Math.max(canvas.clientHeight, 1);
-      renderer.setSize(width, height, false);
+      const nextPixelRatio = Math.min(window.devicePixelRatio, 2);
+      const pixelRatioChanged = nextPixelRatio !== pixelRatio;
+      if (width === renderWidth && height === renderHeight && !pixelRatioChanged) return;
+      pixelRatio = nextPixelRatio;
+      renderWidth = width;
+      renderHeight = height;
+      renderer.setDrawingBufferSize(width, height, pixelRatio);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
       if (state.fitContext && Math.abs(Math.log(camera.aspect / state.lastFittedAspect)) > 0.06) {
@@ -411,6 +419,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     };
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
+    window.addEventListener("resize", resize);
     resize();
 
     const pointerStart = new THREE.Vector2();
@@ -467,6 +476,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     return () => {
       renderer.setAnimationLoop(null);
       observer.disconnect();
+      window.removeEventListener("resize", resize);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);

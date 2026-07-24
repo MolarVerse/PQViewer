@@ -915,7 +915,7 @@ export default function App() {
           ? closeMeasurementPlot(false)
           : showMeasurementPlot()),
       }] : []),
-      ...(selectedAtom !== null ? [{
+      ...(selectedAtoms.length === 1 && selectedAtom !== null ? [{
         id: "inspect-selection",
         label: "Inspect selected atom",
         keywords: "selection properties coordinates",
@@ -971,13 +971,13 @@ export default function App() {
     selectedAtoms.length,
   ]);
   const commandContextIds = useMemo(() => [
-    ...(selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
+    ...(selectedAtoms.length === 1 && selectedAtom !== null ? ["inspect-selection", "clear-selection"] : []),
     ...(canPlotMeasurement ? ["plot-measurement"] : []),
     ...(canPlay ? ["play", "previous", "next"] : []),
     "fit",
     "display",
     "export",
-  ], [canPlay, canPlotMeasurement, selectedAtom]);
+  ], [canPlay, canPlotMeasurement, selectedAtom, selectedAtoms.length]);
   const workspaceClass = [
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
@@ -985,6 +985,7 @@ export default function App() {
     canPlay ? "timeline-present" : "timeline-absent",
     selectedAtoms.length > 0 ? "selection-present" : "",
     measurementPlotOpen ? "measurement-plot-open" : "",
+    playbackOptionsOpen ? "playback-options-open" : "",
   ].filter(Boolean).join(" ");
 
   return (
@@ -1145,7 +1146,9 @@ export default function App() {
               setSelectionPositions(null);
               closeMeasurementPlot(false);
             }}
-            onDetails={() => openWorkbench("inspect", true)}
+            onDetails={() => workbenchVisible && workbenchTab === "inspect"
+              ? closeWorkbench(false)
+              : openWorkbench("inspect", true)}
           />
         )}
 
@@ -1204,7 +1207,10 @@ export default function App() {
             onPlay={() => canPlay && setPlaying((value) => !value)}
             onFps={setPlaybackFps}
             onStride={setPlaybackStride}
-            onOptionsOpen={setPlaybackOptionsOpen}
+            onOptionsOpen={(open) => {
+              setPlaybackOptionsOpen(open);
+              if (open && measurementPlotOpen) closeMeasurementPlot(false);
+            }}
             onMode={(mode) => {
               setPlaybackMode(mode);
               setPlaybackDirection(1);
@@ -1230,7 +1236,7 @@ export default function App() {
             onAction={showOpen}
           />
         )}
-        {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status">{notice}</div>}
+        {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status" title={notice}>{notice}</div>}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
         {commandOpen && <CommandPalette
           actions={commands}
@@ -1717,10 +1723,12 @@ function SelectionBar({
         className="measurement-mode"
         type="button"
         aria-pressed={minimumImage}
+        aria-label={minimumImage ? "Minimum image" : "Displayed images"}
         title="Choose minimum-image or displayed-image geometry"
         onClick={onMinimumImage}
       >
-        {minimumImage ? "Minimum image" : "Displayed images"}
+        <span className="measurement-mode-full">{minimumImage ? "Minimum image" : "Displayed images"}</span>
+        <span className="measurement-mode-compact" aria-hidden="true">{minimumImage ? "Min. image" : "Images"}</span>
       </button>
     ) : validSelections.length === 1 ? (
       <span className="selection-hint">Shift-click or tap more</span>
@@ -1830,6 +1838,9 @@ function Timeline({
   const frameLabel = displayedFrameIndex === frameIndex
     ? `${displayedFrame} / ${frameCount}`
     : `${displayedFrame} → ${requestedFrame}`;
+  const compactFrameLabel = displayedFrameIndex === frameIndex
+    ? `${compactFrameNumber(displayedFrameIndex + 1)} / ${compactFrameNumber(frameCount)}`
+    : `${compactFrameNumber(displayedFrameIndex + 1)} → ${compactFrameNumber(frameIndex + 1)}`;
   const metadata = frameMetadata(frame);
 
   return (
@@ -1863,14 +1874,20 @@ function Timeline({
             onChange={(event) => onFrame(Number(event.target.value))}
           />
         </label>
-        <output
-          className="frame-counter"
-          aria-label={displayedFrameIndex === frameIndex
-            ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
-            : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
-        >{frameLabel}</output>
+        {!frameError && <output
+            className="frame-counter"
+            aria-label={displayedFrameIndex === frameIndex
+              ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
+              : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
+          >
+            <span className="frame-counter-full">{frameLabel}</span>
+            <span className="frame-counter-compact" aria-hidden="true">{compactFrameLabel}</span>
+          </output>}
         {metadata && <span className="frame-metadata">{metadata}</span>}
-        {frameError && <span className="frame-error" title={frameError}>Frame unavailable</span>}
+        {frameError && <span className="frame-error" title={frameError} aria-label="Frame unavailable">
+          <span className="frame-error-full">Frame error</span>
+          <span className="frame-error-compact" aria-hidden="true">Error</span>
+        </span>}
         <details
           className="timeline-options"
           open={optionsOpen}
@@ -1911,6 +1928,18 @@ export function frameMetadata(frame: FrameData | null): string {
   const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
   const time = timeValue === null ? "" : `t ${formatNumber(timeValue)}`;
   return [step, time].filter(Boolean).join(" · ");
+}
+
+export function compactFrameNumber(value: number): string {
+  const rounded = Math.max(0, Math.round(value));
+  if (rounded < 10_000) return String(rounded);
+  const [scale, suffix] = rounded >= 1_000_000_000
+    ? [1_000_000_000, "B"] as const
+    : rounded >= 1_000_000
+      ? [1_000_000, "M"] as const
+      : [1_000, "k"] as const;
+  const scaled = rounded / scale;
+  return `${Number(scaled.toFixed(scaled >= 10 ? 0 : 1))}${suffix}`;
 }
 
 export function measurementPbc(frame: FrameData | null): [boolean, boolean, boolean] {

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 
 const DEFAULT_PLOT_WIDTH = 720;
@@ -348,7 +348,7 @@ function useMeasuredPlotSize() {
   const chartRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState<{ width: number; height: number } | null>(null);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     let resizeTimer: number | null = null;
@@ -369,8 +369,13 @@ function useMeasuredPlotSize() {
       ));
     };
 
-    const bounds = chart.getBoundingClientRect();
-    update(bounds.width, bounds.height);
+    let initialFrame: number | null = window.requestAnimationFrame(() => {
+      initialFrame = window.requestAnimationFrame(() => {
+        const bounds = chart.getBoundingClientRect();
+        update(bounds.width, bounds.height);
+        initialFrame = null;
+      });
+    });
     const observer = new ResizeObserver(([entry]) => {
       if (!entry) return;
       pendingSize = {
@@ -386,6 +391,7 @@ function useMeasuredPlotSize() {
     observer.observe(chart);
     return () => {
       observer.disconnect();
+      if (initialFrame !== null) window.cancelAnimationFrame(initialFrame);
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
     };
   }, []);
