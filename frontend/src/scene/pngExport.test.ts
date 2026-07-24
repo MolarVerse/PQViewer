@@ -12,9 +12,9 @@ const limits = { maxWidth: 8192, maxHeight: 8192, maxPixels: MAX_PNG_EXPORT_PIXE
 
 describe("PNG export options", () => {
   it("resolves publication defaults without changing requested dimensions", () => {
-    expect(resolvePngExportOptions({ width: 6000, height: 4000 }, limits)).toEqual({
-      width: 6000,
-      height: 4000,
+    expect(resolvePngExportOptions({ width: 4000, height: 3000 }, limits)).toEqual({
+      width: 4000,
+      height: 3000,
       transparent: false,
       fit: true,
       projection: "orthographic",

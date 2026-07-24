@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DatasetChangedError, FrameCache, decodeFrame, getFrame } from "./api";
+import {
+  DatasetChangedError,
+  FrameCache,
+  decodeFrame,
+  getFrame,
+  getInitialRecipe,
+} from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -46,6 +52,18 @@ function integerFramePacket(): ArrayBuffer {
 }
 
 describe("dataset generation", () => {
+  it("loads the optional initial figure recipe", async () => {
+    const recipe = { schema: "pqviewer.figure", schema_version: 1 };
+    const fetch = vi.fn(() => Promise.resolve(Response.json(recipe)));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(getInitialRecipe()).resolves.toEqual(recipe);
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/initial-recipe",
+      { headers: { Accept: "application/json" } },
+    );
+  });
+
   it("encodes the generation when fetching a bound frame", async () => {
     const fetch = vi.fn((_input: string | URL | Request) => Promise.resolve(
       new Response(emptyFramePacket(), { status: 200 }),

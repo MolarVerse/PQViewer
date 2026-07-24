@@ -17,6 +17,7 @@ export interface MeasurementPlotProps {
   onFrame: (frame: number) => void;
   onExportCsv: () => void;
   onExportSvg: () => void;
+  onExportPdf: () => void;
 }
 
 export interface MeasurementSample {
@@ -91,6 +92,7 @@ export function MeasurementPlot({
   onFrame,
   onExportCsv,
   onExportSvg,
+  onExportPdf,
 }: MeasurementPlotProps) {
   const [chartRef, chartSize] = useMeasuredPlotSize();
   const layout = useMemo(
@@ -189,6 +191,7 @@ export function MeasurementPlot({
         <div className="measurement-plot__actions">
           <button type="button" onClick={onExportCsv} disabled={!complete}>CSV</button>
           <button type="button" onClick={onExportSvg} disabled={!complete}>SVG</button>
+          <button type="button" onClick={onExportPdf} disabled={!complete}>PDF</button>
         </div>
       </header>
 

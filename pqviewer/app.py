@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 import secrets
 from tempfile import TemporaryDirectory
 from threading import RLock
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
@@ -20,6 +20,7 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 
 from .data import EmptyTrajectoryDataset
 from .packet import encode_frame
+from .recipe import recipe_copy
 from .sources import RunDataset, open_run_dataset
 
 
@@ -31,6 +32,7 @@ VELOCITIES_ENV = "PQVIEWER_VELOCITIES"
 CHARGES_ENV = "PQVIEWER_CHARGES"
 MOLDESCRIPTOR_ENV = "PQVIEWER_MOLDESCRIPTOR"
 TOPOLOGY_ENV = "PQVIEWER_TOPOLOGY"
+RECIPE_ENV = "PQVIEWER_RECIPE"
 
 MAX_UPLOAD_FILES = 8
 MAX_UPLOAD_FILE_BYTES = 2 * 1024**3
@@ -148,6 +150,7 @@ def create_app(
     moldescriptor_path: str | Path | None = None,
     topology_path: str | Path | None = None,
     dataset: Any | None = None,
+    initial_recipe: Mapping[str, Any] | None = None,
     frame_encoder: Callable[[Any], bytes] = encode_frame,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
@@ -193,6 +196,7 @@ def create_app(
     application.state.dataset_generation = _new_dataset_generation()
     application.state.upload_temp = None
     application.state.open_generation = 0
+    application.state.initial_recipe = recipe_copy(initial_recipe)
 
     @application.get("/api/health")
     def health() -> dict[str, str]:
@@ -206,6 +210,11 @@ def create_app(
                 application.state.dataset.manifest(),
                 application.state.dataset_generation,
             )
+
+    @application.get("/api/initial-recipe")
+    def initial_recipe(response: Response) -> dict[str, Any] | None:
+        response.headers["Cache-Control"] = "no-store"
+        return recipe_copy(application.state.initial_recipe)
 
     @application.get("/api/frames/{frame_index}")
     def frame(
@@ -309,6 +318,7 @@ def create_app(
             application.state.dataset = candidate
             application.state.dataset_generation = _new_dataset_generation()
             application.state.upload_temp = temporary
+            application.state.initial_recipe = None
             opened_manifest = _manifest_with_generation(
                 opened_manifest,
                 application.state.dataset_generation,
@@ -354,6 +364,14 @@ def create_app_from_env() -> FastAPI:
     """Create the application configured by the CLI environment."""
 
     trajectory_path = os.environ.get(TRAJECTORY_ENV) or None
+    initial_recipe = None
+    recipe_dataset = None
+    recipe_path = os.environ.get(RECIPE_ENV)
+    if recipe_path:
+        from .recipe import open_figure_recipe_dataset
+
+        initial_recipe, recipe_dataset = open_figure_recipe_dataset(recipe_path)
+        trajectory_path = None
     return create_app(
         trajectory_path,
         energy_path=os.environ.get(ENERGY_ENV),
@@ -363,6 +381,8 @@ def create_app_from_env() -> FastAPI:
         charges_path=os.environ.get(CHARGES_ENV),
         moldescriptor_path=os.environ.get(MOLDESCRIPTOR_ENV),
         topology_path=os.environ.get(TOPOLOGY_ENV),
+        dataset=recipe_dataset,
+        initial_recipe=initial_recipe,
     )
 
 
