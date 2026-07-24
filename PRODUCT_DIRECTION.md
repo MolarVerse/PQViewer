@@ -72,7 +72,7 @@ The existing implementation is a good technical base. It already has:
 - command search, platform-aware shortcuts, and optional Vim navigation
 - high-resolution PNG output
 - measurement trajectory plots with CSV and SVG output
-- 154 passing frontend tests, 44 passing backend tests, and a clean production build
+- 170 frontend tests, 4 packaged-browser flows, 44 backend tests, and a clean production build
 
 The next gaps are deeper scientific workflows rather than rendering basics:
 

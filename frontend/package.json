@@ -10,7 +10,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run src",
+    "test:e2e": "playwright test",
+    "test:e2e:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "react": "^19.1.1",
@@ -18,9 +20,12 @@
     "three": "^0.179.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@types/three": "^0.179.0",
+    "pngjs": "^7.0.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.3",
     "vitest": "^4.1.10"
