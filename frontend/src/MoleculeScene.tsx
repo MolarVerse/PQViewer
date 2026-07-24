@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { frameArray } from "./api";
@@ -131,6 +131,8 @@ interface SceneState {
   selection: THREE.Group;
   selectionGeometry: THREE.RingGeometry;
   selectionMaterial: THREE.MeshBasicMaterial;
+  keyboardFocus: THREE.Mesh;
+  keyboardFocusMaterial: THREE.MeshBasicMaterial;
   pickables: THREE.Object3D[];
   instanceToAtom: Uint32Array;
   instanceImages: Int8Array;
@@ -300,11 +302,17 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<SceneState | null>(null);
   const selectRef = useRef(onSelect);
+  const selectedAtomsRef = useRef(selectedAtoms);
   const sceneInfoRef = useRef(onSceneInfo);
   const selectionPositionsRef = useRef(onSelectionPositions);
   const reportedInfoRef = useRef<{ manifest: Manifest; info: RenderedSceneInfo } | null>(null);
   const exportActiveRef = useRef(false);
+  const [keyboardSelection, setKeyboardSelection] = useState<AtomSelection | null>(null);
+  const keyboardSelectionRef = useRef<AtomSelection | null>(null);
+  const keyboardInstanceRef = useRef<number | null>(null);
   selectRef.current = onSelect;
+  selectedAtomsRef.current = selectedAtoms;
+  keyboardSelectionRef.current = keyboardSelection;
   sceneInfoRef.current = onSceneInfo;
   selectionPositionsRef.current = onSelectionPositions;
 
@@ -364,6 +372,17 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       depthTest: false,
     });
     root.add(selection);
+    const keyboardFocusMaterial = new THREE.MeshBasicMaterial({
+      color: palette.selection,
+      transparent: true,
+      opacity: 0.78,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    const keyboardFocus = new THREE.Mesh(selectionGeometry, keyboardFocusMaterial);
+    keyboardFocus.renderOrder = 11;
+    keyboardFocus.visible = false;
+    root.add(keyboardFocus);
     const state: SceneState = {
       renderer,
       scene,
@@ -382,6 +401,8 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       selection,
       selectionGeometry,
       selectionMaterial,
+      keyboardFocus,
+      keyboardFocusMaterial,
       pickables: [],
       instanceToAtom: new Uint32Array(),
       instanceImages: new Int8Array(),
@@ -452,8 +473,16 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       );
       raycaster.setFromCamera(pointer, camera);
       const hit = raycaster.intersectObjects(state.pickables, false)[0];
+      const picked = hit ? pickedAtom(hit, state) : null;
+      if (document.activeElement === canvas) {
+        keyboardSelectionRef.current = picked;
+        keyboardInstanceRef.current = hit && hit.object === state.atomObject
+          ? hit.instanceId ?? hit.index ?? null
+          : null;
+        setKeyboardSelection(picked);
+      }
       selectRef.current(
-        hit ? pickedAtom(hit, state) : null,
+        picked,
         isAdditivePick(event),
       );
     };
@@ -462,14 +491,71 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       pickPointerId = null;
       multiPointerGesture = false;
     };
+    const updateKeyboardSelection = (
+      selection: AtomSelection | null,
+      instance: number | null,
+    ) => {
+      keyboardSelectionRef.current = selection;
+      keyboardInstanceRef.current = instance;
+      setKeyboardSelection(selection);
+    };
+    const onFocus = () => {
+      if (keyboardSelectionRef.current) return;
+      const cursor = nextKeyboardAtomCursor(
+        state.instanceToAtom,
+        state.instanceImages,
+        selectedAtomsRef.current.at(-1) ?? null,
+        null,
+        0,
+      );
+      updateKeyboardSelection(cursor?.selection ?? null, cursor?.instance ?? null);
+    };
+    const onBlur = () => updateKeyboardSelection(null, null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const direction = event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowUp"
+          ? -1
+          : 0;
+      if (direction !== 0) {
+        event.preventDefault();
+        const cursor = nextKeyboardAtomCursor(
+          state.instanceToAtom,
+          state.instanceImages,
+          keyboardSelectionRef.current,
+          keyboardInstanceRef.current,
+          direction,
+        );
+        updateKeyboardSelection(cursor?.selection ?? null, cursor?.instance ?? null);
+        return;
+      }
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (event.repeat) return;
+      const cursor = nextKeyboardAtomCursor(
+        state.instanceToAtom,
+        state.instanceImages,
+        keyboardSelectionRef.current ?? selectedAtomsRef.current.at(-1) ?? null,
+        keyboardInstanceRef.current,
+        0,
+      );
+      if (!cursor) return;
+      updateKeyboardSelection(cursor.selection, cursor.instance);
+      selectRef.current(cursor.selection, true);
+    };
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerCancel);
+    canvas.addEventListener("focus", onFocus);
+    canvas.addEventListener("blur", onBlur);
+    canvas.addEventListener("keydown", onKeyDown);
     renderer.setAnimationLoop(() => {
       controls.update();
       selection.children.forEach((marker) => {
         if (marker.visible) marker.quaternion.copy(camera.quaternion);
       });
+      if (keyboardFocus.visible) keyboardFocus.quaternion.copy(camera.quaternion);
       renderer.render(scene, camera);
     });
 
@@ -480,12 +566,17 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);
+      canvas.removeEventListener("focus", onFocus);
+      canvas.removeEventListener("blur", onBlur);
+      canvas.removeEventListener("keydown", onKeyDown);
       controls.dispose();
       root.remove(selection);
+      root.remove(keyboardFocus);
       disposeObject(root);
       selection.clear();
       selectionGeometry.dispose();
       selectionMaterial.dispose();
+      keyboardFocusMaterial.dispose();
       renderer.dispose();
       stateRef.current = null;
       selectionPositionsRef.current?.(null);
@@ -594,13 +685,58 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   useEffect(() => {
     const state = stateRef.current;
     const positions = state ? updateSelection(state, selectedAtoms) : null;
+    let resolved = keyboardSelection;
+    let resolvedInstance = keyboardInstanceRef.current;
+    const canvasFocused = document.activeElement === canvasRef.current;
+    const currentInstance = state
+      ? updateKeyboardFocus(state, resolved, resolvedInstance)
+      : null;
+    const currentVisible = currentInstance !== null;
+    if (currentVisible) resolvedInstance = currentInstance;
+    if (canvasFocused && !currentVisible && state) {
+      const cursor = nextKeyboardAtomCursor(
+        state.instanceToAtom,
+        state.instanceImages,
+        selectedAtoms.at(-1) ?? null,
+        null,
+        0,
+      );
+      resolved = cursor?.selection ?? null;
+      resolvedInstance = cursor?.instance ?? null;
+      if (cursor) updateKeyboardFocus(state, cursor.selection, cursor.instance);
+    } else if ((!state || !currentVisible) && resolved) {
+      resolved = null;
+      resolvedInstance = null;
+      if (state) updateKeyboardFocus(state, null, null);
+    }
+    keyboardInstanceRef.current = resolvedInstance;
+    if (!sameAtomSelection(resolved, keyboardSelection)) {
+      keyboardSelectionRef.current = resolved;
+      setKeyboardSelection(resolved);
+    }
     selectionPositionsRef.current?.(positions);
     if (selectedAtoms.length > 0 && positions === null) {
       selectRef.current(null, false);
     }
-  }, [frame, presentation, selectedAtoms]);
+  }, [frame, keyboardSelection, presentation, selectedAtoms]);
 
-  return <canvas ref={canvasRef} className="molecule-canvas" aria-label="Molecular structure" tabIndex={0} />;
+  const keyboardLabel = keyboardSelection
+    ? keyboardAtomLabel(manifest, keyboardSelection)
+    : "";
+  return <>
+    <canvas
+      ref={canvasRef}
+      className="molecule-canvas"
+      role="region"
+      aria-label="Molecular structure"
+      aria-description="Use Up and Down to browse visible atoms. Press Enter to toggle an atom selection."
+      aria-keyshortcuts="ArrowUp ArrowDown Enter"
+      tabIndex={0}
+    />
+    <span className="sr-only" aria-live="polite">
+      {keyboardLabel ? `${keyboardLabel}. Press Enter to toggle selection.` : ""}
+    </span>
+  </>;
 });
 
 function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
@@ -1246,6 +1382,7 @@ function applyScenePalette(state: SceneState, palette: ScenePalette): void {
   state.rim.intensity = palette.rimIntensity;
   state.selectionMaterial.color.set(palette.selection);
   state.selectionMaterial.opacity = palette.selectionOpacity;
+  state.keyboardFocusMaterial.color.set(palette.selection);
 }
 
 function applyRenderablePalette(
@@ -1844,6 +1981,123 @@ function updateSelection(state: SceneState, selectedAtoms: AtomSelection[]): Flo
     : null;
 }
 
+function updateKeyboardFocus(
+  state: SceneState,
+  selection: AtomSelection | null,
+  preferredInstance: number | null,
+): number | null {
+  const model = state.model;
+  state.keyboardFocus.visible = false;
+  if (!model || !selection) return null;
+  if (preferredInstance !== null && selectionMatchesInstance(
+      state.instanceToAtom,
+      state.instanceImages,
+      preferredInstance,
+      selection,
+    )) {
+    setKeyboardFocusInstance(state, selection, preferredInstance);
+    return preferredInstance;
+  }
+  for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
+    if (!selectionMatchesInstance(
+      state.instanceToAtom,
+      state.instanceImages,
+      instance,
+      selection,
+    )) continue;
+    setKeyboardFocusInstance(state, selection, instance);
+    return instance;
+  }
+  return null;
+}
+
+function setKeyboardFocusInstance(
+  state: SceneState,
+  selection: AtomSelection,
+  instance: number,
+): void {
+  const model = state.model;
+  if (!model) return;
+  setInstancePosition(state.keyboardFocus.position, model, instance);
+  state.keyboardFocus.scale.setScalar(
+    Math.max(0.24, model.radii[selection.atom] || 0.3) * 1.62,
+  );
+  state.keyboardFocus.visible = true;
+}
+
+export interface KeyboardAtomCursor {
+  selection: AtomSelection;
+  instance: number;
+}
+
+export function nextKeyboardAtomCursor(
+  instanceToAtom: Uint32Array,
+  instanceImages: Int8Array,
+  current: AtomSelection | null,
+  currentInstance: number | null,
+  direction: number,
+): KeyboardAtomCursor | null {
+  const count = Math.min(instanceToAtom.length, Math.floor(instanceImages.length / 3));
+  if (count === 0) return null;
+  let currentIndex = currentInstance !== null && selectionMatchesInstance(
+      instanceToAtom,
+      instanceImages,
+      currentInstance,
+      current,
+    )
+    ? currentInstance
+    : -1;
+  if (currentIndex < 0 && current) {
+    for (let instance = 0; instance < count; instance += 1) {
+      if (!selectionMatchesInstance(instanceToAtom, instanceImages, instance, current)) continue;
+      currentIndex = instance;
+      break;
+    }
+  }
+  const instance = direction === 0
+    ? currentIndex >= 0 ? currentIndex : 0
+    : currentIndex >= 0
+      ? (currentIndex + Math.sign(direction) + count) % count
+      : direction < 0 ? count - 1 : 0;
+  const selection = atomSelectionForInstance(instanceToAtom, instanceImages, instance);
+  return selection ? { selection, instance } : null;
+}
+
+export function nextKeyboardAtomSelection(
+  instanceToAtom: Uint32Array,
+  instanceImages: Int8Array,
+  current: AtomSelection | null,
+  direction: number,
+): AtomSelection | null {
+  return nextKeyboardAtomCursor(
+    instanceToAtom,
+    instanceImages,
+    current,
+    null,
+    direction,
+  )?.selection ?? null;
+}
+
+function selectionMatchesInstance(
+  instanceToAtom: Uint32Array,
+  instanceImages: Int8Array,
+  instance: number,
+  selection: AtomSelection | null,
+): boolean {
+  if (
+    !selection
+    || !Number.isInteger(instance)
+    || instance < 0
+    || instance >= instanceToAtom.length
+  ) return false;
+  const offset = instance * 3;
+  return offset + 2 < instanceImages.length
+    && instanceToAtom[instance] === selection.atom
+    && instanceImages[offset] === selection.image[0]
+    && instanceImages[offset + 1] === selection.image[1]
+    && instanceImages[offset + 2] === selection.image[2];
+}
+
 function pickedAtom(hit: THREE.Intersection, state: SceneState): AtomSelection | null {
   if (hit.object === state.atomObject) {
     const instance = hit.instanceId ?? hit.index;
@@ -1882,6 +2136,27 @@ function validCellOffset(image: CellOffset): boolean {
 
 function selectionKey(atom: number, image: CellOffset): string {
   return `${atom}:${image[0]}:${image[1]}:${image[2]}`;
+}
+
+function sameAtomSelection(
+  left: AtomSelection | null,
+  right: AtomSelection | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return selectionKey(left.atom, left.image) === selectionKey(right.atom, right.image);
+}
+
+function keyboardAtomLabel(manifest: Manifest, selection: AtomSelection): string {
+  const atom = `${manifest.topology.symbols?.[selection.atom] ?? "Atom"} ${selection.atom + 1}`;
+  const image = selection.image
+    .map((value, axis) => {
+      if (value === 0) return "";
+      const sign = value > 0 ? "+" : "−";
+      const magnitude = Math.abs(value) === 1 ? "" : Math.abs(value);
+      return `${sign}${magnitude}${"abc"[axis]}`;
+    })
+    .join("");
+  return image ? `${atom} (${image})` : atom;
 }
 
 function setInstancePosition(

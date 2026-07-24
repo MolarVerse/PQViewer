@@ -6,6 +6,8 @@ import {
   centeredFramePositions,
   clearOrbitMotion,
   isAdditivePick,
+  nextKeyboardAtomCursor,
+  nextKeyboardAtomSelection,
   periodicBondSegments,
   sceneCapabilities,
 } from "./MoleculeScene";
@@ -120,6 +122,122 @@ describe("selection pointer intent", () => {
   it("makes touch and pen taps additive without a modifier", () => {
     expect(isAdditivePick(intent("touch"))).toBe(true);
     expect(isAdditivePick(intent("pen"))).toBe(true);
+  });
+});
+
+describe("keyboard atom navigation", () => {
+  const atoms = new Uint32Array([2, 4, 2, 7]);
+  const images = new Int8Array([
+    0, 0, 0,
+    0, 0, 0,
+    1, 0, 0,
+    0, 0, 0,
+  ]);
+
+  it("cycles through every visible atom image", () => {
+    expect(nextKeyboardAtomSelection(atoms, images, null, 0)).toEqual({
+      atom: 2,
+      image: [0, 0, 0],
+    });
+    expect(nextKeyboardAtomSelection(
+      atoms,
+      images,
+      { atom: 2, image: [0, 0, 0] },
+      1,
+    )).toEqual({ atom: 4, image: [0, 0, 0] });
+    expect(nextKeyboardAtomSelection(
+      atoms,
+      images,
+      { atom: 2, image: [1, 0, 0] },
+      1,
+    )).toEqual({ atom: 7, image: [0, 0, 0] });
+    expect(nextKeyboardAtomSelection(
+      atoms,
+      images,
+      { atom: 2, image: [1, 0, 0] },
+      -1,
+    )).toEqual({ atom: 4, image: [0, 0, 0] });
+    expect(nextKeyboardAtomSelection(
+      atoms,
+      images,
+      { atom: 7, image: [0, 0, 0] },
+      1,
+    )).toEqual({ atom: 2, image: [0, 0, 0] });
+  });
+
+  it("continues from a validated instance cursor", () => {
+    expect(nextKeyboardAtomCursor(
+      atoms,
+      images,
+      { atom: 2, image: [1, 0, 0] },
+      2,
+      1,
+    )).toEqual({
+      selection: { atom: 7, image: [0, 0, 0] },
+      instance: 3,
+    });
+    expect(nextKeyboardAtomCursor(
+      atoms,
+      images,
+      { atom: 2, image: [1, 0, 0] },
+      1,
+      -1,
+    )).toEqual({
+      selection: { atom: 4, image: [0, 0, 0] },
+      instance: 1,
+    });
+  });
+
+  it("keeps cursor movement bounded at the render-instance limit", () => {
+    const count = 250_000;
+    const largeAtoms = new Uint32Array(count);
+    for (let index = 0; index < count; index += 1) largeAtoms[index] = index;
+    const largeImages = new Int8Array(count * 3);
+    let cursor = {
+      selection: { atom: 249_900, image: [0, 0, 0] as [number, number, number] },
+      instance: 249_900,
+    };
+    for (let step = 0; step < 200; step += 1) {
+      cursor = nextKeyboardAtomCursor(
+        largeAtoms,
+        largeImages,
+        cursor.selection,
+        cursor.instance,
+        1,
+      )!;
+    }
+
+    expect(cursor).toEqual({
+      selection: { atom: 100, image: [0, 0, 0] },
+      instance: 100,
+    });
+  });
+
+  it("uses the traversal edge when the current atom is stale", () => {
+    const stale = { atom: 9, image: [0, 0, 0] as [number, number, number] };
+    expect(nextKeyboardAtomSelection(atoms, images, stale, 1)).toEqual({
+      atom: 2,
+      image: [0, 0, 0],
+    });
+    expect(nextKeyboardAtomSelection(atoms, images, stale, -1)).toEqual({
+      atom: 7,
+      image: [0, 0, 0],
+    });
+  });
+
+  it("ignores malformed image mappings", () => {
+    expect(nextKeyboardAtomSelection(
+      new Uint32Array([3]),
+      new Int8Array([1, 0, 0]),
+      null,
+      0,
+    )).toEqual({ atom: 3, image: [1, 0, 0] });
+    expect(nextKeyboardAtomSelection(
+      new Uint32Array([3]),
+      new Int8Array([0, 0]),
+      null,
+      0,
+    )).toBeNull();
   });
 });
 

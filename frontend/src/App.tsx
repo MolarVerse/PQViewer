@@ -29,8 +29,10 @@ import {
   updateSceneSelection,
 } from "./selection";
 import {
-  advancePlaybackFrame,
   DEFAULT_PLAYBACK_FPS,
+  playbackPrefetchIndices,
+  playbackTimerDelay,
+  runScheduledPlaybackTick,
   schedulePlaybackFrame,
 } from "./trajectory";
 import type { PlaybackDirection, PlaybackMode } from "./trajectory";
@@ -48,6 +50,8 @@ type LoadState = "loading" | "ready" | "error";
 type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
 type WorkbenchTab = "view" | "inspect";
 type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
+type NoticeState = { message: string; tone: "status" | "error" };
+type FocusTarget = Element & { focus: (options?: FocusOptions) => void };
 
 const DATASET_CHANNEL = "pqviewer-dataset";
 
@@ -80,6 +84,7 @@ export default function App() {
   const [playbackStride, setPlaybackStride] = useState(1);
   const [playbackMode, setPlaybackMode] = useState<PlaybackMode>("loop");
   const [playbackDirection, setPlaybackDirection] = useState<PlaybackDirection>(1);
+  const [playbackPulse, setPlaybackPulse] = useState(0);
   const [playbackOptionsOpen, setPlaybackOptionsOpen] = useState(false);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
   const [profile, setProfile] = useState<SceneProfile>("auto");
@@ -101,12 +106,13 @@ export default function App() {
   const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<NoticeState | null>(null);
   const [sceneInfo, setSceneInfo] = useState<RenderedSceneInfo | null>(null);
   const cache = useRef(new FrameCache());
   const moleculeSceneRef = useRef<MoleculeSceneHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const panelButtonRef = useRef<HTMLButtonElement>(null);
+  const renderButtonRef = useRef<HTMLButtonElement>(null);
   const workbenchRef = useRef<HTMLElement>(null);
   const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
@@ -122,6 +128,18 @@ export default function App() {
     key: "",
     requestTimeMs: null,
   });
+  const playbackState = useRef({
+    playing,
+    mode: playbackMode,
+    direction: playbackDirection,
+    stride: playbackStride,
+  });
+  playbackState.current = {
+    playing,
+    mode: playbackMode,
+    direction: playbackDirection,
+    stride: playbackStride,
+  };
   const shortcutLabels = useMemo(() => shortcutLabelsForPlatform(browserPlatform()), []);
 
   const activateManifest = useCallback((value: Manifest) => {
@@ -174,7 +192,7 @@ export default function App() {
     setSceneInfo(null);
     setLoadState("loading");
     setLoadError("");
-    setNotice("Trajectory changed in another tab · reloading");
+    setNotice({ message: "Trajectory changed in another tab · reloading", tone: "status" });
     setRequestKey((value) => value + 1);
   }, []);
 
@@ -220,7 +238,7 @@ export default function App() {
       if (manifestGeneration.current !== expectedGeneration) return;
       if (current.dataset_generation !== expectedGeneration) {
         activateManifest(current);
-        setNotice("Trajectory changed · updated");
+        setNotice({ message: "Trajectory changed · updated", tone: "status" });
         datasetChannel.current?.postMessage({
           datasetGeneration: current.dataset_generation,
         });
@@ -294,9 +312,18 @@ export default function App() {
         if (!active) return;
         setLoadedFrame({ index: frameIndex, data });
         setFrameLoading(false);
-        for (let ahead = 1; ahead <= Math.min(4, manifest.frame_count - 1); ahead += 1) {
-          cache.current.prefetch((frameIndex + ahead) % manifest.frame_count, manifest.frame_count);
-        }
+        const playback = playbackState.current;
+        const prefetch = playback.playing
+          ? playbackPrefetchIndices(frameIndex, manifest.frame_count, {
+              mode: playback.mode,
+              direction: playback.direction,
+              stride: playback.stride,
+            })
+          : Array.from(
+              { length: Math.min(4, manifest.frame_count - 1) },
+              (_, ahead) => (frameIndex + ahead + 1) % manifest.frame_count,
+            );
+        prefetch.forEach((index) => cache.current.prefetch(index, manifest.frame_count));
       })
       .catch((error: unknown) => {
         if (!active) return;
@@ -413,20 +440,32 @@ export default function App() {
     const scene = moleculeSceneRef.current;
     if (!scene || rendering) return;
     if (frameLoading) {
-      setNotice("Wait for the current frame to finish loading.");
+      setNotice({ message: "Wait for the current frame to finish loading.", tone: "status" });
       return;
     }
+    const activeElement = document.activeElement;
+    const focusOrigin = activeElement
+      && activeElement !== document.body
+      && "focus" in activeElement
+      ? activeElement as FocusTarget
+      : null;
     setPlaying(false);
     setRendering(true);
-    setNotice("Exporting PNG…");
+    setNotice({ message: "Exporting PNG…", tone: "status" });
     try {
       const blob = await scene.exportPng(options);
       downloadBlob(blob, renderFileName(manifest?.name, options.width, options.height));
-      setNotice(`Exported ${options.width.toLocaleString()} × ${options.height.toLocaleString()} px`);
+      setNotice({
+        message: `Exported ${options.width.toLocaleString()} × ${options.height.toLocaleString()} px`,
+        tone: "status",
+      });
     } catch (error) {
-      setNotice(`Export failed · ${message(error)}`);
+      setNotice({ message: `Export failed · ${message(error)}`, tone: "error" });
     } finally {
       setRendering(false);
+      requestAnimationFrame(() => restoreFocusWhenAvailable(
+        focusOrigin?.isConnected ? focusOrigin : renderButtonRef.current,
+      ));
     }
   }, [frameLoading, manifest?.name, rendering]);
 
@@ -516,7 +555,7 @@ export default function App() {
         }
         setMeasurementPlotOpen(false);
         setMeasurementSeries(null);
-        setNotice(`Plot unavailable · ${message(error)}`);
+        setNotice({ message: `Plot unavailable · ${message(error)}`, tone: "error" });
       });
 
     return () => controller.abort();
@@ -602,22 +641,42 @@ export default function App() {
     if (playbackClock.current.key !== clockKey) {
       playbackClock.current = { key: clockKey, requestTimeMs: null };
     }
+    const now = performance.now();
+    const requestAnchor = playbackClock.current.requestTimeMs ?? now;
     const schedule = schedulePlaybackFrame(
-      performance.now(),
+      now,
       playbackClock.current.requestTimeMs,
       playbackFps,
     );
-    playbackClock.current.requestTimeMs = schedule.requestTimeMs;
-    const timer = window.setTimeout(() => {
-      const next = advancePlaybackFrame(frameIndex, manifest.frame_count, {
-        mode: playbackMode,
-        direction: playbackDirection,
-        stride: playbackStride,
-      });
-      setFrameIndex(next.frameIndex);
-      setPlaybackDirection(next.direction);
-      if (!next.continuePlaying) setPlaying(false);
-    }, schedule.delayMs);
+    let timer = 0;
+    const commit = () => {
+      const tick = runScheduledPlaybackTick(
+        performance.now(),
+        requestAnchor,
+        playbackFps,
+        frameIndex,
+        manifest.frame_count,
+        {
+          mode: playbackMode,
+          direction: playbackDirection,
+          stride: playbackStride,
+        },
+        {
+          onStep: (next) => {
+            setFrameIndex(next.frameIndex);
+            setPlaybackDirection(next.direction);
+            if (!next.continuePlaying) setPlaying(false);
+          },
+          onPulse: () => setPlaybackPulse((value) => value + 1),
+        },
+      );
+      if (!tick.committed) {
+        timer = window.setTimeout(commit, playbackTimerDelay(tick.schedule.delayMs));
+        return;
+      }
+      playbackClock.current.requestTimeMs = tick.schedule.requestTimeMs;
+    };
+    timer = window.setTimeout(commit, playbackTimerDelay(schedule.delayMs));
     return () => window.clearTimeout(timer);
   }, [
     frameIndex,
@@ -627,6 +686,7 @@ export default function App() {
     playbackDirection,
     playbackFps,
     playbackMode,
+    playbackPulse,
     playbackStride,
     playing,
     rendering,
@@ -640,7 +700,7 @@ export default function App() {
     const controller = new AbortController();
     openController.current = controller;
     setOpening(true);
-    setNotice("Opening files…");
+    setNotice({ message: "Opening files…", tone: "status" });
     try {
       const value = await openFiles(selected, controller.signal);
       if (request !== openRequest.current) return;
@@ -648,10 +708,13 @@ export default function App() {
       datasetChannel.current?.postMessage({
         datasetGeneration: value.dataset_generation,
       });
-      setNotice(`Opened ${value.name} · ${value.frame_count.toLocaleString()} frames`);
+      setNotice({
+        message: `Opened ${value.name} · ${frameCountLabel(value.frame_count)}`,
+        tone: "status",
+      });
     } catch (error) {
       if (request !== openRequest.current || controller.signal.aborted) return;
-      setNotice(message(error));
+      setNotice({ message: message(error), tone: "error" });
     } finally {
       if (request === openRequest.current) {
         openController.current = null;
@@ -663,8 +726,8 @@ export default function App() {
   useEffect(() => () => openController.current?.abort(), []);
 
   useEffect(() => {
-    if (!notice || opening || rendering) return;
-    const timer = window.setTimeout(() => setNotice(""), 4200);
+    if (!notice || notice.tone === "error" || opening || rendering) return;
+    const timer = window.setTimeout(() => setNotice(null), noticeDurationMs(notice.message));
     return () => window.clearTimeout(timer);
   }, [notice, opening, rendering]);
 
@@ -1026,40 +1089,24 @@ export default function App() {
         }}
       />
       <div className={workspaceClass} aria-busy={loadState === "loading" || frameLoading || opening || rendering}>
-        {manifest && manifest.frame_count > 0 ? (
-          <MoleculeScene
-            ref={moleculeSceneRef}
-            manifest={manifest}
-            frame={frame}
-            presentation={presentation}
-            selectedAtoms={selectedAtoms}
-            resetSignal={resetSignal}
-            viewPreset={viewPreset}
-            viewSignal={viewSignal}
-            forceScale={forceScale}
-            velocityScale={velocityScale}
-            appearance="light"
-            onSelect={selectAtom}
-            onSceneInfo={setSceneInfo}
-            onSelectionPositions={setSelectionPositions}
-          />
-        ) : (
-          <div className="canvas-field" />
-        )}
-
         <header className="topbar">
-          <div className="identity">
+          <div
+            className="identity"
+            title={manifest?.name || "Molecular trajectory"}
+          >
             <img className="identity-mark" src="/pq-logo.png" alt="" />
             <div>
               <strong>PQViewer</strong>
-              <span>{manifest?.name || "Molecular trajectory"}</span>
+              <span title={manifest?.name || "Molecular trajectory"}>
+                {manifest?.name || "Molecular trajectory"}
+              </span>
             </div>
           </div>
           <div className="topbar-tools">
             {manifest && (
               <div className="scene-status">
-                <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> atoms</span>
-                <span><strong>{manifest.frame_count.toLocaleString()}</strong> frames</span>
+                <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> {manifest.topology.atom_count === 1 ? "atom" : "atoms"}</span>
+                <span><strong>{manifest.frame_count.toLocaleString()}</strong> {manifest.frame_count === 1 ? "frame" : "frames"}</span>
                 {cellAvailable && <span>PBC <strong>{pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</strong></span>}
               </div>
             )}
@@ -1085,7 +1132,7 @@ export default function App() {
               disabled={rendering || !capabilities}
               onClick={() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view", true)}
             ><Icon name="sliders" /><span>View</span></button>
-            <button className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
+            <button ref={renderButtonRef} className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
           </div>
         </header>
 
@@ -1096,6 +1143,27 @@ export default function App() {
             onFit={() => setResetSignal((value) => value + 1)}
             onView={selectView}
           />
+        )}
+
+        {manifest && manifest.frame_count > 0 ? (
+          <MoleculeScene
+            ref={moleculeSceneRef}
+            manifest={manifest}
+            frame={frame}
+            presentation={presentation}
+            selectedAtoms={selectedAtoms}
+            resetSignal={resetSignal}
+            viewPreset={viewPreset}
+            viewSignal={viewSignal}
+            forceScale={forceScale}
+            velocityScale={velocityScale}
+            appearance="light"
+            onSelect={selectAtom}
+            onSceneInfo={setSceneInfo}
+            onSelectionPositions={setSelectionPositions}
+          />
+        ) : (
+          <div className="canvas-field" />
         )}
 
         {manifest && capabilities && <aside ref={workbenchRef} className={workbenchTab === "inspect" ? "workbench atom-card" : "workbench"} id="workbench" aria-labelledby="workbench-title" hidden={!workbenchVisible} tabIndex={-1}>
@@ -1236,7 +1304,25 @@ export default function App() {
             onAction={showOpen}
           />
         )}
-        {notice && <div className={opening || rendering ? "notice is-busy" : "notice"} role="status" title={notice}>{notice}</div>}
+        {notice && (
+          <div
+            className={`${opening || rendering ? "notice is-busy" : "notice"}${notice.tone === "error" ? " is-error" : ""}`}
+            role={notice.tone === "error" ? "alert" : "status"}
+            title={notice.message}
+          >
+            <span>{notice.message}</span>
+            {notice.tone === "error" && (
+              <button
+                className="notice-dismiss"
+                type="button"
+                aria-label="Dismiss message"
+                onClick={() => setNotice(null)}
+              >
+                <Icon name="close" />
+              </button>
+            )}
+          </div>
+        )}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
         {commandOpen && <CommandPalette
           actions={commands}
@@ -1333,7 +1419,7 @@ function useModalFocus<T extends HTMLElement>(
   }, []);
 }
 
-function restoreFocusWhenAvailable(element: HTMLElement | null) {
+function restoreFocusWhenAvailable(element: FocusTarget | null) {
   if (!element?.isConnected) return;
   if (!element.matches(":disabled")) {
     element.focus();
@@ -1449,6 +1535,8 @@ function ShortcutSheet({
       items: [
         ["R", "Fit structure"],
         ["1 / 2 / 3 / 4", "3D / XY / XZ / YZ"],
+        ["↑ / ↓", "Browse atoms"],
+        ["Enter", "Toggle atom"],
         ["V", "View controls"],
         ["B", "Bonds / lines"],
         ["C / F / W", "Cell / forces / water"],
@@ -1715,7 +1803,7 @@ function SelectionBar({
 
   return <section className="selection-bar" aria-label="Atom selection">
     <div className="selection-readout">
-      <strong>{title}</strong>
+      <strong title={title}>{title}</strong>
       {value && <output>{value}</output>}
     </div>
     {supportsDisplayedImages ? (
@@ -1773,12 +1861,13 @@ function Inspector({
   const chargeUnit = arrayUnit(frame, manifest, "charges");
   const residueIndex = atom === null ? -1 : manifest.topology.atom_residue_index?.[atom] ?? -1;
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
+  const residueId = meaningfulResidueId(manifest.topology.residue_ids, atom);
   return <div className="inspector-content">
     {atom === null ? <p className="quiet-copy">Click an atom to inspect it.</p> : <section className="readout-section atom-section">
       <Readout label="Element" value={symbol ?? "—"} />
       {manifest.topology.atom_names?.[atom] && <Readout label="Name" value={manifest.topology.atom_names[atom]} />}
       {residue && <Readout label="Residue" value={`${residue.name ?? `Type ${residue.type_id ?? "—"}`} · ${residue.index + 1}`} />}
-      {!residue && manifest.topology.residue_ids?.[atom] !== undefined && <Readout label="Residue type" value={String(manifest.topology.residue_ids[atom])} />}
+      {!residue && residueId !== null && <Readout label="Residue ID" value={residueId} />}
       {selectedPosition && (
         <VectorReadout
           label={cellAvailable ? "Displayed cell position" : "Displayed position"}
@@ -1940,6 +2029,36 @@ export function compactFrameNumber(value: number): string {
       : [1_000, "k"] as const;
   const scaled = rounded / scale;
   return `${Number(scaled.toFixed(scaled >= 10 ? 0 : 1))}${suffix}`;
+}
+
+export function frameCountLabel(value: number): string {
+  const count = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  return `${count.toLocaleString()} ${count === 1 ? "frame" : "frames"}`;
+}
+
+export function noticeDurationMs(value: string): number {
+  return Math.min(10_000, Math.max(4_200, value.length * 70));
+}
+
+export function meaningfulResidueId(
+  residueIds: readonly (number | string)[] | undefined,
+  atom: number | null,
+): string | null {
+  if (
+    atom === null
+    || !Number.isInteger(atom)
+    || atom < 0
+    || !residueIds
+    || atom >= residueIds.length
+  ) {
+    return null;
+  }
+  const meaningful = residueIds.some((value) => {
+    const normalized = String(value).trim();
+    return normalized !== "" && normalized !== "0";
+  });
+  const current = String(residueIds[atom]).trim();
+  return meaningful && current !== "" ? current : null;
 }
 
 export function measurementPbc(frame: FrameData | null): [boolean, boolean, boolean] {
