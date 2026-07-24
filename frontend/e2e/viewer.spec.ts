@@ -9,6 +9,7 @@ const repositoryRoot = path.resolve(
   "../..",
 );
 const periodicFixture = path.join(repositoryRoot, "examples/periodic-boundary.extxyz");
+const pqInputFixture = path.join(repositoryRoot, "examples/periodic-boundary.in");
 const crossingFixture = path.join(repositoryRoot, "examples/periodic-crossing.extxyz");
 const acofFixture = path.join(repositoryRoot, "examples/acof-triclinic.xyz");
 const waterFixture = path.join(repositoryRoot, "examples/water.xyz");
@@ -107,6 +108,43 @@ test("opens a trajectory in the packaged viewer", async ({ page }) => {
     "Frame 1 of 2",
   );
 
+  expect(errors).toEqual([]);
+});
+
+test("opens a PQ input bundle through the same viewer flow", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const chooser = await chooserPromise;
+  const openPromise = page.waitForResponse(
+    (response) => response.url().endsWith("/api/open")
+      && response.request().method() === "POST",
+  );
+  await chooser.setFiles([pqInputFixture, periodicFixture]);
+
+  expect((await openPromise).ok()).toBe(true);
+  await expect(page).toHaveTitle("periodic-boundary.extxyz · PQViewer");
+  await expect(page.locator(".frame-counter")).toHaveAttribute(
+    "aria-label",
+    "Frame 1 of 2",
+  );
+  const manifestResponse = await page.request.get("/api/manifest");
+  const manifest = await manifestResponse.json();
+  expect(manifest.source.kind).toBe("pq-run-input");
+  expect(manifest.source.segments[0].source_id).toContain(
+    "periodic-boundary.extxyz",
+  );
+  const frameResponse = await page.request.get("/api/frames/0");
+  const packet = await frameResponse.body();
+  const headerSize = packet.readUInt32LE(0);
+  const frameHeader = JSON.parse(
+    packet.subarray(4, 4 + headerSize).toString("utf8"),
+  );
+  expect(frameHeader.frame_key.source_index).toBe(0);
+  expect(frameHeader.frame_key.segment_index).toBe(0);
+  await expect(page.locator("canvas")).toBeVisible();
   expect(errors).toEqual([]);
 });
 

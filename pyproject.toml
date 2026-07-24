@@ -24,7 +24,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ase = [
+    "ase>=3.23,<4",
+]
 dev = [
+    "ase>=3.23,<4",
     "httpx2>=2,<3",
     "pytest>=8,<9",
     "pytest-cov>=5,<7",

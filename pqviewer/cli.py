@@ -34,14 +34,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="pqviewer",
-        description="Open a molecular trajectory.",
+        description="Open molecular structures and trajectories.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "path",
         nargs="?",
-        type=Path,
-        help="Optional trajectory file to open.",
+        help=(
+            "Trajectory, PQ input, run directory, or path@start:stop:step "
+            "to open."
+        ),
     )
     parser.add_argument("--energy", type=Path, help="Optional PQ energy file.")
     parser.add_argument("--info", type=Path, help="Optional PQ info file.")
@@ -66,9 +68,8 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    source = _source_argument(args.path)
 
-    if args.path is not None:
-        _require_file(parser, args.path, "trajectory")
     if args.info is not None and args.energy is None:
         parser.error("--info requires --energy.")
     if args.energy is not None:
@@ -90,7 +91,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         application = create_app(
-            args.path,
+            source,
             energy_path=args.energy,
             info_path=args.info,
             forces_path=args.forces,
@@ -101,14 +102,14 @@ def main(argv: list[str] | None = None) -> None:
         )
         application.state.dataset.manifest()
     except Exception as error:  # pylint: disable=broad-exception-caught
-        parser.error(f"Could not open trajectory: {error}")
+        parser.error(f"Could not open source: {error}")
 
     if not args.no_open:
         _open_browser_later(_browser_url(args.host, args.port))
 
     if args.reload:
         with _source_environment(
-            args.path,
+            source,
             args.energy,
             args.info,
             args.forces,
@@ -139,8 +140,15 @@ def _require_file(parser: argparse.ArgumentParser, path: Path, label: str) -> No
         parser.error(f"{label.capitalize()} file not found: {path}")
 
 
+def _source_argument(value: str | None) -> str | Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    return path.resolve() if path.exists() else value
+
+
 def _set_source_environment(
-    trajectory_path: Path | None,
+    trajectory_path: str | Path | None,
     energy_path: Path | None,
     info_path: Path | None,
     forces_path: Path | None,
@@ -149,7 +157,10 @@ def _set_source_environment(
     moldescriptor_path: Path | None = None,
     topology_path: Path | None = None,
 ) -> None:
-    _set_optional_environment(TRAJECTORY_ENV, trajectory_path)
+    if trajectory_path is None:
+        os.environ.pop(TRAJECTORY_ENV, None)
+    else:
+        os.environ[TRAJECTORY_ENV] = str(trajectory_path)
     _set_optional_environment(ENERGY_ENV, energy_path)
     _set_optional_environment(INFO_ENV, info_path)
     _set_optional_environment(FORCES_ENV, forces_path)
@@ -161,7 +172,7 @@ def _set_source_environment(
 
 @contextmanager
 def _source_environment(
-    trajectory_path: Path | None,
+    trajectory_path: str | Path | None,
     energy_path: Path | None,
     info_path: Path | None,
     forces_path: Path | None,

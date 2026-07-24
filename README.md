@@ -24,6 +24,19 @@ to install or run PQViewer.
 pqviewer path/to/md.xyz
 ```
 
+The same command accepts a PQ input, a run directory, or a frame slice:
+
+```bash
+pqviewer path/to/run-01.in
+pqviewer path/to/run-directory
+pqviewer 'path/to/md.xyz@100:1000:10'
+```
+
+PQ inputs resolve their declared outputs relative to the input file. Prefix-only
+runs automatically attach `.xyz`, `.force`, `.vel`, `.chrg`, `.en`, `.info`,
+and `.rst` files that exist. A directory opens one unambiguous run; restart
+segments are joined only when their declared restart files form a chain.
+
 Try the included trajectory with `pqviewer examples/water.xyz`.
 Use `pqviewer examples/periodic-boundary.extxyz` to inspect centered wrapping,
 forces, step/time metadata, and minimum-image measurements.
@@ -31,6 +44,29 @@ Use `pqviewer examples/periodic-crossing.extxyz` to inspect continuous
 unwrapped motion, or `pqviewer examples/acof-triclinic.xyz` for a triclinic
 framework.
 Run `pqviewer` without a path to open an empty workspace.
+
+ASE support is optional:
+
+```bash
+python -m pip install 'pqanalysis-viewer[ase]'
+pqviewer structure.cif
+pqviewer optimization.traj
+```
+
+ASE `Atoms`, indexed trajectories, and supported files use the same transport:
+
+```python
+from pqviewer import open_run_dataset
+
+dataset = open_run_dataset(atoms)
+frame = dataset.get_frame(0)
+```
+
+PQ and ASE frames retain a stable source ID, segment index, local frame index,
+step, time, and units. Slices are views over the indexed source; coordinates
+and restart segments are not copied into memory.
+Large indexed ASE trajectories skip an eager timeline scan; step and time stay
+available on each loaded frame.
 
 Same-stem PQ companions are detected automatically; override them explicitly:
 
@@ -50,6 +86,7 @@ pqviewer path/to/md.xyz \
 ```
 
 Files can also be opened together from the interface or dropped on the canvas.
+PQ input bundles can be opened together with their output files.
 `View` opens the controls supported by the current data in one click:
 representation, water, cell, force and velocity vectors, periodic wrapping, and
 neighboring images. Ribbon appears when residue and backbone topology are

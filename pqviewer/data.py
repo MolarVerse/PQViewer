@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import shlex
 from threading import RLock
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -32,6 +32,18 @@ SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
+class FrameKey:
+    """Stable identity for a frame inside one indexed source segment."""
+
+    source_id: str
+    source_index: int
+    segment_index: int = 0
+    step: int | None = None
+    time: float | None = None
+    time_unit: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FrameData:
     """Numeric data needed to render one frame."""
 
@@ -39,11 +51,13 @@ class FrameData:
     positions: np.ndarray
     cell: np.ndarray
     pbc: tuple[bool, bool, bool]
+    periodic_cell: np.ndarray | None = None
     forces: np.ndarray | None = None
     velocities: np.ndarray | None = None
     charges: np.ndarray | None = None
     scalars: Mapping[str, float | int | bool] = field(default_factory=dict)
     units: Mapping[str, str | None] = field(default_factory=dict)
+    frame_key: FrameKey | None = None
     coordinates: Literal["source", "unwrapped"] = "source"
     unwrapped_positions: np.ndarray | None = None
     centered_image_shifts: np.ndarray | None = None
@@ -487,6 +501,7 @@ class PQTrajectoryDataset:
         moldescriptor_path: str | Path | None = None,
         topology_path: str | Path | None = None,
         topology: Topology | None = None,
+        reference_residues: Sequence[Any] | None = None,
         md_format: MDEngineFormat | str = MDEngineFormat.PQ,
         name: str | None = None,
     ) -> None:
@@ -506,10 +521,18 @@ class PQTrajectoryDataset:
         )
         self.moldescriptor_path = self._optional_file(moldescriptor_path)
         self.topology_path = self._optional_file(topology_path)
+        if self.moldescriptor_path is not None and reference_residues is not None:
+            raise ValueError(
+                "provide a moldescriptor path or reference residues, not both"
+            )
         self._reference_residues = (
-            MoldescriptorReader(str(self.moldescriptor_path)).read()
-            if self.moldescriptor_path is not None
-            else None
+            reference_residues
+            if reference_residues is not None
+            else (
+                MoldescriptorReader(str(self.moldescriptor_path)).read()
+                if self.moldescriptor_path is not None
+                else None
+            )
         )
         self._bonded_topology = (
             TopologyFileReader(str(self.topology_path)).read()
@@ -888,16 +911,26 @@ class PQTrajectoryDataset:
         frame: FrameData,
         shifts: np.ndarray,
     ) -> _UnwrapAnchor:
+        cell = (
+            frame.periodic_cell
+            if frame.periodic_cell is not None
+            else frame.cell
+        )
         return _UnwrapAnchor(
             positions=frame.positions.copy(),
-            cell=frame.cell.copy(),
+            cell=cell.copy(),
             pbc=frame.pbc,
             shifts=np.asarray(shifts, dtype=np.int64).copy(),
         )
 
     @staticmethod
     def _frame_cell(frame: FrameData) -> Cell:
-        matrix = np.asarray(frame.cell, dtype=np.float64)
+        matrix = np.asarray(
+            frame.periodic_cell
+            if frame.periodic_cell is not None
+            else frame.cell,
+            dtype=np.float64,
+        )
         if not np.any(matrix):
             return Cell()
         return Cell.init_from_box_matrix(matrix.T)

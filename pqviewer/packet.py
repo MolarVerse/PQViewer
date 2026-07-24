@@ -78,6 +78,15 @@ def encode_frame(frame: FrameData) -> bytes:
         "arrays": array_metadata,
         "payload_byte_length": offset,
     }
+    if frame.frame_key is not None:
+        header["frame_key"] = {
+            "source_id": frame.frame_key.source_id,
+            "source_index": frame.frame_key.source_index,
+            "segment_index": frame.frame_key.segment_index,
+            "step": frame.frame_key.step,
+            "time": frame.frame_key.time,
+            "time_unit": frame.frame_key.time_unit,
+        }
     for key in ("step", "time"):
         value = scalar_values.get(key)
         if isinstance(value, (int, float)) and not isinstance(value, bool):

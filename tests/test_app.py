@@ -318,6 +318,102 @@ def test_open_upload_swaps_dataset_and_cleans_previous_upload(tmp_path):
     assert not second_directory.exists()
 
 
+def test_open_upload_resolves_a_pq_input_bundle() -> None:
+    application = create_app()
+
+    with TestClient(application) as client:
+        opened = client.post(
+            "/api/open",
+            files=[
+                (
+                    "files",
+                    (
+                        "run.in",
+                        "start_file = initial.rst;\nfile_prefix = run;\n",
+                        "text/plain",
+                    ),
+                ),
+                (
+                    "files",
+                    (
+                        "run.xyz",
+                        "1 10 10 10\nstep=0\nH 0 0 0\n",
+                        "chemical/x-xyz",
+                    ),
+                ),
+                (
+                    "files",
+                    (
+                        "run.force",
+                        "1\n\nH 1 2 3\n",
+                        "text/plain",
+                    ),
+                ),
+            ],
+        )
+
+        assert opened.status_code == 200
+        manifest = opened.json()
+        assert manifest["source"]["kind"] == "pq-run-input"
+        assert manifest["frame_count"] == 1
+        assert manifest["companion_files"]["forces"]["complete"] is True
+
+    assert application.state.upload_temp is None
+
+
+def test_open_upload_accepts_extensionless_poscar() -> None:
+    application = create_app()
+    poscar = """Hydrogen
+1.0
+5 0 0
+0 5 0
+0 0 5
+H
+1
+Cartesian
+0 0 0
+"""
+
+    with TestClient(application) as client:
+        opened = client.post(
+            "/api/open",
+            files={"files": ("POSCAR", poscar, "text/plain")},
+        )
+
+        assert opened.status_code == 200
+        manifest = opened.json()
+        assert manifest["source"]["kind"] == "ase-file"
+        assert manifest["topology"]["atom_count"] == 1
+
+    assert application.state.upload_temp is None
+
+
+def test_uploaded_pq_input_cannot_read_outside_its_bundle(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside.xyz"
+    outside.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    application = create_app()
+
+    with TestClient(application) as client:
+        opened = client.post(
+            "/api/open",
+            files={
+                "files": (
+                    "run.in",
+                    (
+                        "start_file = initial.rst;\n"
+                        f"traj_file = {outside};\n"
+                    ),
+                    "text/plain",
+                ),
+            },
+        )
+
+    assert opened.status_code == 400
+    assert opened.json()["detail"] == "PQ input path leaves the uploaded bundle"
+
+
 def test_newer_open_request_cannot_be_replaced_by_an_older_one(monkeypatch):
     application = create_app()
     slow_started = Event()
@@ -594,6 +690,27 @@ def test_cli_passes_companion_paths(tmp_path, monkeypatch):
     assert captured["charges_path"] == charges
     assert captured["moldescriptor_path"] == moldescriptor
     assert captured["topology_path"] == topology
+
+
+def test_cli_passes_a_frame_slice_before_filesystem_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trajectory = tmp_path / "run.xyz"
+    trajectory.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_create_app(path, **kwargs):
+        captured["path"] = path
+        dataset = SimpleNamespace(manifest=lambda: {})
+        return SimpleNamespace(state=SimpleNamespace(dataset=dataset))
+
+    monkeypatch.setattr(cli, "create_app", fake_create_app)
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
+
+    cli.main([f"{trajectory}@1:9:2", "--no-open"])
+
+    assert captured["path"] == f"{trajectory}@1:9:2"
 
 
 def test_cli_rejects_info_without_energy(tmp_path, capsys):

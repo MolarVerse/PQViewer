@@ -1245,7 +1245,7 @@ export default function App() {
       setCommandOpen(false);
     };
     const actions: CommandAction[] = [
-      { id: "open", label: "Open trajectory", keywords: "file load", detail: shortcutLabels.open, run: run(showOpen) },
+      { id: "open", label: "Open files", keywords: "structure trajectory PQ ASE load", detail: shortcutLabels.open, run: run(showOpen) },
       { id: "play", label: playing ? "Pause trajectory" : "Play trajectory", keywords: "movie animation", detail: "Space", disabled: !canPlay, run: run(() => setPlaying((value) => !value)) },
       { id: "previous", label: "Previous frame", keywords: "back step", detail: "←", disabled: !canPlay || frameIndex === 0, run: run(() => { setPlaying(false); stepFrame(-1); }) },
       { id: "next", label: "Next frame", keywords: "forward step", detail: "→", disabled: !canPlay || frameIndex >= (manifest?.frame_count ?? 1) - 1, run: run(() => { setPlaying(false); stepFrame(1); }) },
@@ -1542,7 +1542,6 @@ export default function App() {
         tabIndex={-1}
         disabled={rendering}
         multiple
-        accept=".xyz,.extxyz,.force,.frc,.forces,.vel,.velocs,.velocity,.charge,.chrg,.charges,.en,.info,.top,.topology,.mol,.moldescriptor"
         onChange={(event) => {
           if (rendering) return;
           void openSelectedFiles([...(event.currentTarget.files ?? [])]);
@@ -1798,7 +1797,7 @@ export default function App() {
           />
         )}
 
-        {loadState === "loading" && <CenteredState title="Opening trajectory" busy />}
+        {loadState === "loading" && <CenteredState title="Opening files" busy />}
         {loadState === "error" && (
           <CenteredState
             title="Trajectory unavailable"
@@ -1810,8 +1809,8 @@ export default function App() {
         )}
         {loadState === "ready" && manifest?.frame_count === 0 && (
           <CenteredState
-            title={manifest.name === "No trajectory" ? "Open a trajectory" : "No frames found"}
-            detail="Drop a trajectory or open one from disk."
+            title={manifest.name === "No trajectory" ? "Open files" : "No frames found"}
+            detail="Drop a structure, trajectory, or PQ run bundle."
             action="Open"
             onAction={showOpen}
           />
@@ -2065,7 +2064,7 @@ function ShortcutSheet({
       title: "Workspace",
       items: [
         [shortcutLabels.commands, "Search commands"],
-        [shortcutLabels.open, "Open trajectory"],
+        [shortcutLabels.open, "Open files"],
         [shortcutLabels.export, "Export figure"],
         ["? / Esc", "Shortcuts / close"],
       ],
@@ -2352,7 +2351,7 @@ function CanvasControls({
 
 
 function DropOverlay({ replacing }: { replacing: boolean }) {
-  return <div className="drop-overlay" role="status"><div><Icon name="folder" /><strong>{replacing ? "Replace trajectory" : "Open trajectory"}</strong><span>Drop XYZ and PQ companion files</span></div></div>;
+  return <div className="drop-overlay" role="status"><div><Icon name="folder" /><strong>{replacing ? "Replace data" : "Open files"}</strong><span>Structures, trajectories, and PQ run bundles</span></div></div>;
 }
 
 function SelectionBar({
