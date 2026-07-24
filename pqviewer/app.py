@@ -18,8 +18,9 @@ from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 
-from .data import EmptyTrajectoryDataset, PQTrajectoryDataset
+from .data import EmptyTrajectoryDataset
 from .packet import encode_frame
+from .sources import RunDataset, open_run_dataset
 
 
 TRAJECTORY_ENV = "PQVIEWER_TRAJECTORY"
@@ -40,6 +41,7 @@ STALE_DATASET_DETAIL = "Trajectory changed. Reload the manifest."
 
 _UPLOAD_FIELDS = {
     "files",
+    "input",
     "trajectory",
     "forces",
     "velocities",
@@ -50,7 +52,19 @@ _UPLOAD_FIELDS = {
     "topology",
 }
 _UPLOAD_EXTENSIONS = {
-    "trajectory": (".extended.xyz", ".extxyz", ".xyz"),
+    "input": (".in",),
+    "trajectory": (
+        ".extended.xyz",
+        ".extxyz",
+        ".xyz",
+        ".traj",
+        ".cif",
+        ".pdb",
+        ".vasp",
+        ".poscar",
+        ".contcar",
+        ".cube",
+    ),
     "forces": (".force", ".frc", ".forces"),
     "velocities": (".vel", ".velocs", ".velocity"),
     "charges": (".charge", ".chrg", ".charges"),
@@ -124,7 +138,7 @@ class SPAStaticFiles(StaticFiles):
 
 
 def create_app(
-    trajectory_path: str | Path | None = None,
+    trajectory_path: Any | None = None,
     *,
     energy_path: str | Path | None = None,
     info_path: str | Path | None = None,
@@ -137,7 +151,7 @@ def create_app(
     frame_encoder: Callable[[Any], bytes] = encode_frame,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
-    """Create an application with an optional initial trajectory."""
+    """Create an application with optional initial data."""
 
     if dataset is None:
         sidecar_paths = (
@@ -152,7 +166,7 @@ def create_app(
         if trajectory_path is None and any(path is not None for path in sidecar_paths):
             raise ValueError("Sidecar files require an initial trajectory.")
         dataset = (
-            PQTrajectoryDataset(
+            open_run_dataset(
                 trajectory_path,
                 energy_path=energy_path,
                 info_path=info_path,
@@ -278,7 +292,7 @@ def create_app(
         except Exception as error:
             raise HTTPException(
                 status_code=400,
-                detail=f"Could not open trajectory: {error}",
+                detail=f"Could not open files: {error}",
             ) from error
         finally:
             if form is not None:
@@ -289,7 +303,7 @@ def create_app(
                 temporary.cleanup()
                 raise HTTPException(
                     status_code=409,
-                    detail="A newer trajectory open request superseded this one.",
+                    detail="A newer open request superseded this one.",
                 )
             previous_temp = application.state.upload_temp
             application.state.dataset = candidate
@@ -364,7 +378,8 @@ def _uploaded_files(items: list[tuple[str, Any]]) -> dict[str, UploadFile]:
             raise ValueError(f"More than one {role} file was provided")
         uploads[role] = value
     if "trajectory" not in uploads:
-        raise ValueError("Upload field trajectory is required")
+        if "input" not in uploads:
+            raise ValueError("A trajectory or PQ input file is required")
     if "info" in uploads and "energy" not in uploads:
         raise ValueError("An info file requires an energy file")
     return uploads
@@ -373,6 +388,8 @@ def _uploaded_files(items: list[tuple[str, Any]]) -> dict[str, UploadFile]:
 def _classify_upload(filename: str | None) -> str:
     name = _safe_name(filename)
     lowered = name.lower()
+    if lowered in {"poscar", "contcar"}:
+        return "trajectory"
     for role, extensions in _UPLOAD_EXTENSIONS.items():
         if any(lowered.endswith(extension) for extension in extensions):
             return role
@@ -390,13 +407,23 @@ async def _store_uploads(
     names: set[str] = set()
     paths: dict[str, Path] = {}
     total = 0
-    trajectory_name = _safe_name(uploads["trajectory"].filename)
-    trajectory_stem = _validated_stem("trajectory", trajectory_name)
+    trajectory = uploads.get("trajectory")
+    trajectory_stem = (
+        _validated_stem(
+            "trajectory",
+            _safe_name(trajectory.filename),
+        )
+        if trajectory is not None
+        else None
+    )
 
     for field, upload in uploads.items():
         name = _safe_name(upload.filename)
         stem = _validated_stem(field, name)
-        if field in {"forces", "velocities", "charges", "energy", "info"}:
+        if (
+            trajectory_stem is not None
+            and field in {"forces", "velocities", "charges", "energy", "info"}
+        ):
             if stem.casefold() != trajectory_stem.casefold():
                 raise ValueError(f"{field} file must match the trajectory name")
         normalized_name = name.casefold()
@@ -421,9 +448,9 @@ async def _store_uploads(
 
 def _open_uploaded_dataset(
     paths: dict[str, Path],
-) -> tuple[PQTrajectoryDataset, dict[str, Any]]:
-    candidate = PQTrajectoryDataset(
-        paths["trajectory"],
+) -> tuple[RunDataset, dict[str, Any]]:
+    candidate = open_run_dataset(
+        paths.get("input") or paths["trajectory"],
         energy_path=paths.get("energy"),
         info_path=paths.get("info"),
         forces_path=paths.get("forces"),
@@ -431,6 +458,9 @@ def _open_uploaded_dataset(
         charges_path=paths.get("charges"),
         moldescriptor_path=paths.get("moldescriptor"),
         topology_path=paths.get("topology"),
+        allowed_root=(
+            paths["input"].parent if paths.get("input") is not None else None
+        ),
     )
     return candidate, candidate.manifest()
 
@@ -449,6 +479,8 @@ def _validated_stem(field: str, filename: str) -> str:
     if extensions is None:
         return Path(filename).stem
     lowered = filename.lower()
+    if field == "trajectory" and lowered in {"poscar", "contcar"}:
+        return filename
     for extension in extensions:
         if lowered.endswith(extension):
             return filename[: -len(extension)]
