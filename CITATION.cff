@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If PQViewer supports published work, please cite the software."
+type: software
+title: PQViewer
+version: 0.1.0
+authors:
+  - given-names: Josef M.
+    family-names: Gallmetzer
+repository-code: "https://github.com/MolarVerse/PQViewer"
+license: MIT
+keywords:
+  - molecular visualization
+  - trajectory analysis
+  - computational chemistry
+  - scientific visualization
