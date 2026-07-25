@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Chemistry",
@@ -44,6 +44,9 @@ pqviewer-render = "pqviewer.render_cli:main"
 
 [project.urls]
 Repository = "https://github.com/MolarVerse/PQViewer"
+Documentation = "https://github.com/MolarVerse/PQViewer/tree/main/docs"
+Changelog = "https://github.com/MolarVerse/PQViewer/blob/main/CHANGELOG.md"
+Issues = "https://github.com/MolarVerse/PQViewer/issues"
 
 [tool.setuptools.packages.find]
 include = ["pqviewer*"]
