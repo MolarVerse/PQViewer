@@ -81,7 +81,10 @@ describe("measurement series", () => {
     const result = await calculateMeasurementSeries({
       manifest: trajectoryManifest(1),
       frameCount: 1,
-      selections: primaryPair,
+      selections: [
+        { atom: 0, image: [-1, 0, 0] },
+        { atom: 1, image: [0, 0, 0] },
+      ],
       wrap: "atom",
       minimumImage: false,
       signal: new AbortController().signal,
@@ -96,7 +99,10 @@ describe("measurement series", () => {
     const result = await calculateMeasurementSeries({
       manifest: trajectoryManifest(1, [[0, 1]]),
       frameCount: 1,
-      selections: primaryPair,
+      selections: [
+        { atom: 0, image: [0, 0, 0] },
+        { atom: 1, image: [1, 0, 0] },
+      ],
       wrap: "molecule",
       minimumImage: false,
       signal: new AbortController().signal,
@@ -104,6 +110,24 @@ describe("measurement series", () => {
     });
 
     expect(result.values[0]).toBeCloseTo(0.4, 5);
+  });
+
+  it("does not apply a canonical atom-wrap image twice", async () => {
+    const source = trajectoryFrame([6, 0, 0, 4, 0, 0]);
+    const result = await calculateMeasurementSeries({
+      manifest: trajectoryManifest(1),
+      frameCount: 1,
+      selections: [
+        { atom: 0, image: [-1, 0, 0] },
+        { atom: 1, image: [0, 0, 0] },
+      ],
+      wrap: "atom",
+      minimumImage: false,
+      signal: new AbortController().signal,
+      loadFrame: async () => source,
+    });
+
+    expect(result.values).toEqual([8]);
   });
 
   it("keeps selected periodic replicas distinct", async () => {
