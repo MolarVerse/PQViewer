@@ -1024,7 +1024,7 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   await expect(figureSheet).toBeVisible();
   expect(await page.locator(".topbar").evaluate((element) => (
     (element as HTMLElement).inert
-  ))).toBe(true);
+  ))).toBe(false);
   await expect(
     figureSheet.getByRole("button", { name: "Landscape" }),
   ).toHaveAttribute("aria-pressed", "true");
@@ -1120,6 +1120,200 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
     compactPlotBox!.y + compactPlotBox!.height,
   );
   await page.getByRole("button", { name: "Hide plot", exact: true }).click();
+  expect(errors).toEqual([]);
+});
+
+test("keeps camera controls live in the Figure inspector", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  for (const viewport of [
+    { width: 1280, height: 800 },
+    { width: 720, height: 800 },
+    { width: 320, height: 568 },
+    { width: 320, height: 480 },
+    { width: 568, height: 320 },
+  ]) {
+    await test.step(`${viewport.width} × ${viewport.height}`, async () => {
+      await page.setViewportSize(viewport);
+      const figureOptionsButton = page.getByRole("button", {
+        name: "Figure options",
+        exact: true,
+      });
+      await figureOptionsButton.click();
+
+      const figureSheet = page.locator("#figure-sheet");
+      const cameraControls = page.getByRole("toolbar", {
+        name: "Camera controls",
+      });
+      const timeline = page.getByRole("region", {
+        name: "Trajectory controls",
+      });
+      await expect(figureSheet).toBeVisible();
+      await expect(cameraControls).toBeVisible();
+      await expect(timeline).toBeVisible();
+      await expect(figureSheet).not.toHaveAttribute("aria-modal");
+      await expect(page.locator(".figure-sheet-backdrop")).toHaveCount(0);
+
+      for (const name of ["Fit", "3D", "XY", "XZ", "YZ"]) {
+        const button = cameraControls.getByRole("button", {
+          name,
+          exact: true,
+        });
+        await expect(button).toBeVisible();
+        await expect(button).toBeEnabled();
+        await expect.poll(async () => {
+          const currentBox = await button.boundingBox();
+          if (!currentBox) return false;
+          return page.evaluate(
+            ({ x, y, label }) => {
+              const hit = document.elementFromPoint(x, y);
+              return hit?.closest("button")?.textContent?.trim() === label
+                && hit?.closest('[role="toolbar"]')
+                  ?.getAttribute("aria-label") === "Camera controls";
+            },
+            {
+              x: currentBox.x + currentBox.width / 2,
+              y: currentBox.y + currentBox.height / 2,
+              label: name,
+            },
+          );
+        }, {
+          message: `${name} must receive pointer input`,
+        }).toBe(true);
+        const box = await button.boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.y).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+        expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+        await button.click();
+        await expect(figureSheet).toBeVisible();
+      }
+
+      const controlsBox = await cameraControls.boundingBox();
+      const sheetBox = await figureSheet.boundingBox();
+      expect(controlsBox).not.toBeNull();
+      expect(sheetBox).not.toBeNull();
+      const bottomSheet = viewport.width <= 719
+        && !(viewport.width >= 480 && viewport.height <= 520);
+      if (bottomSheet) {
+        expect(controlsBox!.y + controlsBox!.height).toBeLessThanOrEqual(
+          sheetBox!.y,
+        );
+      } else {
+        expect(controlsBox!.x + controlsBox!.width).toBeLessThanOrEqual(
+          sheetBox!.x,
+        );
+      }
+
+      const xy = cameraControls.getByRole("button", {
+        name: "XY",
+        exact: true,
+      });
+      await xy.click();
+      await expect(xy).toHaveAttribute("aria-pressed", "true");
+      await expect(figureSheet).toBeVisible();
+
+      const playbackOptions = page.locator(".timeline-options > summary");
+      await expect(playbackOptions).toBeVisible();
+      await expect(playbackOptions).toHaveAttribute(
+        "aria-label",
+        "Playback options",
+      );
+      const playbackBox = await playbackOptions.boundingBox();
+      expect(playbackBox).not.toBeNull();
+      expect(await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)
+          ?.closest("summary")
+          ?.getAttribute("aria-label"),
+        {
+          x: playbackBox!.x + playbackBox!.width / 2,
+          y: playbackBox!.y + playbackBox!.height / 2,
+        },
+      )).toBe("Playback options");
+      await playbackOptions.click();
+      await expect(page.locator(".timeline-options")).toHaveAttribute("open", "");
+      await expect(figureSheet).toBeVisible();
+      await playbackOptions.click();
+
+      const forward = page.getByRole("button", {
+        name: viewport.width > 600 ? "Last frame" : "Next frame",
+      });
+      const backward = page.getByRole("button", {
+        name: viewport.width > 600 ? "First frame" : "Previous frame",
+      });
+      await forward.click();
+      await expect(page.locator(".frame-counter")).toHaveAttribute(
+        "aria-label",
+        "Frame 2 of 2",
+      );
+      await backward.click();
+      await expect(page.locator(".frame-counter")).toHaveAttribute(
+        "aria-label",
+        "Frame 1 of 2",
+      );
+      await expect(figureSheet).toBeVisible();
+
+      await figureSheet.getByRole("button", {
+        name: "Close figure options",
+      }).click();
+      await expect(figureSheet).toBeHidden();
+      await expect(figureOptionsButton).toBeFocused();
+    });
+  }
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const figureOptionsButton = page.getByRole("button", {
+    name: "Figure options",
+    exact: true,
+  });
+  await figureOptionsButton.click();
+  await expect(figureOptionsButton).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "Fit", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  const keyboardXy = page.getByRole("button", { name: "XY", exact: true });
+  await expect(keyboardXy).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(keyboardXy).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#figure-sheet")).toBeVisible();
+
+  const canvasBox = await page.locator("canvas").boundingBox();
+  expect(canvasBox).not.toBeNull();
+  expect(await page.evaluate(
+    ({ x, y }) => document.elementFromPoint(x, y)?.tagName,
+    {
+      x: canvasBox!.x + canvasBox!.width / 2,
+      y: canvasBox!.y + canvasBox!.height / 2,
+    },
+  )).toBe("CANVAS");
+
+  await page.locator("#figure-sheet").getByRole("button", {
+    name: "Square",
+  }).focus();
+  await page.keyboard.press("Escape");
+  await expect(figureOptionsButton).toBeFocused();
+
+  const commandButton = page.getByRole("button", { name: "Search commands" });
+  await commandButton.click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "figure options",
+  );
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#figure-sheet")).toBeVisible();
+  await page.locator("#figure-sheet").getByRole("button", {
+    name: "Close figure options",
+  }).click();
+  await expect(commandButton).toBeFocused();
+
+  await figureOptionsButton.click();
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await expect(page.locator("#figure-sheet")).toHaveCount(0);
+  await expect(page.locator("#workbench")).toBeVisible();
+  await expect(page.locator("#workbench")).toBeFocused();
+
   expect(errors).toEqual([]);
 });
 

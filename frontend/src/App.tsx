@@ -274,6 +274,7 @@ export default function App() {
   const recipeInputRef = useRef<HTMLInputElement>(null);
   const panelButtonRef = useRef<HTMLButtonElement>(null);
   const renderButtonRef = useRef<HTMLButtonElement>(null);
+  const figureOptionsButtonRef = useRef<HTMLButtonElement>(null);
   const workbenchRef = useRef<HTMLElement>(null);
   const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
@@ -2905,11 +2906,13 @@ export default function App() {
             <div className="figure-control">
               <button ref={renderButtonRef} className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
               <button
+                ref={figureOptionsButtonRef}
                 className="figure-options-button"
                 type="button"
                 aria-label="Figure options"
                 aria-controls="figure-sheet"
                 aria-expanded={figureSheetOpen}
+                aria-haspopup="dialog"
                 disabled={!canRender || rendering}
                 onClick={() => figureSheetOpen ? setFigureSheetOpen(false) : showFigureSheet()}
               ><Icon name="more" /></button>
@@ -3276,6 +3279,7 @@ export default function App() {
             onSaveRecipe={saveFigureRecipe}
             onOpenRecipe={showRecipeOpen}
             onClose={() => setFigureSheetOpen(false)}
+            returnFocusRef={figureOptionsButtonRef}
           />
         )}
         {manifest && (
@@ -3395,6 +3399,32 @@ function useModalFocus<T extends HTMLElement>(
   }, []);
 }
 
+function usePanelFocusRestore<T extends HTMLElement>(
+  panelRef: Readonly<{ current: T | null }>,
+  fallbackRef: Readonly<{ current: HTMLElement | null }>,
+) {
+  useEffect(() => {
+    const panel = panelRef.current;
+    const origin = document.activeElement instanceof HTMLElement
+      && document.activeElement !== document.body
+      ? document.activeElement
+      : null;
+    if (!panel) return;
+    return () => {
+      const active = document.activeElement;
+      if (
+        active === document.body
+        || active === null
+        || panel.contains(active)
+      ) {
+        restoreFocusWhenAvailable(
+          origin?.isConnected ? origin : fallbackRef.current,
+        );
+      }
+    };
+  }, [fallbackRef]);
+}
+
 function restoreFocusWhenAvailable(element: FocusTarget | null) {
   if (!element?.isConnected) return;
   if (!element.matches(":disabled")) {
@@ -3427,6 +3457,7 @@ function FigureSheet({
   onSaveRecipe,
   onOpenRecipe,
   onClose,
+  returnFocusRef,
 }: {
   output: FigureOutput;
   selectedCount: number;
@@ -3443,25 +3474,21 @@ function FigureSheet({
   onSaveRecipe: () => void;
   onOpenRecipe: () => void;
   onClose: () => void;
+  returnFocusRef: Readonly<{ current: HTMLElement | null }>;
 }) {
   const panelRef = useRef<HTMLElement>(null);
-  useModalFocus(panelRef);
+  usePanelFocusRestore(panelRef, returnFocusRef);
   const presets = [
     { label: "Landscape", width: 2400, height: 1800 },
     { label: "Square", width: 2400, height: 2400 },
     { label: "Wide", width: 3200, height: 1800 },
   ];
   return (
-    <div
-      className="figure-sheet-backdrop"
-      onPointerDown={(event) => event.target === event.currentTarget && onClose()}
-    >
     <aside
       ref={panelRef}
       className="figure-sheet export-sheet"
       id="figure-sheet"
       role="dialog"
-      aria-modal="true"
       aria-label="Figure options"
       tabIndex={-1}
     >
@@ -3640,7 +3667,6 @@ function FigureSheet({
         </button>
       </footer>
     </aside>
-    </div>
   );
 }
 
