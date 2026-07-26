@@ -12,6 +12,7 @@ interface PrincipalAxes {
   major: THREE.Vector3;
   middle: THREE.Vector3;
   minor: THREE.Vector3;
+  linear: boolean;
 }
 
 const EPSILON = 1e-10;
@@ -21,6 +22,7 @@ export function proteinCameraComposition(
   caIndices: readonly number[],
   scale = 1,
   aspect = 4 / 3,
+  faceNormals: readonly (THREE.Vector3 | null)[] = [],
 ): ProteinCameraComposition | null {
   const points = caIndices
     .filter((index) => Number.isInteger(index) && index >= 0 && index * 3 + 2 < positions.length)
@@ -38,12 +40,19 @@ export function proteinCameraComposition(
   if (!axes) return null;
 
   const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 4 / 3;
-  const { direction, right: landscapeRight, up: landscapeUp } = bestProjection(
-    points,
-    mean,
-    axes,
-    Math.max(safeAspect, 1 / safeAspect),
-  );
+  const {
+    direction,
+    right: landscapeRight,
+    up: landscapeUp,
+  } = axes.linear
+    ? linearProjection(axes, faceNormals)
+    : bestProjection(
+        points,
+        mean,
+        axes,
+        Math.max(safeAspect, 1 / safeAspect),
+        faceNormals.length === points.length ? faceNormals : [],
+      );
   const right = safeAspect >= 1 ? landscapeRight : landscapeUp.clone().negate();
   const up = safeAspect >= 1 ? landscapeUp : landscapeRight;
   const center = projectedCenter(points, right, up, direction);
@@ -58,13 +67,54 @@ export function proteinCameraComposition(
   };
 }
 
+function linearProjection(
+  axes: PrincipalAxes,
+  faceNormals: readonly (THREE.Vector3 | null)[],
+): { direction: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 } {
+  const normals = faceNormals.flatMap((normal) => {
+    if (!normal || !finiteUnitVector(normal)) return [];
+    const projected = normal.clone()
+      .addScaledVector(axes.major, -normal.dot(axes.major));
+    return projected.lengthSq() > EPSILON ? [projected.normalize()] : [];
+  });
+  let direction = axes.minor.clone();
+  if (normals.length > 0) {
+    let bestVisibility = -1;
+    for (let index = 0; index < 96; index += 1) {
+      const angle = index / 96 * Math.PI;
+      const candidate = axes.minor.clone().multiplyScalar(Math.cos(angle))
+        .addScaledVector(axes.middle, Math.sin(angle))
+        .normalize();
+      const visibility = normals.reduce(
+        (sum, normal) => sum + Math.abs(candidate.dot(normal)),
+        0,
+      ) / normals.length;
+      if (visibility > bestVisibility + 1e-9) {
+        direction = candidate;
+        bestVisibility = visibility;
+      }
+    }
+  }
+  return {
+    direction,
+    right: axes.major.clone(),
+    up: new THREE.Vector3().crossVectors(direction, axes.major).normalize(),
+  };
+}
+
 function bestProjection(
   points: readonly THREE.Vector3[],
   center: THREE.Vector3,
   axes: PrincipalAxes,
   targetAspect: number,
+  faceNormals: readonly (THREE.Vector3 | null)[],
 ): { direction: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 } {
-  const sample = sampleTrace(points, 128);
+  const sampleIndices = sampledTraceIndices(points.length, 128);
+  const sample = sampleIndices.map((index) => points[index]);
+  const sampledFaceNormals = sampleIndices.flatMap((index) => {
+    const normal = faceNormals[index];
+    return normal && finiteUnitVector(normal) ? [normal] : [];
+  });
   const candidates: THREE.Vector3[] = [];
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   for (let index = 0; index < 96; index += 1) {
@@ -88,13 +138,19 @@ function bestProjection(
   let bestScore = Infinity;
   for (const direction of candidates) {
     const frame = projectionFrame(sample, center, direction);
-    const score = projectionScore(sample, center, frame, targetAspect);
-    if (score < bestScore - 1e-9) {
+    const score = projectionScore(
+      sample,
+      center,
+      frame,
+      targetAspect,
+      sampledFaceNormals,
+    );
+    if (!best || score < bestScore - 1e-9) {
       best = frame;
       bestScore = score;
     }
   }
-  return best!;
+  return best ?? projectionFrame(sample, center, axes.minor);
 }
 
 function projectionFrame(
@@ -131,6 +187,7 @@ function projectionScore(
   center: THREE.Vector3,
   frame: { direction: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 },
   targetAspect: number,
+  faceNormals: readonly THREE.Vector3[],
 ): number {
   const projected = points.map((point) => {
     const relative = point.clone().sub(center);
@@ -184,13 +241,24 @@ function projectionScore(
     (sum, point) => sum + point.x * point.x + point.y * point.y + point.depth * point.depth,
     0,
   );
-  const footprint = Math.sqrt(projectedVariance / Math.max(spatialVariance, EPSILON));
+  const footprint = THREE.MathUtils.clamp(
+    Math.sqrt(projectedVariance / Math.max(spatialVariance, EPSILON)),
+    0,
+    1,
+  );
+  const faceVisibility = faceNormals.length === 0
+    ? 1
+    : faceNormals.reduce(
+        (sum, normal) => sum + Math.abs(frame.direction.dot(normal)),
+        0,
+      ) / faceNormals.length;
   return aspectPenalty * 2.8
     + crossingPenalty * 2.5
     + densityPenalty * 0.6
     + stepPenalty * 0.25
     + fillPenalty * 0.35
-    + footprint * 4;
+    + (1 - footprint) * 4
+    + (1 - faceVisibility) * 2;
 }
 
 function projectedCrossings(
@@ -259,14 +327,19 @@ function convexHullFill(
   return Math.min(1, Math.abs(area) * 0.5 / Math.max(width * height, EPSILON));
 }
 
-function sampleTrace(
-  points: readonly THREE.Vector3[],
+function sampledTraceIndices(
+  length: number,
   maximum: number,
-): THREE.Vector3[] {
-  if (points.length <= maximum) return [...points];
+): number[] {
+  if (length <= maximum) return Array.from({ length }, (_, index) => index);
   return Array.from({ length: maximum }, (_, index) => (
-    points[Math.round(index / (maximum - 1) * (points.length - 1))]
+    Math.round(index / (maximum - 1) * (length - 1))
   ));
+}
+
+function finiteUnitVector(vector: THREE.Vector3): boolean {
+  return [vector.x, vector.y, vector.z].every(Number.isFinite)
+    && Math.abs(vector.lengthSq() - 1) < 1e-3;
 }
 
 function principalAxes(
@@ -300,21 +373,38 @@ function principalAxes(
   const major = pairs[0].axis.normalize();
   if (terminal.dot(major) < 0) major.negate();
 
-  const middle = pairs[1].axis
-    .addScaledVector(major, -pairs[1].axis.dot(major))
-    .normalize();
-  const firstOffset = points[0].clone().sub(center);
-  if (Math.abs(firstOffset.dot(middle)) > EPSILON && firstOffset.dot(middle) < 0) {
-    middle.negate();
+  const linear = pairs[1].value <= Math.max(EPSILON, pairs[0].value * 1e-8);
+  const middle = linear
+    ? stablePerpendicular(major)
+    : pairs[1].axis.addScaledVector(major, -pairs[1].axis.dot(major));
+  if (middle.lengthSq() < EPSILON) middle.copy(stablePerpendicular(major));
+  else middle.normalize();
+  if (!linear) {
+    const firstOffset = points[0].clone().sub(center);
+    if (Math.abs(firstOffset.dot(middle)) > EPSILON && firstOffset.dot(middle) < 0) {
+      middle.negate();
+    }
   }
 
   const minor = new THREE.Vector3().crossVectors(major, middle).normalize();
-  const chirality = traceChirality(points, minor);
-  if (chirality < -EPSILON) {
-    middle.negate();
-    minor.negate();
+  if (!linear) {
+    const chirality = traceChirality(points, minor);
+    if (chirality < -EPSILON) {
+      middle.negate();
+      minor.negate();
+    }
   }
-  return { major, middle, minor };
+  return { major, middle, minor, linear };
+}
+
+function stablePerpendicular(direction: THREE.Vector3): THREE.Vector3 {
+  const absolute = [Math.abs(direction.x), Math.abs(direction.y), Math.abs(direction.z)];
+  const axis = absolute[0] <= absolute[1] && absolute[0] <= absolute[2]
+    ? new THREE.Vector3(1, 0, 0)
+    : absolute[1] <= absolute[2]
+      ? new THREE.Vector3(0, 1, 0)
+      : new THREE.Vector3(0, 0, 1);
+  return axis.addScaledVector(direction, -axis.dot(direction)).normalize();
 }
 
 function symmetricEigenvectors(

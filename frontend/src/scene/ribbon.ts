@@ -24,6 +24,12 @@ export interface ProteinCartoonOptions {
 export interface CartoonCrossSection {
   width: number;
   depth: number;
+  squareness: number;
+}
+
+export interface ProteinCartoonCameraPoint {
+  center: THREE.Vector3;
+  faceNormal: THREE.Vector3 | null;
 }
 
 interface CartoonSample {
@@ -34,6 +40,7 @@ interface CartoonSample {
   image: CellOffset;
   progress: number;
   structure: ProteinSecondaryStructure;
+  structureWeights: [number, number, number];
   width: number;
   depth: number;
   squareness: number;
@@ -84,12 +91,36 @@ export function inferProteinSecondaryStructure(
     }
   }
 
-  filterShortRuns(result, "helix", 4);
-  filterShortRuns(result, "sheet", 4);
   if (result.length >= 2 && result[0] === "coil" && result[1] === "sheet") result[0] = "sheet";
   const last = result.length - 1;
   if (last >= 1 && result[last] === "coil" && result[last - 1] === "sheet") result[last] = "sheet";
+  filterShortRuns(result, "helix", 4);
+  filterShortRuns(result, "sheet", 4);
   return result;
+}
+
+export function proteinCartoonResidueCenters(
+  residues: readonly ProteinCartoonResidue[],
+  structures?: readonly ProteinSecondaryStructure[],
+): THREE.Vector3[] {
+  const resolvedStructures = structures?.length === residues.length
+    ? structures
+    : inferProteinSecondaryStructure(residues);
+  return cartoonCenters(residues, resolvedStructures);
+}
+
+export function proteinCartoonCameraTrace(
+  residues: readonly ProteinCartoonResidue[],
+  structures?: readonly ProteinSecondaryStructure[],
+): ProteinCartoonCameraPoint[] {
+  if (residues.length < 3) return [];
+  const resolvedStructures = structures?.length === residues.length
+    ? structures
+    : inferProteinSecondaryStructure(residues);
+  return cartoonSamples(residues, resolvedStructures, 1, 1).map((sample) => ({
+    center: sample.center.clone(),
+    faceNormal: sample.structure === "coil" ? null : sample.normal.clone(),
+  }));
 }
 
 export function cartoonCrossSection(
@@ -97,9 +128,25 @@ export function cartoonCrossSection(
   scale = 1,
 ): CartoonCrossSection {
   const safeScale = Number.isFinite(scale) ? Math.max(0.2, scale) : 1;
-  if (structure === "helix") return { width: 0.38 * safeScale, depth: 0.085 * safeScale };
-  if (structure === "sheet") return { width: 0.43 * safeScale, depth: 0.065 * safeScale };
-  return { width: 0.13 * safeScale, depth: 0.13 * safeScale };
+  if (structure === "helix") {
+    return {
+      width: 0.38 * safeScale,
+      depth: 0.23 * safeScale,
+      squareness: 0.2,
+    };
+  }
+  if (structure === "sheet") {
+    return {
+      width: 0.39 * safeScale,
+      depth: 0.115 * safeScale,
+      squareness: 0.55,
+    };
+  }
+  return {
+    width: 0.135 * safeScale,
+    depth: 0.135 * safeScale,
+    squareness: 0,
+  };
 }
 
 export function buildProteinCartoonGeometry(
@@ -140,6 +187,7 @@ export function buildProteinCartoonGeometry(
   const imageOffsets = new Float32Array(vertexCount * 3);
   const progress = new Float32Array(vertexCount);
   const secondaryStructure = new Float32Array(vertexCount);
+  const secondaryStructureWeights = new Float32Array(vertexCount * 3);
   const indices = vertexCount > 65_535
     ? new Uint32Array(indexCount)
     : new Uint16Array(indexCount);
@@ -165,6 +213,11 @@ export function buildProteinCartoonGeometry(
         writeImageOffset(sample.image, translationImage, imageOffsets, vertexCursor);
         progress[vertexCursor] = sample.progress;
         secondaryStructure[vertexCursor] = STRUCTURE_CODE[sample.structure];
+        writeStructureWeights(
+          sample.structureWeights,
+          secondaryStructureWeights,
+          vertexCursor,
+        );
         vertexCursor += 1;
       }
     }
@@ -179,6 +232,7 @@ export function buildProteinCartoonGeometry(
       imageOffsets,
       progress,
       secondaryStructure,
+      secondaryStructureWeights,
       vertexCursor,
     );
     vertexCursor += 1;
@@ -192,6 +246,7 @@ export function buildProteinCartoonGeometry(
       imageOffsets,
       progress,
       secondaryStructure,
+      secondaryStructureWeights,
       vertexCursor,
     );
     vertexCursor += 1;
@@ -229,6 +284,10 @@ export function buildProteinCartoonGeometry(
   geometry.setAttribute("imageOffset", new THREE.BufferAttribute(imageOffsets, 3));
   geometry.setAttribute("sequenceProgress", new THREE.BufferAttribute(progress, 1));
   geometry.setAttribute("secondaryStructure", new THREE.BufferAttribute(secondaryStructure, 1));
+  geometry.setAttribute(
+    "secondaryStructureWeights",
+    new THREE.BufferAttribute(secondaryStructureWeights, 3),
+  );
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
@@ -249,6 +308,7 @@ function cartoonSamples(
   const sampleCount = segmentCount * subdivisions + 1;
   const samples: CartoonSample[] = [];
   let previousSide: THREE.Vector3 | null = null;
+  let previousTangent: THREE.Vector3 | null = null;
 
   for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
     const progress = sampleIndex / (sampleCount - 1);
@@ -262,18 +322,28 @@ function cartoonSamples(
     if (targetSide.lengthSq() < 1e-8) targetSide.copy(perpendicularTo(tangent));
     targetSide.normalize();
     const nearestStructure = structures[Math.min(Math.round(residuePosition), structures.length - 1)];
-    const tracking = nearestStructure === "sheet"
-      ? 0.22
-      : nearestStructure === "helix" ? 0.08 : 0.04;
-    const side: THREE.Vector3 = previousSide
-      ? transportedSide(previousSide, tangent, targetSide, tracking)
+    const trackingPerResidue = nearestStructure === "sheet"
+      ? 0.45
+      : nearestStructure === "helix" ? 0.04 : 0.1;
+    const tracking = 1 - Math.pow(
+      1 - trackingPerResidue,
+      1 / Math.max(1, subdivisions),
+    );
+    const side: THREE.Vector3 = previousSide && previousTangent
+      ? transportedSide(
+          previousSide,
+          previousTangent,
+          tangent,
+          targetSide,
+          tracking,
+        )
       : targetSide;
     previousSide = side.clone();
+    previousTangent = tangent.clone();
     const normal = new THREE.Vector3().crossVectors(tangent, side).normalize();
     const lowerSection = cartoonCrossSection(structures[lower], scale);
     const upperSection = cartoonCrossSection(structures[upper], scale);
     const arrow = sheetArrowSection(residuePosition, sheetRuns, structures, scale);
-    const structure = arrow?.structure ?? nearestStructure;
     samples.push({
       center: curve.getPoint(progress),
       side,
@@ -281,17 +351,22 @@ function cartoonSamples(
       atomIndex: residues[Math.min(Math.round(residuePosition), residues.length - 1)].atomIndex,
       image: residues[Math.min(Math.round(residuePosition), residues.length - 1)].image ?? [0, 0, 0],
       progress,
-      structure,
+      structure: nearestStructure,
+      structureWeights: blendedStructureWeights(
+        structures[lower],
+        structures[upper],
+        mix,
+      ),
       width: arrow?.width ?? THREE.MathUtils.lerp(lowerSection.width, upperSection.width, mix),
       depth: arrow?.depth ?? THREE.MathUtils.lerp(lowerSection.depth, upperSection.depth, mix),
       squareness: arrow?.squareness ?? THREE.MathUtils.lerp(
-        structures[lower] === "sheet" ? 1 : 0,
-        structures[upper] === "sheet" ? 1 : 0,
+        lowerSection.squareness,
+        upperSection.squareness,
         mix,
       ),
     });
   }
-  return splitStructureBoundaries(samples);
+  return samples;
 }
 
 function cartoonCenters(
@@ -299,6 +374,24 @@ function cartoonCenters(
   structures: readonly ProteinSecondaryStructure[],
 ): THREE.Vector3[] {
   const centers = residues.map((residue) => residue.ca.clone());
+  for (const [start, end] of structureRuns(structures, "helix")) {
+    const original = centers.slice(start, end + 1).map((point) => point.clone());
+    let smoothed = original;
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      smoothed = smoothed.map((_, index) => {
+        const point = new THREE.Vector3();
+        for (let offset = -2; offset <= 2; offset += 1) {
+          point.add(extrapolatedRunPoint(smoothed, index + offset));
+        }
+        return point.multiplyScalar(0.2);
+      });
+    }
+    for (let index = 0; index < smoothed.length; index += 1) {
+      const edgeDistance = Math.min(index, smoothed.length - index - 1);
+      const blend = edgeDistance === 0 ? 0.65 : edgeDistance === 1 ? 0.88 : 1;
+      centers[start + index].lerp(smoothed[index], blend);
+    }
+  }
   for (const [start, end] of structureRuns(structures, "sheet")) {
     const expandedStart = Math.max(0, start - 1);
     const expandedEnd = Math.min(residues.length - 1, end + 1);
@@ -321,40 +414,60 @@ function cartoonCenters(
   return centers;
 }
 
+function extrapolatedRunPoint(
+  points: readonly THREE.Vector3[],
+  index: number,
+): THREE.Vector3 {
+  if (index >= 0 && index < points.length) return points[index];
+  if (points.length === 1) return points[0];
+  if (index < 0) {
+    return points[0].clone().addScaledVector(
+      points[0].clone().sub(points[1]),
+      -index,
+    );
+  }
+  const last = points.length - 1;
+  return points[last].clone().addScaledVector(
+    points[last].clone().sub(points[last - 1]),
+    index - last,
+  );
+}
+
 function transportedSide(
   previous: THREE.Vector3,
+  previousTangent: THREE.Vector3,
   tangent: THREE.Vector3,
   target: THREE.Vector3,
   tracking: number,
 ): THREE.Vector3 {
-  const side = previous.clone().addScaledVector(tangent, -previous.dot(tangent));
+  const side = previous.clone().applyQuaternion(
+    new THREE.Quaternion().setFromUnitVectors(previousTangent, tangent),
+  );
+  side.addScaledVector(tangent, -side.dot(tangent));
   if (side.lengthSq() < 1e-8) side.copy(target);
   side.normalize();
   const alignedTarget = target.clone();
   if (side.dot(alignedTarget) < 0) alignedTarget.negate();
-  side.lerp(alignedTarget, tracking);
+  const cross = new THREE.Vector3().crossVectors(side, alignedTarget);
+  const angle = Math.atan2(
+    tangent.dot(cross),
+    THREE.MathUtils.clamp(side.dot(alignedTarget), -1, 1),
+  );
+  side.applyAxisAngle(tangent, angle * THREE.MathUtils.clamp(tracking, 0, 1));
   side.addScaledVector(tangent, -side.dot(tangent));
   return side.lengthSq() < 1e-8 ? perpendicularTo(tangent) : side.normalize();
 }
 
-function splitStructureBoundaries(samples: readonly CartoonSample[]): CartoonSample[] {
-  if (samples.length === 0) return [];
-  const result: CartoonSample[] = [samples[0]];
-  for (let index = 1; index < samples.length; index += 1) {
-    const previous = result[result.length - 1];
-    const sample = samples[index];
-    if (sample.structure !== previous.structure) {
-      result.push({
-        ...sample,
-        center: sample.center.clone(),
-        side: sample.side.clone(),
-        normal: sample.normal.clone(),
-        structure: previous.structure,
-      });
-    }
-    result.push(sample);
-  }
-  return result;
+function blendedStructureWeights(
+  lower: ProteinSecondaryStructure,
+  upper: ProteinSecondaryStructure,
+  mix: number,
+): [number, number, number] {
+  const weights: [number, number, number] = [0, 0, 0];
+  const upperWeight = lower === upper ? 0 : smoothstep(mix);
+  weights[STRUCTURE_CODE[lower]] += 1 - upperWeight;
+  weights[STRUCTURE_CODE[upper]] += upperWeight;
+  return weights;
 }
 
 function stableResidueSides(
@@ -442,34 +555,41 @@ function sheetArrowSection(
   runs: readonly [number, number][],
   structures: readonly ProteinSecondaryStructure[],
   scale: number,
-): Pick<CartoonSample, "structure" | "width" | "depth" | "squareness"> | null {
+): Pick<CartoonSample, "width" | "depth" | "squareness"> | null {
   const sheet = cartoonCrossSection("sheet", scale);
   for (const [start, end] of runs) {
     const terminal = end === structures.length - 1;
     const nextStructure = structures[Math.min(end + 1, structures.length - 1)];
-    const arrowStart = Math.max(start, end - 0.85);
-    const arrowPeak = terminal ? end - 0.32 : end - 0.24;
-    const arrowEnd = terminal ? end : Math.min(structures.length - 1, end + 0.8);
+    const nextSection = cartoonCrossSection(nextStructure, scale);
+    const arrowStart = Math.max(start, end - 0.9);
+    const arrowPeak = terminal ? end - 0.28 : end - 0.2;
+    const arrowEnd = terminal ? end : Math.min(structures.length - 1, end + 0.65);
     if (position < arrowStart || position > arrowEnd) continue;
-    const headWidth = sheet.width * 1.48;
+    const headWidth = sheet.width * 1.35;
     if (position <= arrowPeak) {
       const mix = smoothstep((position - arrowStart) / Math.max(0.01, arrowPeak - arrowStart));
       return {
-        structure: "sheet",
         width: THREE.MathUtils.lerp(sheet.width, headWidth, mix),
         depth: sheet.depth,
-        squareness: 1,
+        squareness: sheet.squareness,
       };
     }
     const mix = smoothstep((position - arrowPeak) / Math.max(0.01, arrowEnd - arrowPeak));
     const tip = terminal
-      ? { width: 0.018 * Math.max(0.2, scale), depth: 0.018 * Math.max(0.2, scale) }
-      : cartoonCrossSection(nextStructure, scale);
+      ? {
+          width: 0.035 * Math.max(0.2, scale),
+          depth: 0.035 * Math.max(0.2, scale),
+          squareness: 0,
+        }
+      : nextSection;
     return {
-      structure: "sheet",
       width: THREE.MathUtils.lerp(headWidth, tip.width, mix),
       depth: THREE.MathUtils.lerp(sheet.depth, tip.depth, mix),
-      squareness: THREE.MathUtils.lerp(1, nextStructure === "sheet" ? 1 : 0, mix),
+      squareness: THREE.MathUtils.lerp(
+        sheet.squareness,
+        tip.squareness,
+        mix,
+      ),
     };
   }
   return null;
@@ -494,6 +614,7 @@ function writeCapVertex(
   imageOffsets: Float32Array,
   progress: Float32Array,
   secondaryStructure: Float32Array,
+  secondaryStructureWeights: Float32Array,
   vertex: number,
 ): void {
   sample.center.clone().add(translation).toArray(positions, vertex * 3);
@@ -501,6 +622,22 @@ function writeCapVertex(
   writeImageOffset(sample.image, translationImage, imageOffsets, vertex);
   progress[vertex] = sample.progress;
   secondaryStructure[vertex] = STRUCTURE_CODE[sample.structure];
+  writeStructureWeights(
+    sample.structureWeights,
+    secondaryStructureWeights,
+    vertex,
+  );
+}
+
+function writeStructureWeights(
+  weights: readonly [number, number, number],
+  values: Float32Array,
+  vertex: number,
+): void {
+  const offset = vertex * 3;
+  values[offset] = weights[0];
+  values[offset + 1] = weights[1];
+  values[offset + 2] = weights[2];
 }
 
 function writeImageOffset(
