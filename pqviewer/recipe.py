@@ -193,6 +193,15 @@ def _validated_recipe(value: Any) -> dict[str, Any]:
     presentation = scene.get("presentation")
     if (
         not isinstance(presentation, Mapping)
+        or presentation.get("mode")
+        not in {
+            "ball-stick",
+            "spacefill",
+            "licorice",
+            "lines",
+            "ribbon",
+            "polyhedra",
+        }
         or presentation.get("wrap")
         not in {"atom", "molecule", "unwrapped", "none"}
     ):

@@ -217,6 +217,25 @@ def test_load_recipe_resolves_relative_source(tmp_path: Path) -> None:
     assert resolved_source == source
 
 
+def test_load_recipe_accepts_polyhedra_and_rejects_unknown_modes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "run.xyz"
+    recipe_path = tmp_path / "view.pqfigure.json"
+    write_source(source)
+    recipe = figure_recipe("run.xyz")
+    recipe["scene"]["presentation"]["mode"] = "polyhedra"
+    write_recipe(recipe_path, recipe)
+
+    loaded, _ = load_figure_recipe(recipe_path)
+    assert loaded["scene"]["presentation"]["mode"] == "polyhedra"
+
+    recipe["scene"]["presentation"]["mode"] = "facets"
+    write_recipe(recipe_path, recipe)
+    with pytest.raises(ValueError, match="presentation is invalid"):
+        load_figure_recipe(recipe_path)
+
+
 def test_open_recipe_reconstructs_slice_and_canonical_source(
     tmp_path: Path,
 ) -> None:

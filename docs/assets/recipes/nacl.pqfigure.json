@@ -1,0 +1,119 @@
+{
+  "schema": "pqviewer.figure",
+  "schema_version": 1,
+  "source": {
+    "kind": "pq-trajectory",
+    "path": "../sources/nacl.extxyz",
+    "slice": {
+      "start": null,
+      "stop": null,
+      "step": null
+    },
+    "segments": [
+      {
+        "source_id": "../sources/nacl.extxyz",
+        "kind": "pq-trajectory",
+        "path": "../sources/nacl.extxyz",
+        "input": null,
+        "frame_count": 1,
+        "files": {
+          "trajectory": "../sources/nacl.extxyz"
+        }
+      }
+    ]
+  },
+  "frame": {
+    "index": 0,
+    "fingerprint": "frame-v1:a092138d1e11b84e",
+    "key": {
+      "source_id": "../sources/nacl.extxyz",
+      "source_index": 0,
+      "segment_index": 0,
+      "step": null,
+      "time": null,
+      "time_unit": null
+    }
+  },
+  "scene": {
+    "presentation": {
+      "mode": "polyhedra",
+      "water": "show",
+      "hydrogens": true,
+      "wrap": "atom",
+      "cellOrigin": [
+        0,
+        0,
+        0
+      ],
+      "mirror": [
+        false,
+        false,
+        false
+      ],
+      "images": {
+        "min": [
+          0,
+          0,
+          0
+        ],
+        "max": [
+          0,
+          0,
+          0
+        ]
+      },
+      "cell": true,
+      "forces": false,
+      "velocities": false,
+      "atomScale": 0.86,
+      "bondScale": 0.82,
+      "color": "element",
+      "quality": "high"
+    },
+    "selection": {
+      "atoms": [],
+      "intent": "measurement",
+      "minimumImage": false
+    },
+    "vectors": {
+      "forceScale": 1,
+      "velocityScale": 1
+    }
+  },
+  "camera": {
+    "position": [
+      8,
+      7,
+      10
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "fov": 34,
+    "zoom": 1,
+    "near": 0.02,
+    "far": 5000
+  },
+  "output": {
+    "format": "png",
+    "width": 2400,
+    "height": 1800,
+    "dpi": 300,
+    "background": {
+      "kind": "solid",
+      "color": "#f5f8f8"
+    },
+    "projection": "orthographic",
+    "fit": true,
+    "padding": 0.1,
+    "periodicContext": false
+  },
+  "annotations": []
+}

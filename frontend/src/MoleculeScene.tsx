@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { frameArray } from "./api";
 import type {
   FigureAnnotation,
@@ -19,6 +20,13 @@ import type { PngExportLimits, PngExportOptions, ResolvedPngExportOptions } from
 import { encodeFigurePng, encodeFigureTiff } from "./scene/figureEncoding";
 import { publicationCamera, publicationContextUsesPoints } from "./scene/publication";
 import { loadPublicationFont } from "./scene/publicationFont";
+import { proteinCameraComposition } from "./scene/proteinCamera";
+import {
+  buildProteinCartoonGeometry,
+  inferProteinSecondaryStructure,
+  type ProteinCartoonResidue,
+} from "./scene/ribbon";
+import { buildCoordinationPolyhedraGeometry } from "./scene/polyhedra";
 import {
   backboneResidues,
   cellImageCorners,
@@ -38,6 +46,7 @@ import {
   prepareScene,
   prepareTopology,
   publicationBondGeometry,
+  representationRadius,
   sameFrameGeometryLayout,
   transformDisplayVector,
   unwrapPointNear,
@@ -45,6 +54,7 @@ import {
   usesPointAtoms,
 } from "./scene/model";
 import type {
+  BackboneResidue,
   CellBasis,
   FrameGeometryLayout,
   FrameGeometryPlan,
@@ -58,6 +68,7 @@ import type {
   CellOffset,
   FrameData,
   Manifest,
+  RepresentationMode,
   SceneCapabilities,
   ScenePresentation,
 } from "./types";
@@ -94,6 +105,12 @@ export interface SelectionRenderState {
   instanceImages: Int8Array;
   baseImages: Int32Array;
   model: PreparedScene | null;
+  ribbonSelections?: ReadonlyMap<string, RibbonSelectionPoint>;
+}
+
+export interface RibbonSelectionPoint {
+  selection: AtomSelection;
+  position: THREE.Vector3;
 }
 
 export function selectionMarkerState(
@@ -243,6 +260,7 @@ interface SceneState {
   forces: THREE.Group | null;
   velocities: THREE.Group | null;
   ribbon: THREE.Mesh | null;
+  polyhedra: THREE.Group | null;
   trajectoryOverlays: THREE.Group;
   selection: THREE.Group;
   selectionGeometry: THREE.RingGeometry;
@@ -255,6 +273,7 @@ interface SceneState {
   instanceToAtom: Uint32Array;
   instanceImages: Int8Array;
   baseImages: Int32Array;
+  ribbonSelections: Map<string, RibbonSelectionPoint>;
   model: PreparedScene | null;
   topologyManifest: Manifest | null;
   preparedTopology: PreparedTopology | null;
@@ -598,6 +617,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       forces: null,
       velocities: null,
       ribbon: null,
+      polyhedra: null,
       trajectoryOverlays: trajectoryOverlayGroup,
       selection,
       selectionGeometry,
@@ -610,6 +630,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       instanceToAtom: new Uint32Array(),
       instanceImages: new Int8Array(),
       baseImages: new Int32Array(),
+      ribbonSelections: new Map(),
       model: null,
       topologyManifest: null,
       preparedTopology: null,
@@ -916,6 +937,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     const frameLayout = frameGeometryLayout(frameGeometry);
     const configKey = renderConfigKey(presentation);
     const reuse = presentation.mode !== "ribbon"
+      && presentation.mode !== "polyhedra"
       && state.preparedTopology?.count === model.count
       && state.renderTopology === state.preparedTopology
       && state.renderConfigKey === configKey
@@ -948,8 +970,21 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       );
     }
     state.model = model;
-    state.instanceToAtom = model.instanceToAtom;
-    state.instanceImages = model.instanceImages;
+    const mappedAtoms = state.atomObject?.userData.instanceToAtom;
+    const mappedImages = state.atomObject?.userData.instanceImages;
+    const hasObjectMapping = mappedAtoms instanceof Uint32Array
+      && mappedImages instanceof Int8Array;
+    const objectAtoms = hasObjectMapping
+      ? mappedAtoms
+      : presentation.mode === "ribbon" ? new Uint32Array() : model.instanceToAtom;
+    const objectImages = hasObjectMapping
+      ? mappedImages
+      : presentation.mode === "ribbon" ? new Int8Array() : model.instanceImages;
+    const navigation = presentation.mode === "ribbon"
+      ? ribbonNavigationInstances(model, state.ribbonSelections, objectAtoms, objectImages)
+      : { instanceToAtom: objectAtoms, instanceImages: objectImages };
+    state.instanceToAtom = navigation.instanceToAtom;
+    state.instanceImages = navigation.instanceImages;
     state.baseImages = model.baseImages;
     state.renderTopology = state.preparedTopology;
     state.renderConfigKey = configKey;
@@ -1318,7 +1353,11 @@ async function applyFigureAnnotations(
 
   for (const annotation of options.annotations) {
     if (annotation.kind === "atom-label") {
-      const position = annotationAtomPosition(snapshot.model, annotation.atom);
+      const position = annotationAtomPosition(
+        snapshot.model,
+        annotation.atom,
+        snapshot.presentation.mode,
+      );
       if (!position) {
         throw new Error("A figure atom label is outside the rendered scene");
       }
@@ -1395,7 +1434,14 @@ function figureAnnotationFontSample(
 function annotationAtomPosition(
   model: PreparedScene,
   selection: AtomSelection,
+  mode: RepresentationMode,
 ): THREE.Vector3 | null {
+  if (mode === "ribbon") {
+    const runs = preparedBackboneRuns(model).map((run) => unwrappedCartoonRun(model, run));
+    const target = ribbonSelectionPoints(runs, model)
+      .get(selectionKey(selection.atom, selection.image));
+    if (target) return target.position.clone();
+  }
   const point = new THREE.Vector3();
   for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
     if (
@@ -1699,14 +1745,64 @@ function buildPublicationScene(
       ownPublicationObject(ribbon, resources);
       root.add(ribbon);
     }
+    const contextModel = ribbonContextModel(model, manifest);
+    if (contextModel) {
+      const contextPresentation = { ...publicationPresentation, mode: "ball-stick" as const };
+      const atoms = buildAtoms(
+        contextModel,
+        manifest,
+        contextPresentation,
+        "light",
+        true,
+        "ball-stick",
+      );
+      if (atoms) {
+        stylePublicationMaterials(atoms, resources);
+        ownPublicationObject(atoms, resources);
+        root.add(atoms);
+      }
+      const contextGeometry = publicationBondGeometry(
+        contextModel,
+        contextPresentation,
+        false,
+      );
+      const bonds = buildBonds(
+        contextPresentation,
+        publicationPalette,
+        contextGeometry.segments.length > MAX_BOND_INSTANCES ? "lines" : "instances",
+        contextGeometry.segments,
+        true,
+      );
+      if (bonds) {
+        stylePublicationMaterials(bonds, resources);
+        ownPublicationObject(bonds, resources);
+        root.add(bonds);
+      }
+    }
   } else {
-    const atoms = buildAtoms(model, manifest, publicationPresentation, "light", true);
+    const polyhedra = presentation.mode === "polyhedra"
+      ? buildPolyhedra(
+          model,
+          manifest,
+          publicationPresentation,
+          "light",
+          publicationPalette,
+          true,
+        )
+      : null;
+    const atoms = buildAtoms(
+      model,
+      manifest,
+      publicationPresentation,
+      "light",
+      true,
+      presentation.mode === "polyhedra" && !polyhedra ? "ball-stick" : undefined,
+    );
     if (atoms) {
       stylePublicationMaterials(atoms, resources);
       ownPublicationObject(atoms, resources);
       root.add(atoms);
     }
-
     const geometry = publicationBondGeometry(model, presentation, options.periodicContext);
     const primarySegments = geometry.segments.filter((segment) => !segment.context);
     const contextSegments = geometry.segments.filter((segment) => segment.context);
@@ -1714,13 +1810,17 @@ function buildPublicationScene(
     const bondKind = presentation.mode === "lines" || pointAtoms || geometry.segments.length > MAX_BOND_INSTANCES
       ? "lines"
       : "instances";
-    const primaryBonds = buildBonds(publicationPresentation, publicationPalette, bondKind, primarySegments, true);
+    const primaryBonds = polyhedra
+      ? null
+      : buildBonds(publicationPresentation, publicationPalette, bondKind, primarySegments, true);
     if (primaryBonds) {
       stylePublicationMaterials(primaryBonds, resources);
       ownPublicationObject(primaryBonds, resources);
       root.add(primaryBonds);
     }
-    const contextBonds = buildBonds(publicationPresentation, publicationContextPalette, bondKind, contextSegments, true);
+    const contextBonds = polyhedra
+      ? null
+      : buildBonds(publicationPresentation, publicationContextPalette, bondKind, contextSegments, true);
     if (contextBonds) {
       stylePublicationMaterials(contextBonds, resources);
       ownPublicationObject(contextBonds, resources);
@@ -1741,6 +1841,10 @@ function buildPublicationScene(
       stylePublicationMaterials(contextAtoms, resources);
       ownPublicationObject(contextAtoms, resources);
       root.add(contextAtoms);
+    }
+    if (polyhedra) {
+      ownPublicationObject(polyhedra, resources);
+      root.add(polyhedra);
     }
   }
 
@@ -2117,17 +2221,20 @@ function applyRenderablePalette(
   appearance: Appearance,
   palette: ScenePalette,
 ): void {
+  const renderedAtoms = state.atomObject?.userData.instanceToAtom instanceof Uint32Array
+    ? state.atomObject.userData.instanceToAtom
+    : model.instanceToAtom;
   if (state.atomObject instanceof THREE.Points) {
     const colors = state.atomObject.geometry.getAttribute("color") as THREE.BufferAttribute;
-    for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
-      const atom = model.instanceToAtom[instance];
+    for (let instance = 0; instance < renderedAtoms.length; instance += 1) {
+      const atom = renderedAtoms[instance];
       const color = atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance);
       colors.setXYZ(instance, color.r, color.g, color.b);
     }
     colors.needsUpdate = true;
   } else if (state.atomObject instanceof THREE.InstancedMesh) {
-    for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
-      const atom = model.instanceToAtom[instance];
+    for (let instance = 0; instance < renderedAtoms.length; instance += 1) {
+      const atom = renderedAtoms[instance];
       state.atomObject.setColorAt(
         instance,
         atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance),
@@ -2140,18 +2247,100 @@ function applyRenderablePalette(
   setMaterialPalette(state.cell, palette.cell, palette.cellOpacity);
   state.forces?.children.forEach((object) => setMaterialPalette(object, palette.force));
   state.velocities?.children.forEach((object) => setMaterialPalette(object, palette.velocity));
-  if (state.ribbon) {
-    const colors = state.ribbon.geometry.getAttribute("color") as THREE.BufferAttribute;
-    const atoms = state.ribbon.geometry.getAttribute("atomIndex") as THREE.BufferAttribute;
-    for (let vertex = 0; vertex < atoms.count; vertex += 1) {
-      const atom = Math.round(atoms.getX(vertex));
-      const color = presentation.color === "element"
-        ? atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance)
-        : new THREE.Color(palette.ribbon);
+  if (state.ribbon) updateRibbonColors(
+    state.ribbon.geometry,
+    manifest,
+    model,
+    presentation,
+    appearance,
+    palette,
+  );
+  if (state.polyhedra) updatePolyhedraColors(
+    state.polyhedra,
+    manifest,
+    model,
+    presentation,
+    appearance,
+    palette,
+  );
+}
+
+function updateRibbonColors(
+  geometry: THREE.BufferGeometry,
+  manifest: Manifest,
+  model: PreparedScene,
+  presentation: ScenePresentation,
+  appearance: Appearance,
+  palette: ScenePalette,
+): void {
+  const colors = geometry.getAttribute("color");
+  const atoms = geometry.getAttribute("atomIndex");
+  const secondaryStructure = geometry.getAttribute("secondaryStructure");
+  if (!(colors instanceof THREE.BufferAttribute) || !(atoms instanceof THREE.BufferAttribute)) return;
+  const chainColor = new THREE.Color(palette.ribbon);
+  const structureColors = appearance === "light"
+    ? [
+        new THREE.Color("#3f817e"),
+        new THREE.Color("#c94f5b"),
+        new THREE.Color("#d99a2b"),
+      ]
+    : [
+        new THREE.Color("#6bb7b2"),
+        new THREE.Color("#ed7d86"),
+        new THREE.Color("#f1c15a"),
+      ];
+  for (let vertex = 0; vertex < atoms.count; vertex += 1) {
+    const atom = Math.round(atoms.getX(vertex));
+    let color: THREE.Color;
+    if (presentation.color === "element") {
+      color = atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance);
+    } else if (
+      presentation.color === "chain"
+      || !(secondaryStructure instanceof THREE.BufferAttribute)
+    ) {
+      color = chainColor;
+    } else {
+      color = structureColors[THREE.MathUtils.clamp(
+        Math.round(secondaryStructure.getX(vertex)),
+        0,
+        structureColors.length - 1,
+      )];
+    }
+    colors.setXYZ(vertex, color.r, color.g, color.b);
+  }
+  colors.needsUpdate = true;
+}
+
+function updatePolyhedraColors(
+  group: THREE.Group,
+  manifest: Manifest,
+  model: PreparedScene,
+  presentation: ScenePresentation,
+  appearance: Appearance,
+  palette: ScenePalette,
+): void {
+  group.traverse((object) => {
+    if (object.userData.polyhedronEdges === true) {
+      setMaterialPalette(object, palette.bond);
+      return;
+    }
+    if (!(object instanceof THREE.Mesh)) return;
+    const colors = object.geometry.getAttribute("color");
+    const centers = object.geometry.getAttribute("centerAtomIndex");
+    if (!(colors instanceof THREE.BufferAttribute) || !(centers instanceof THREE.BufferAttribute)) return;
+    for (let vertex = 0; vertex < centers.count; vertex += 1) {
+      const atom = Math.round(centers.getX(vertex));
+      const color = atomColor(
+        manifest,
+        atom,
+        model.atomicNumbers[atom],
+        presentation.color,
+        appearance,
+      );
       colors.setXYZ(vertex, color.r, color.g, color.b);
     }
     colors.needsUpdate = true;
-  }
+  });
 }
 
 function setMaterialPalette(object: THREE.Object3D | null, color: string, opacity?: number): void {
@@ -2167,7 +2356,15 @@ function setMaterialPalette(object: THREE.Object3D | null, color: string, opacit
 }
 
 function clearRenderables(state: SceneState): void {
-  for (const object of [state.atomObject, state.bonds, state.cell, state.forces, state.velocities, state.ribbon]) {
+  for (const object of [
+    state.atomObject,
+    state.bonds,
+    state.cell,
+    state.forces,
+    state.velocities,
+    state.ribbon,
+    state.polyhedra,
+  ]) {
     if (!object) continue;
     state.root.remove(object);
     disposeObject(object);
@@ -2178,6 +2375,8 @@ function clearRenderables(state: SceneState): void {
   state.forces = null;
   state.velocities = null;
   state.ribbon = null;
+  state.polyhedra = null;
+  state.ribbonSelections.clear();
   state.pickables = [];
 }
 
@@ -2395,15 +2594,60 @@ function buildFrameRenderables(
     if (state.ribbon) {
       state.root.add(state.ribbon);
       state.pickables.push(state.ribbon);
+      const selections = state.ribbon.userData.ribbonSelections;
+      if (selections instanceof Map) state.ribbonSelections = selections;
+    }
+    const contextModel = ribbonContextModel(model, manifest);
+    if (contextModel) {
+      const contextPresentation = { ...presentation, mode: "ball-stick" as const };
+      state.atomObject = buildAtoms(
+        contextModel,
+        manifest,
+        contextPresentation,
+        appearance,
+        false,
+        "ball-stick",
+      );
+      if (state.atomObject) {
+        state.atomObject.userData.instanceToAtom = contextModel.instanceToAtom;
+        state.atomObject.userData.instanceImages = contextModel.instanceImages;
+        state.root.add(state.atomObject);
+        state.pickables.push(state.atomObject);
+      }
+      const contextGeometry = publicationBondGeometry(
+        contextModel,
+        contextPresentation,
+        false,
+      );
+      state.bonds = buildBonds(
+        contextPresentation,
+        palette,
+        contextGeometry.segments.length > MAX_BOND_INSTANCES ? "lines" : "instances",
+        contextGeometry.segments,
+      );
+      if (state.bonds) state.root.add(state.bonds);
     }
   } else {
-    state.atomObject = buildAtoms(model, manifest, presentation, appearance);
+    state.polyhedra = presentation.mode === "polyhedra"
+      ? buildPolyhedra(model, manifest, presentation, appearance, palette)
+      : null;
+    state.atomObject = buildAtoms(
+      model,
+      manifest,
+      presentation,
+      appearance,
+      false,
+      presentation.mode === "polyhedra" && !state.polyhedra ? "ball-stick" : undefined,
+    );
     if (state.atomObject) {
       state.root.add(state.atomObject);
       state.pickables.push(state.atomObject);
     }
-    state.bonds = buildBonds(presentation, palette, frameGeometry.bondKind, frameGeometry.bondSegments);
+    state.bonds = state.polyhedra
+      ? null
+      : buildBonds(presentation, palette, frameGeometry.bondKind, frameGeometry.bondSegments);
     if (state.bonds) state.root.add(state.bonds);
+    if (state.polyhedra) state.root.add(state.polyhedra);
   }
   state.cell = presentation.cell ? buildCells(model, palette) : null;
   if (state.cell) state.root.add(state.cell);
@@ -2442,11 +2686,11 @@ function updateFrameRenderables(
   if (state.cell) updateCells(state.cell, model);
   if (state.forces) updateVectors(state.forces, forceArrows);
   if (state.velocities) updateVectors(state.velocities, velocityArrows);
-  return presentation.mode !== "ribbon";
+  return presentation.mode !== "ribbon" && presentation.mode !== "polyhedra";
 }
 
 function renderablesMatchFrameGeometry(state: SceneState, frameGeometry: FrameGeometryPlan): boolean {
-  if (state.ribbon) return false;
+  if (state.ribbon || state.polyhedra) return false;
   if (frameGeometry.atomKind === "none") {
     if (state.atomObject) return false;
   } else if (frameGeometry.atomKind === "points") {
@@ -2554,6 +2798,7 @@ function buildAtoms(
   presentation: ScenePresentation,
   appearance: Appearance,
   publication = false,
+  radiusMode?: RepresentationMode,
 ): THREE.InstancedMesh | THREE.Points | null {
   const count = model.instanceToAtom.length;
   if (count === 0) return null;
@@ -2595,7 +2840,11 @@ function buildAtoms(
   for (let instance = 0; instance < count; instance += 1) {
     const atom = model.instanceToAtom[instance];
     setInstancePosition(dummy.position, model, instance);
-    dummy.scale.setScalar(model.radii[atom]);
+    dummy.scale.setScalar(
+      radiusMode
+        ? representationRadius(model.atomicNumbers[atom], radiusMode, presentation.atomScale)
+        : model.radii[atom],
+    );
     dummy.updateMatrix();
     mesh.setMatrixAt(instance, dummy.matrix);
     mesh.setColorAt(instance, atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance));
@@ -2627,7 +2876,11 @@ function buildBonds(
       new THREE.LineBasicMaterial({ color: palette.bond, transparent: true, opacity: palette.bondOpacity }),
     );
   }
-  const radius = (presentation.mode === "licorice" ? 0.14 : 0.045) * Math.max(0.1, presentation.bondScale);
+  const radius = (
+    presentation.mode === "licorice"
+      ? 0.14
+      : presentation.mode === "polyhedra" ? 0.025 : 0.045
+  ) * Math.max(0.1, presentation.bondScale);
   const radialSegments = publication && segments.length <= 12_000
     ? 16
     : usesHighDetailGeometry(presentation, segments.length) ? 12 : 8;
@@ -2795,6 +3048,87 @@ function updateVectors(group: THREE.Group, arrows: VectorArrow[]): void {
   heads.boundingBox = null;
 }
 
+function buildPolyhedra(
+  model: PreparedScene,
+  manifest: Manifest,
+  presentation: ScenePresentation,
+  appearance: Appearance,
+  palette: ScenePalette,
+  publication = false,
+): THREE.Group | null {
+  const visibleAtoms = new Set(model.visibleAtoms);
+  const geometry = buildCoordinationPolyhedraGeometry(
+    {
+      positions: model.positions,
+      atomicNumbers: model.atomicNumbers,
+      bonds: model.bonds.filter(([left, right]) => (
+        visibleAtoms.has(left) && visibleAtoms.has(right)
+      )),
+      basis: model.basis,
+      pbc: model.pbc,
+    },
+    {
+      images: model.images,
+      maxCenters: model.visibleAtoms.length > 24 ? 8 : 64,
+      colorForCenter: (atom, atomicNumber) => atomColor(
+        manifest,
+        atom,
+        atomicNumber,
+        presentation.color,
+        appearance,
+      ),
+    },
+  );
+  if (!geometry) return null;
+
+  const group = new THREE.Group();
+  const faces = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: publication ? 0.34 : appearance === "light" ? 0.28 : 0.34,
+      depthWrite: true,
+      roughness: 0.58,
+      metalness: 0,
+      flatShading: true,
+      side: THREE.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 1,
+    }),
+  );
+  faces.userData.publicationExcludeFromAo = true;
+  faces.renderOrder = 1;
+  group.add(faces);
+
+  const edgeGeometry = new THREE.BufferGeometry();
+  edgeGeometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(
+      geometry.userData.edgePositions instanceof Float32Array
+        ? geometry.userData.edgePositions
+        : new Float32Array(),
+      3,
+    ),
+  );
+  edgeGeometry.computeBoundingSphere();
+  const edges = new THREE.LineSegments(
+    edgeGeometry,
+    new THREE.LineBasicMaterial({
+      color: palette.bond,
+      transparent: true,
+      opacity: publication ? 0.42 : 0.36,
+      depthWrite: false,
+    }),
+  );
+  edges.userData.polyhedronEdges = true;
+  edges.userData.publicationExcludeFromAo = true;
+  edges.renderOrder = 2;
+  group.add(edges);
+  return group;
+}
+
 function buildRibbon(
   model: PreparedScene,
   manifest: Manifest,
@@ -2803,59 +3137,226 @@ function buildRibbon(
   palette: ScenePalette,
 ): THREE.Mesh | null {
   if (model.backbone.length < 3) return null;
-  const centers: THREE.Vector3[] = [];
-  const sides: THREE.Vector3[] = [];
-  for (const residue of model.backbone) {
-    const raw = new THREE.Vector3().fromArray(model.positions, residue.ca * 3);
-    centers.push(centers.length === 0 ? raw : unwrapPointNear(centers[centers.length - 1], raw, model.basis, model.pbc));
-    const c = new THREE.Vector3().fromArray(model.positions, residue.c * 3);
-    const o = new THREE.Vector3().fromArray(model.positions, residue.o * 3);
-    sides.push(unwrapPointNear(c, o, model.basis, model.pbc).sub(c).normalize());
-  }
-  const positions: number[] = [];
-  const colors: number[] = [];
-  const atomIndices: number[] = [];
-  const indices: number[] = [];
-  const width = 0.34 * Math.max(0.2, presentation.atomScale);
-  for (const image of model.images) {
-    const vertexStart = positions.length / 3;
-    const shift = imageTranslation(image, model.basis);
-    centers.forEach((center, index) => {
-      const previous = centers[Math.max(0, index - 1)];
-      const next = centers[Math.min(centers.length - 1, index + 1)];
-      const tangent = next.clone().sub(previous).normalize();
-      const side = sides[index].clone().addScaledVector(tangent, -sides[index].dot(tangent));
-      if (side.lengthSq() < 1e-8) side.crossVectors(tangent, Math.abs(tangent.y) < 0.9 ? yAxis : new THREE.Vector3(1, 0, 0));
-      side.normalize().multiplyScalar(width);
-      const atom = model.backbone[index].ca;
-      const color = presentation.color === "element"
-        ? atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance)
-        : new THREE.Color(palette.ribbon);
-      positions.push(...center.clone().add(shift).sub(side).toArray(), ...center.clone().add(shift).add(side).toArray());
-      colors.push(...color.toArray(), ...color.toArray());
-      atomIndices.push(atom, atom);
-      if (index > 0) {
-        const left = vertexStart + index * 2;
-        indices.push(left - 2, left - 1, left, left, left - 1, left + 1);
-      }
+  const annotations = new Map(
+    (manifest.topology.residues ?? [])
+      .filter((residue) => residue.secondary_structure)
+      .map((residue) => [residue.index, residue.secondary_structure!]),
+  );
+  const translations = model.images.map((image) => imageTranslation(image, model.basis));
+  const residueRuns = preparedBackboneRuns(model).map((run) => unwrappedCartoonRun(model, run));
+  const geometries: THREE.BufferGeometry[] = [];
+  for (const residues of residueRuns) {
+    const structures = inferProteinSecondaryStructure(residues);
+    for (let index = 0; index < residues.length; index += 1) {
+      const annotation = annotations.get(residues[index].residueIndex);
+      if (annotation) structures[index] = annotation;
+    }
+    const runGeometry = buildProteinCartoonGeometry(residues, {
+      scale: presentation.atomScale,
+      quality: presentation.quality,
+      structures,
+      translations,
+      translationImages: model.images,
     });
+    if (runGeometry) geometries.push(runGeometry);
   }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setAttribute("atomIndex", new THREE.Float32BufferAttribute(atomIndices, 1));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  geometry.computeBoundingSphere();
-  return new THREE.Mesh(
+  const geometry = geometries.length === 1
+    ? geometries[0]
+    : mergeGeometries(geometries, false);
+  if (!geometry) return null;
+  if (geometries.length > 1) geometries.forEach((entry) => entry.dispose());
+  updateRibbonColors(geometry, manifest, model, presentation, appearance, palette);
+  const mesh = new THREE.Mesh(
     geometry,
     new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.48,
+      roughness: 0.5,
       metalness: 0,
+      dithering: true,
       side: THREE.DoubleSide,
     }),
   );
+  mesh.userData.ribbonSelections = ribbonSelectionPoints(residueRuns, model);
+  return mesh;
+}
+
+function ribbonContextModel(
+  model: PreparedScene,
+  manifest: Manifest,
+): PreparedScene | null {
+  const residues = new Map(
+    (manifest.topology.residues ?? []).map((residue) => [residue.index, residue]),
+  );
+  const residueIndices = manifest.topology.atom_residue_index ?? [];
+  const visibleAtoms = model.visibleAtoms.filter((atom) => {
+    const residue = residues.get(residueIndices[atom] ?? -1);
+    return residue?.category !== "amino-acid";
+  });
+  if (visibleAtoms.length === 0) return null;
+
+  const visible = new Set(visibleAtoms);
+  const instanceToAtom: number[] = [];
+  const instanceImages: number[] = [];
+  for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
+    if (!visible.has(model.instanceToAtom[instance])) continue;
+    instanceToAtom.push(model.instanceToAtom[instance]);
+    instanceImages.push(
+      model.instanceImages[instance * 3],
+      model.instanceImages[instance * 3 + 1],
+      model.instanceImages[instance * 3 + 2],
+    );
+  }
+  return {
+    ...model,
+    bonds: model.bonds.filter(([left, right]) => visible.has(left) && visible.has(right)),
+    visibleAtoms,
+    instanceToAtom: Uint32Array.from(instanceToAtom),
+    instanceImages: Int8Array.from(instanceImages),
+    radii: model.atomicNumbers.map((number) => representationRadius(
+      number,
+      "ball-stick",
+      0.82,
+    )),
+    backbone: [],
+  };
+}
+
+function preparedBackboneRuns(model: PreparedScene): BackboneResidue[][] {
+  const runs: BackboneResidue[][] = [];
+  for (const residue of model.backbone) {
+    const runIndex = residue.runIndex ?? 0;
+    while (runs.length <= runIndex) runs.push([]);
+    runs[runIndex].push(residue);
+  }
+  return runs.filter((run) => run.length >= 3);
+}
+
+function unwrappedCartoonRun(
+  model: PreparedScene,
+  run: readonly BackboneResidue[],
+): ProteinCartoonResidue[] {
+  const residues: ProteinCartoonResidue[] = [];
+  for (const residue of run) {
+    const rawCa = new THREE.Vector3().fromArray(model.positions, residue.ca * 3);
+    const ca = residues.length === 0
+      ? rawCa
+      : unwrapPointNear(residues[residues.length - 1].ca, rawCa, model.basis, model.pbc);
+    const localImage = latticeImageOffset(rawCa, ca, model.basis, model.pbc);
+    const baseOffset = residue.ca * 3;
+    const image: CellOffset = [
+      (model.baseImages[baseOffset] ?? 0) + localImage[0],
+      (model.baseImages[baseOffset + 1] ?? 0) + localImage[1],
+      (model.baseImages[baseOffset + 2] ?? 0) + localImage[2],
+    ];
+    const n = unwrapPointNear(
+      ca,
+      new THREE.Vector3().fromArray(model.positions, residue.n * 3),
+      model.basis,
+      model.pbc,
+    );
+    const c = unwrapPointNear(
+      ca,
+      new THREE.Vector3().fromArray(model.positions, residue.c * 3),
+      model.basis,
+      model.pbc,
+    );
+    const o = unwrapPointNear(
+      c,
+      new THREE.Vector3().fromArray(model.positions, residue.o * 3),
+      model.basis,
+      model.pbc,
+    );
+    residues.push({
+      atomIndex: residue.ca,
+      residueIndex: residue.residueIndex,
+      image,
+      n,
+      ca,
+      c,
+      o,
+    });
+  }
+  return residues;
+}
+
+function latticeImageOffset(
+  source: THREE.Vector3,
+  displayed: THREE.Vector3,
+  basis: CellBasis | null,
+  pbc: readonly boolean[],
+): CellOffset {
+  if (!basis) return [0, 0, 0];
+  const delta = displayed.clone().sub(source);
+  return [
+    pbc[0] ? Math.round(delta.dot(basis.reciprocal[0])) : 0,
+    pbc[1] ? Math.round(delta.dot(basis.reciprocal[1])) : 0,
+    pbc[2] ? Math.round(delta.dot(basis.reciprocal[2])) : 0,
+  ];
+}
+
+function ribbonSelectionPoints(
+  runs: readonly ProteinCartoonResidue[][],
+  model: PreparedScene,
+): Map<string, RibbonSelectionPoint> {
+  const result = new Map<string, RibbonSelectionPoint>();
+  for (const run of runs) {
+    for (const residue of run) {
+      for (const image of model.images) {
+        const selectionImage: CellOffset = [
+          (residue.image?.[0] ?? 0) + image[0],
+          (residue.image?.[1] ?? 0) + image[1],
+          (residue.image?.[2] ?? 0) + image[2],
+        ];
+        const selection = { atom: residue.atomIndex, image: selectionImage };
+        result.set(selectionKey(selection.atom, selection.image), {
+          selection,
+          position: residue.ca.clone().add(imageTranslation(image, model.basis)),
+        });
+      }
+    }
+  }
+  return result;
+}
+
+function ribbonNavigationInstances(
+  model: PreparedScene,
+  ribbonSelections: ReadonlyMap<string, RibbonSelectionPoint>,
+  contextAtoms: Uint32Array,
+  contextImages: Int8Array,
+): Pick<PreparedScene, "instanceToAtom" | "instanceImages"> {
+  const atoms: number[] = [];
+  const images: number[] = [];
+  const seen = new Set<string>();
+  const add = (selection: AtomSelection) => {
+    const key = selectionKey(selection.atom, selection.image);
+    if (seen.has(key)) return;
+    const offset = selection.atom * 3;
+    const relative = selection.image.map((value, axis) => (
+      value - (model.baseImages[offset + axis] ?? 0)
+    ));
+    if (relative.some((value) => value < -127 || value > 127)) return;
+    seen.add(key);
+    atoms.push(selection.atom);
+    images.push(relative[0], relative[1], relative[2]);
+  };
+  for (const target of ribbonSelections.values()) add(target.selection);
+  for (let instance = 0; instance < contextAtoms.length; instance += 1) {
+    const atom = contextAtoms[instance];
+    const imageOffset = instance * 3;
+    const baseOffset = atom * 3;
+    add({
+      atom,
+      image: [
+        (model.baseImages[baseOffset] ?? 0) + contextImages[imageOffset],
+        (model.baseImages[baseOffset + 1] ?? 0) + contextImages[imageOffset + 1],
+        (model.baseImages[baseOffset + 2] ?? 0) + contextImages[imageOffset + 2],
+      ],
+    });
+  }
+  return {
+    instanceToAtom: Uint32Array.from(atoms),
+    instanceImages: Int8Array.from(images),
+  };
 }
 
 export function updateSelectionMarkers(
@@ -2888,7 +3389,7 @@ export function updateSelectionMarkers(
     : null;
   const markers = selectionMarkerState(
     selectedAtoms.length,
-    state.instanceToAtom.length,
+    Math.max(state.instanceToAtom.length, state.ribbonSelections?.size ?? 0),
     reusablePointAttribute?.count ?? null,
   );
   if (markers.mode === "points") {
@@ -2906,6 +3407,38 @@ export function updateSelectionMarkers(
   }
   const found = collectPositions ? new Uint8Array(selectedAtoms.length) : null;
   const point = new THREE.Vector3();
+  const rendered = new Set<string>();
+  const addMarker = (
+    selectedAtom: number,
+    key: string,
+    selectedIndex: number,
+    markerPosition: THREE.Vector3,
+  ) => {
+    if (rendered.has(key)) return;
+    rendered.add(key);
+    if (positions) markerPosition.toArray(positions, selectedIndex * 3);
+    if (pointPositions) {
+      markerPosition.toArray(pointPositions, visible * 3);
+    } else {
+      let marker = state.selection.children[visible] as THREE.Mesh | undefined;
+      if (!marker) {
+        marker = new THREE.Mesh(state.selectionGeometry, state.selectionMaterial);
+        marker.renderOrder = 10;
+        state.selection.add(marker);
+      }
+      marker.position.copy(markerPosition);
+      marker.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
+      marker.visible = true;
+    }
+    if (found) found[selectedIndex] = 1;
+    visible += 1;
+  };
+  for (const [key, target] of state.ribbonSelections ?? []) {
+    const selectedIndex = selected.get(key);
+    if (selectedIndex !== undefined) {
+      addMarker(target.selection.atom, key, selectedIndex, target.position);
+    }
+  }
   for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
     const selectedAtom = state.instanceToAtom[instance];
     const imageOffset = instance * 3;
@@ -2915,25 +3448,17 @@ export function updateSelectionMarkers(
       (state.baseImages[baseOffset + 1] ?? 0) + state.instanceImages[imageOffset + 1],
       (state.baseImages[baseOffset + 2] ?? 0) + state.instanceImages[imageOffset + 2],
     ];
-    const selectedIndex = selected.get(selectionKey(selectedAtom, image));
+    const key = selectionKey(selectedAtom, image);
+    const selectedIndex = selected.get(key);
     if (selectedIndex === undefined) continue;
-    setInstancePosition(point, model, instance);
-    if (positions) point.toArray(positions, selectedIndex * 3);
-    if (pointPositions) {
-      point.toArray(pointPositions, visible * 3);
-    } else {
-      let marker = state.selection.children[visible] as THREE.Mesh | undefined;
-      if (!marker) {
-        marker = new THREE.Mesh(state.selectionGeometry, state.selectionMaterial);
-        marker.renderOrder = 10;
-        state.selection.add(marker);
-      }
-      marker.position.copy(point);
-      marker.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
-      marker.visible = true;
-    }
-    if (found) found[selectedIndex] = 1;
-    visible += 1;
+    setInstancePosition(
+      point,
+      model,
+      instance,
+      state.instanceToAtom,
+      state.instanceImages,
+    );
+    addMarker(selectedAtom, key, selectedIndex, point);
   }
   const visibleRings = markers.clearRingMarkers ? 0 : visible;
   while (state.selection.children.length > visibleRings) {
@@ -2960,6 +3485,15 @@ function updateKeyboardFocus(
   const model = state.model;
   state.keyboardFocus.visible = false;
   if (!model || !selection) return null;
+  const ribbonTarget = state.ribbonSelections.get(selectionKey(selection.atom, selection.image));
+  if (ribbonTarget) {
+    state.keyboardFocus.position.copy(ribbonTarget.position);
+    state.keyboardFocus.scale.setScalar(
+      Math.max(0.24, model.radii[selection.atom] || 0.3) * 1.62,
+    );
+    state.keyboardFocus.visible = true;
+    return -1;
+  }
   if (preferredInstance !== null && selectionMatchesInstance(
       state.instanceToAtom,
       state.instanceImages,
@@ -2991,7 +3525,13 @@ function setKeyboardFocusInstance(
 ): void {
   const model = state.model;
   if (!model) return;
-  setInstancePosition(state.keyboardFocus.position, model, instance);
+  setInstancePosition(
+    state.keyboardFocus.position,
+    model,
+    instance,
+    state.instanceToAtom,
+    state.instanceImages,
+  );
   state.keyboardFocus.scale.setScalar(
     Math.max(0.24, model.radii[selection.atom] || 0.3) * 1.62,
   );
@@ -3091,29 +3631,59 @@ function selectionMatchesInstance(
 function pickedAtom(hit: THREE.Intersection, state: SceneState): AtomSelection | null {
   if (hit.object === state.atomObject) {
     const instance = hit.instanceId ?? hit.index;
+    const instanceToAtom = hit.object.userData.instanceToAtom instanceof Uint32Array
+      ? hit.object.userData.instanceToAtom
+      : state.instanceToAtom;
+    const instanceImages = hit.object.userData.instanceImages instanceof Int8Array
+      ? hit.object.userData.instanceImages
+      : state.instanceImages;
     return instance === undefined
       ? null
       : atomSelectionForInstance(
-        state.instanceToAtom,
-        state.instanceImages,
+        instanceToAtom,
+        instanceImages,
         instance,
         state.baseImages,
       );
   }
   if (hit.object === state.ribbon && hit.face) {
-    const attribute = state.ribbon.geometry.getAttribute("atomIndex");
-    const atom = Math.round(attribute.getX(hit.face.a));
-    const offset = atom * 3;
-    return {
-      atom,
-      image: [
-        state.baseImages[offset] ?? 0,
-        state.baseImages[offset + 1] ?? 0,
-        state.baseImages[offset + 2] ?? 0,
-      ],
-    };
+    return ribbonSelectionForFace(
+      state.ribbon.geometry,
+      hit.face,
+      hit.object.worldToLocal(hit.point.clone()),
+    );
   }
   return null;
+}
+
+export function ribbonSelectionForFace(
+  geometry: THREE.BufferGeometry,
+  face: Pick<THREE.Face, "a" | "b" | "c">,
+  point: THREE.Vector3,
+): AtomSelection | null {
+  const positions = geometry.getAttribute("position");
+  const atoms = geometry.getAttribute("atomIndex");
+  const images = geometry.getAttribute("imageOffset");
+  if (
+    !(positions instanceof THREE.BufferAttribute)
+    || !(atoms instanceof THREE.BufferAttribute)
+    || !(images instanceof THREE.BufferAttribute)
+  ) return null;
+  const vertex = [face.a, face.b, face.c].reduce((nearest, candidate) => (
+    point.distanceToSquared(new THREE.Vector3().fromBufferAttribute(positions, candidate))
+      < point.distanceToSquared(new THREE.Vector3().fromBufferAttribute(positions, nearest))
+      ? candidate
+      : nearest
+  ));
+  const atom = Math.round(atoms.getX(vertex));
+  const image: CellOffset = [
+    Math.round(images.getX(vertex)),
+    Math.round(images.getY(vertex)),
+    Math.round(images.getZ(vertex)),
+  ];
+  return Number.isSafeInteger(atom) && atom >= 0 && validCellOffset(image)
+    ? { atom, image }
+    : null;
 }
 
 export function atomSelectionForInstance(
@@ -3166,14 +3736,14 @@ function keyboardAtomLabel(manifest: Manifest, selection: AtomSelection): string
   return image ? `${atom} (${image})` : atom;
 }
 
-function selectionsInRectangle(
+export function selectionsInRectangle(
   state: SceneState,
   bounds: DOMRect,
   start: Pick<THREE.Vector2, "x" | "y">,
   end: Pick<THREE.Vector2, "x" | "y">,
 ): AtomSelection[] {
   const model = state.model;
-  if (!model || !state.atomObject || bounds.width <= 0 || bounds.height <= 0) return [];
+  if (!model || bounds.width <= 0 || bounds.height <= 0) return [];
   const left = Math.max(bounds.left, Math.min(start.x, end.x));
   const right = Math.min(bounds.right, Math.max(start.x, end.x));
   const top = Math.max(bounds.top, Math.min(start.y, end.y));
@@ -3184,15 +3754,24 @@ function selectionsInRectangle(
   const point = new THREE.Vector3();
   const result: AtomSelection[] = [];
   const seen = new Set<string>();
-  for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
-    setInstancePosition(point, model, instance);
+  const include = (selection: AtomSelection, position: THREE.Vector3) => {
+    const key = selectionKey(selection.atom, selection.image);
+    if (seen.has(key)) return;
+    point.copy(position);
     point.project(state.camera);
     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.z < -1 || point.z > 1) {
-      continue;
+      return;
     }
     const x = bounds.left + ((point.x + 1) * 0.5) * bounds.width;
     const y = bounds.top + ((1 - point.y) * 0.5) * bounds.height;
-    if (x < left || x > right || y < top || y > bottom) continue;
+    if (x < left || x > right || y < top || y > bottom) return;
+    seen.add(key);
+    result.push(selection);
+  };
+  for (const target of state.ribbonSelections.values()) {
+    include(target.selection, target.position);
+  }
+  for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
     const selection = atomSelectionForInstance(
       state.instanceToAtom,
       state.instanceImages,
@@ -3200,10 +3779,16 @@ function selectionsInRectangle(
       state.baseImages,
     );
     if (!selection) continue;
-    const key = selectionKey(selection.atom, selection.image);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(selection);
+    include(
+      selection,
+      setInstancePosition(
+        point,
+        model,
+        instance,
+        state.instanceToAtom,
+        state.instanceImages,
+      ),
+    );
   }
   return result;
 }
@@ -3212,15 +3797,17 @@ function setInstancePosition(
   target: THREE.Vector3,
   model: PreparedScene,
   instance: number,
+  instanceToAtom: Uint32Array = model.instanceToAtom,
+  instanceImages: Int8Array = model.instanceImages,
 ): THREE.Vector3 {
-  const atom = model.instanceToAtom[instance];
+  const atom = instanceToAtom[instance];
   target.fromArray(model.positions, atom * 3);
   if (!model.basis) return target;
   const offset = instance * 3;
   return target
-    .addScaledVector(model.basis.vectors[0], model.instanceImages[offset])
-    .addScaledVector(model.basis.vectors[1], model.instanceImages[offset + 1])
-    .addScaledVector(model.basis.vectors[2], model.instanceImages[offset + 2]);
+    .addScaledVector(model.basis.vectors[0], instanceImages[offset])
+    .addScaledVector(model.basis.vectors[1], instanceImages[offset + 1])
+    .addScaledVector(model.basis.vectors[2], instanceImages[offset + 2]);
 }
 
 function atomColor(
@@ -3245,13 +3832,18 @@ function elementColor(atomicNumber: number, appearance: Appearance): THREE.Color
 function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | null {
   const { model, presentation } = context;
   const bounds = new THREE.Box3();
-  const point = new THREE.Vector3();
-  for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
-    const atom = model.instanceToAtom[instance];
-    setInstancePosition(point, model, instance);
-    const radius = presentation.mode === "ribbon" ? 0.4 : (model.radii[atom] ?? 0.25);
-    bounds.expandByPoint(new THREE.Vector3(point.x - radius, point.y - radius, point.z - radius));
-    bounds.expandByPoint(new THREE.Vector3(point.x + radius, point.y + radius, point.z + radius));
+  if (presentation.mode === "ribbon" && state.ribbon) {
+    state.ribbon.updateMatrixWorld(true);
+    bounds.union(new THREE.Box3().setFromObject(state.ribbon));
+  } else {
+    const point = new THREE.Vector3();
+    for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
+      const atom = model.instanceToAtom[instance];
+      setInstancePosition(point, model, instance);
+      const radius = model.radii[atom] ?? 0.25;
+      bounds.expandByPoint(new THREE.Vector3(point.x - radius, point.y - radius, point.z - radius));
+      bounds.expandByPoint(new THREE.Vector3(point.x + radius, point.y + radius, point.z + radius));
+    }
   }
   if (state.forces) {
     state.forces.updateMatrixWorld(true);
@@ -3260,6 +3852,10 @@ function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | nu
   if (state.velocities) {
     state.velocities.updateMatrixWorld(true);
     bounds.union(new THREE.Box3().setFromObject(state.velocities));
+  }
+  if (state.polyhedra) {
+    state.polyhedra.updateMatrixWorld(true);
+    bounds.union(new THREE.Box3().setFromObject(state.polyhedra));
   }
   if (presentation.cell && model.basis) {
     const cellBounds = new THREE.Box3();
@@ -3275,22 +3871,39 @@ function fitCamera(state: SceneState, context: FitContext): void {
   const bounds = sceneFitBounds(state, context);
   if (!bounds) return;
   clearOrbitMotion(state.controls);
-  const center = bounds.getCenter(new THREE.Vector3());
+  const proteinTrace = (
+    context.presentation.mode === "ribbon"
+    && context.preset === "perspective"
+    && context.model.images.length === 1
+  )
+    ? unwrappedBackboneTrace(context.model)
+    : null;
+  const proteinComposition = proteinTrace
+    ? proteinCameraComposition(
+        proteinTrace,
+        context.model.backbone.map((_, index) => index),
+        context.presentation.atomScale,
+        state.camera.aspect,
+      )
+    : null;
+  const center = proteinComposition?.center ?? bounds.getCenter(new THREE.Vector3());
   const verticalHalfFov = THREE.MathUtils.degToRad(state.camera.fov * 0.5);
   const horizontalHalfFov = Math.atan(Math.tan(verticalHalfFov) * state.camera.aspect);
   const limitingHalfFov = Math.min(verticalHalfFov, horizontalHalfFov);
-  const { direction, up } = cameraOrientation(context.preset);
+  const { direction, up } = proteinComposition ?? cameraOrientation(context.preset);
   const right = new THREE.Vector3().crossVectors(up, direction).normalize();
   const cameraUp = new THREE.Vector3().crossVectors(direction, right).normalize();
   const fill = 0.78;
+  const fitPoints = proteinComposition?.points ?? boxCorners(bounds);
+  const fitRadius = proteinComposition?.radius ?? 0;
   let distance = 1.6 / Math.tan(limitingHalfFov) * 1.08;
-  for (const corner of boxCorners(bounds)) {
-    const relative = corner.sub(center);
+  for (const point of fitPoints) {
+    const relative = point.clone().sub(center);
     const depth = relative.dot(direction);
     distance = Math.max(
       distance,
-      depth + Math.abs(relative.dot(right)) / (Math.tan(horizontalHalfFov) * fill),
-      depth + Math.abs(relative.dot(cameraUp)) / (Math.tan(verticalHalfFov) * fill),
+      depth + (Math.abs(relative.dot(right)) + fitRadius) / (Math.tan(horizontalHalfFov) * fill),
+      depth + (Math.abs(relative.dot(cameraUp)) + fitRadius) / (Math.tan(verticalHalfFov) * fill),
     );
   }
   state.camera.up.copy(up);
@@ -3302,6 +3915,27 @@ function fitCamera(state: SceneState, context: FitContext): void {
   state.controls.update();
   state.lastFittedAspect = state.camera.aspect;
   state.cameraMode = "fit";
+}
+
+export function unwrappedBackboneTrace(model: PreparedScene): Float32Array {
+  const trace = new Float32Array(model.backbone.length * 3);
+  let previous: THREE.Vector3 | null = null;
+  let previousRun: number | undefined;
+  for (let index = 0; index < model.backbone.length; index += 1) {
+    const run = model.backbone[index].runIndex;
+    if (index > 0 && run !== previousRun) previous = null;
+    const raw = new THREE.Vector3().fromArray(
+      model.positions,
+      model.backbone[index].ca * 3,
+    );
+    const point: THREE.Vector3 = previous
+      ? unwrapPointNear(previous, raw, model.basis, model.pbc)
+      : raw;
+    point.toArray(trace, index * 3);
+    previous = point;
+    previousRun = run;
+  }
+  return trace;
 }
 
 export function captureCameraState(

@@ -2441,6 +2441,13 @@ export default function App() {
         detail: presentation.mode === "ribbon" ? "Current" : undefined,
         run: run(() => updatePresentation({ mode: "ribbon" })),
       }] : []),
+      ...(cellAvailable ? [{
+        id: "mode-polyhedra",
+        label: "Representation · Polyhedra",
+        keywords: "style crystal coordination octahedra tetrahedra polygons",
+        detail: presentation.mode === "polyhedra" ? "Current" : "Bond-derived",
+        run: run(() => updatePresentation({ mode: "polyhedra" })),
+      }] : []),
       ...(capabilities?.water ? [{ id: "water", label: presentation.water === "hide" ? "Show water" : "Hide water", keywords: "solvent", detail: "W", run: run(() => updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" })) }] : []),
       ...(cellAvailable ? [{ id: "cell", label: presentation.cell ? "Hide cell" : "Show cell", keywords: "box periodic pbc", detail: "C", run: run(() => updatePresentation({ cell: !presentation.cell })) }] : []),
       ...(forceAvailable ? [{ id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", keywords: "vectors arrows", detail: "F", run: run(() => updatePresentation({ forces: !presentation.forces })) }] : []),
@@ -3716,7 +3723,15 @@ function ScenePanel({
   onForceScale: (scale: number) => void;
   onVelocityScale: (scale: number) => void;
 }) {
-  const modes: RepresentationMode[] = ["ball-stick", "spacefill", "lines", ...(capabilities.ribbon ? ["ribbon" as const] : [])];
+  const modes: RepresentationMode[] = [
+    "ball-stick",
+    "spacefill",
+    "lines",
+    ...(capabilities.ribbon ? ["ribbon" as const] : []),
+    ...(cellAvailable
+      ? ["polyhedra" as const]
+      : []),
+  ];
   const repeatCounts = repeatCountsFromImages(presentation.images, pbc);
   const imageBudget = Math.min(
     MAX_PERIODIC_IMAGES,
@@ -4969,6 +4984,7 @@ function representationLabel(mode: RepresentationMode): string {
     licorice: "Licorice",
     lines: "Lines",
     ribbon: "Ribbon",
+    polyhedra: "Polyhedra",
   } as const)[mode];
 }
 
@@ -5379,7 +5395,7 @@ function initialPresentation(): ScenePresentation {
   try {
     const parsed = JSON.parse(window.localStorage.getItem("pqviewer-presentation") ?? "null") as Partial<ScenePresentation> | null;
     if (!parsed || typeof parsed !== "object") return defaultPresentation;
-    const modes: RepresentationMode[] = ["ball-stick", "spacefill", "lines", "ribbon"];
+    const modes: RepresentationMode[] = ["ball-stick", "spacefill", "lines", "ribbon", "polyhedra"];
     return {
       mode: modes.includes(parsed.mode as RepresentationMode) ? parsed.mode as RepresentationMode : defaultPresentation.mode,
       water: parsed.water === "hide" ? "hide" : "show",

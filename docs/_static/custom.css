@@ -1,0 +1,71 @@
+:root {
+  --pst-color-primary: #1f718f;
+  --pst-color-secondary: #12313a;
+  --pst-color-link: #176c8c;
+  --pst-color-link-hover: #0d4e66;
+  --pst-font-family-base-system: Inter, ui-sans-serif, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --pst-font-family-monospace-system: "SFMono-Regular", Consolas,
+    "Liberation Mono", monospace;
+}
+
+html[data-theme="dark"] {
+  --pst-color-primary: #65bddb;
+  --pst-color-secondary: #94ccd9;
+  --pst-color-link: #65bddb;
+  --pst-color-link-hover: #9ed9eb;
+  --pst-color-background: #0d171b;
+  --pst-color-on-background: #e7eff0;
+  --pst-color-surface: #142228;
+}
+
+.bd-page-width {
+  max-width: 88rem;
+}
+
+.navbar-brand img {
+  width: 2rem;
+  height: 2rem;
+}
+
+.navbar-brand.logo .title {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.bd-article h1,
+.bd-article h2,
+.bd-article h3 {
+  letter-spacing: -0.02em;
+}
+
+.pq-workspace {
+  margin: 1.5rem 0 0;
+}
+
+.pq-workspace img {
+  width: 100%;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 0.35rem;
+}
+
+.sd-card {
+  box-shadow: none;
+}
+
+.sd-card-img-top {
+  aspect-ratio: 4 / 3;
+  border-bottom: 1px solid var(--pst-color-border);
+  background: var(--pst-color-surface);
+  object-fit: cover;
+}
+
+.sd-card:hover {
+  border-color: var(--pst-color-primary);
+}
+
+@media screen and (max-width: 67.99em) {
+  .bd-main .bd-content .bd-article-container {
+    max-width: 100%;
+  }
+}

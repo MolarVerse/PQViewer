@@ -133,6 +133,13 @@ describe("figure recipe parsing", () => {
     expect(parseFigureRecipeJson(stringifyFigureRecipe(input))).toEqual(parsed);
   });
 
+  it("round-trips crystal polyhedra", () => {
+    const input = completeRecipe();
+    input.scene.presentation.mode = "polyhedra";
+
+    expect(parseFigureRecipe(input).scene.presentation.mode).toBe("polyhedra");
+  });
+
   it("deep-clones ordered selections, periodic transforms and files", () => {
     const input = completeRecipe();
     const cloned = cloneFigureRecipe(input);

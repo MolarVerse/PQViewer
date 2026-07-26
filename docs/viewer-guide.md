@@ -51,6 +51,13 @@ source.
 - Spacefill
 - Lines
 - Ribbon when residue and backbone topology are present
+- Coordination polygons and polyhedra in periodic structures
+
+Coordination geometry follows the visible bonding topology. Planar ligand
+shells are shown as polygons; non-planar shells are shown as polyhedra. When
+bonds are inferred, PQViewer uses the nearest distance shell so longer contacts
+do not inflate coordination. Dense structures show a deterministic subset to
+keep the view legible.
 
 **Overlays**
 
