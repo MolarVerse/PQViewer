@@ -4,6 +4,7 @@ export interface SearchableCommand {
   keywords?: string | readonly string[];
   detail?: string;
   disabled?: boolean;
+  discoverableWhenDisabled?: boolean;
 }
 
 export interface CommandSearchOptions {
@@ -22,27 +23,31 @@ export function searchCommandActions<T extends SearchableCommand>(
   query: string,
   options: CommandSearchOptions = {},
 ): T[] {
-  const enabled = actions.filter((action) => !action.disabled);
   const normalizedQuery = normalize(query);
 
   if (!normalizedQuery) {
     const limit = Math.min(resultLimit(options.limit), EMPTY_RESULT_LIMIT);
-    return orderedSuggestions(enabled, options).slice(0, limit);
+    return orderedSuggestions(
+      actions.filter((action) => !action.disabled),
+      options,
+    ).slice(0, limit);
   }
 
   const terms = normalizedQuery.split(" ");
   const contextRanks = idRanks(options.contextIds);
   const recentRanks = idRanks(options.recentIds);
-  const ranked = enabled.flatMap((action, index) => {
-    const score = matchScore(action, normalizedQuery, terms);
-    return score === null ? [] : [{
-      action,
-      score,
-      index,
-      contextRank: contextRanks.get(action.id),
-      recentRank: recentRanks.get(action.id),
-    }];
-  });
+  const ranked = actions
+    .filter((action) => !action.disabled || action.discoverableWhenDisabled)
+    .flatMap((action, index) => {
+      const score = matchScore(action, normalizedQuery, terms);
+      return score === null ? [] : [{
+        action,
+        score,
+        index,
+        contextRank: contextRanks.get(action.id),
+        recentRank: recentRanks.get(action.id),
+      }];
+    });
 
   ranked.sort((left, right) => (
     right.score - left.score

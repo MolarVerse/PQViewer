@@ -156,5 +156,7 @@ export interface SceneCapabilities {
   water: boolean;
   ribbon: boolean;
   ribbonReason: string;
+  polyhedra: boolean;
+  polyhedraReason: string;
   suggestedProfile: "molecule" | "protein" | "crystal";
 }

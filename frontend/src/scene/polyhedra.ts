@@ -42,6 +42,12 @@ export interface CoordinationPolyhedron {
   triangles: Array<[number, number, number]>;
 }
 
+export interface PreparedCoordinationPolyhedraTopology {
+  readonly atomCount: number;
+  readonly candidates: readonly number[];
+  readonly adjacency: ReadonlyMap<number, readonly number[]>;
+}
+
 interface FacePlane {
   normal: THREE.Vector3;
   offset: number;
@@ -60,74 +66,115 @@ interface CoordinationNeighbor {
   distance: number;
 }
 
+interface PreparedTopologyMetadata {
+  atomicNumbers: readonly number[];
+  bonds: ReadonlyArray<readonly [number, number]>;
+  selectionKey: string;
+}
+
 const DEFAULT_COLOR = new THREE.Color("#568da3");
 const EXCLUDED_AUTO_CENTERS = new Set([
   1, 2, 6, 7, 8, 9, 10, 17, 18, 35, 36, 53, 54, 85, 86,
 ]);
+const EMPTY_NEIGHBORS: readonly number[] = Object.freeze([]);
+const preparedTopologyMetadata = new WeakMap<
+  PreparedCoordinationPolyhedraTopology,
+  PreparedTopologyMetadata
+>();
+
+export function prepareCoordinationPolyhedraTopology(
+  input: CoordinationPolyhedraInput,
+  options: CoordinationPolyhedraOptions = {},
+): PreparedCoordinationPolyhedraTopology {
+  const atomCount = inputAtomCount(input);
+  const explicitCenters = options.centerAtoms !== undefined;
+  const atomicNumberFilter = coordinationCenterFilter(options);
+  const explicitCandidates = explicitCenters
+    ? normalizedAtomIndices(options.centerAtoms ?? [], atomCount)
+    : null;
+  const explicitCandidateSet = explicitCandidates
+    ? new Set(explicitCandidates)
+    : null;
+  const adjacencySets = new Map<number, Set<number>>();
+
+  const eligible = (atom: number): boolean => {
+    if (explicitCandidateSet) return explicitCandidateSet.has(atom);
+    const atomicNumber = input.atomicNumbers[atom] ?? 0;
+    return isSuitableCoordinationCenter(atomicNumber)
+      && (!atomicNumberFilter || atomicNumberFilter.has(atomicNumber));
+  };
+  const addNeighbor = (center: number, neighbor: number): void => {
+    if (!eligible(center)) return;
+    let neighbors = adjacencySets.get(center);
+    if (!neighbors) {
+      neighbors = new Set<number>();
+      adjacencySets.set(center, neighbors);
+    }
+    neighbors.add(neighbor);
+  };
+
+  for (const bond of input.bonds) {
+    const left = bond[0];
+    const right = bond[1];
+    if (!validBond(left, right, atomCount)) continue;
+    addNeighbor(left, right);
+    addNeighbor(right, left);
+  }
+
+  const candidates = explicitCandidates
+    ?? [...adjacencySets.keys()].sort((left, right) => left - right);
+  const adjacency = new Map<number, readonly number[]>();
+  for (const [center, neighbors] of adjacencySets) {
+    adjacency.set(center, Object.freeze([...neighbors]));
+  }
+  const topology: PreparedCoordinationPolyhedraTopology = Object.freeze({
+    atomCount,
+    candidates: Object.freeze(candidates),
+    adjacency,
+  });
+  preparedTopologyMetadata.set(topology, {
+    atomicNumbers: input.atomicNumbers,
+    bonds: input.bonds,
+    selectionKey: coordinationCenterSelectionKey(options, atomCount),
+  });
+  return topology;
+}
 
 export function inferCoordinationPolyhedra(
   input: CoordinationPolyhedraInput,
   options: CoordinationPolyhedraOptions = {},
+  topology?: PreparedCoordinationPolyhedraTopology,
 ): CoordinationPolyhedron[] {
-  const atomCount = Math.min(
-    input.atomicNumbers.length,
-    Math.floor(input.positions.length / 3),
-  );
+  const atomCount = inputAtomCount(input);
   if (atomCount < 2) return [];
 
-  const maxCoordination = boundedInteger(
-    options.maxCoordination,
-    3,
-    MAX_COORDINATION_NUMBER,
-    12,
-  );
   const maxCenters = boundedInteger(
     options.maxCenters,
     1,
     MAX_COORDINATION_CENTERS,
     MAX_COORDINATION_CENTERS,
   );
-  const adjacency = bondAdjacency(input.bonds, atomCount);
-  const explicitCenters = options.centerAtoms !== undefined;
-  const atomicNumberFilter = options.centerAtomicNumbers
-    ? new Set(options.centerAtomicNumbers.filter(Number.isInteger))
-    : null;
-  const candidates = explicitCenters
-    ? normalizedAtomIndices(options.centerAtoms ?? [], atomCount)
-    : autoCenterAtoms(input.atomicNumbers, adjacency, atomicNumberFilter);
-  const sampledCandidates = evenlySample(
-    candidates,
-    Math.min(MAX_COORDINATION_CANDIDATES, Math.max(maxCenters * 4, maxCenters)),
-  );
-  const polyhedra: CoordinationPolyhedron[] = [];
-
-  for (const centerAtom of sampledCandidates) {
-    const neighbors = coordinationShell(
-      input,
-      centerAtom,
-      [...adjacency[centerAtom]],
-      maxCoordination,
-    );
-    if (neighbors.length < 3) continue;
-    if (
-      atomicNumberFilter
-      && !atomicNumberFilter.has(input.atomicNumbers[centerAtom] ?? 0)
-    ) continue;
-    if (
-      !explicitCenters
-      && !isSuitableCoordinationCenter(input.atomicNumbers[centerAtom] ?? 0)
-    ) continue;
-    const polyhedron = coordinationPolyhedron(input, centerAtom, neighbors);
-    if (polyhedron) polyhedra.push(polyhedron);
-  }
+  const polyhedra = [...coordinationPolyhedronCandidates(input, options, topology)];
   return spatiallySamplePolyhedra(polyhedra, input.positions, maxCenters);
+}
+
+export function hasCoordinationPolyhedra(
+  input: CoordinationPolyhedraInput,
+  options: CoordinationPolyhedraOptions = {},
+  topology?: PreparedCoordinationPolyhedraTopology,
+): boolean {
+  for (const polyhedron of coordinationPolyhedronCandidates(input, options, topology)) {
+    if (polyhedron) return true;
+  }
+  return false;
 }
 
 export function buildCoordinationPolyhedraGeometry(
   input: CoordinationPolyhedraInput,
   options: CoordinationPolyhedraOptions = {},
+  topology?: PreparedCoordinationPolyhedraTopology,
 ): THREE.BufferGeometry | null {
-  const polyhedra = inferCoordinationPolyhedra(input, options);
+  const polyhedra = inferCoordinationPolyhedra(input, options, topology);
   if (polyhedra.length === 0) return null;
 
   const images = normalizedImages(options.images);
@@ -242,6 +289,112 @@ export function isSuitableCoordinationCenter(atomicNumber: number): boolean {
     && atomicNumber > 0
     && atomicNumber <= 118
     && !EXCLUDED_AUTO_CENTERS.has(atomicNumber);
+}
+
+function* coordinationPolyhedronCandidates(
+  input: CoordinationPolyhedraInput,
+  options: CoordinationPolyhedraOptions,
+  topology: PreparedCoordinationPolyhedraTopology | undefined,
+): Generator<CoordinationPolyhedron> {
+  const atomCount = inputAtomCount(input);
+  if (atomCount < 2) return;
+
+  const maxCoordination = boundedInteger(
+    options.maxCoordination,
+    3,
+    MAX_COORDINATION_NUMBER,
+    12,
+  );
+  const maxCenters = boundedInteger(
+    options.maxCenters,
+    1,
+    MAX_COORDINATION_CENTERS,
+    MAX_COORDINATION_CENTERS,
+  );
+  const prepared = compatiblePreparedTopology(input, options, topology)
+    ?? prepareCoordinationPolyhedraTopology(input, options);
+  const explicitCenters = options.centerAtoms !== undefined;
+  const atomicNumberFilter = coordinationCenterFilter(options);
+  const sampledCandidates = evenlySample(
+    prepared.candidates,
+    Math.min(MAX_COORDINATION_CANDIDATES, Math.max(maxCenters * 4, maxCenters)),
+  );
+
+  for (const centerAtom of sampledCandidates) {
+    const neighbors = coordinationShell(
+      input,
+      centerAtom,
+      prepared.adjacency.get(centerAtom) ?? EMPTY_NEIGHBORS,
+      maxCoordination,
+    );
+    if (neighbors.length < 3) continue;
+    if (
+      atomicNumberFilter
+      && !atomicNumberFilter.has(input.atomicNumbers[centerAtom] ?? 0)
+    ) continue;
+    if (
+      !explicitCenters
+      && !isSuitableCoordinationCenter(input.atomicNumbers[centerAtom] ?? 0)
+    ) continue;
+    const polyhedron = coordinationPolyhedron(input, centerAtom, neighbors);
+    if (polyhedron) yield polyhedron;
+  }
+}
+
+function compatiblePreparedTopology(
+  input: CoordinationPolyhedraInput,
+  options: CoordinationPolyhedraOptions,
+  topology: PreparedCoordinationPolyhedraTopology | undefined,
+): PreparedCoordinationPolyhedraTopology | null {
+  if (!topology) return null;
+  const atomCount = inputAtomCount(input);
+  const metadata = preparedTopologyMetadata.get(topology);
+  if (
+    topology.atomCount !== atomCount
+    || metadata?.atomicNumbers !== input.atomicNumbers
+    || metadata.bonds !== input.bonds
+    || metadata.selectionKey !== coordinationCenterSelectionKey(options, atomCount)
+  ) return null;
+  return topology;
+}
+
+function inputAtomCount(input: CoordinationPolyhedraInput): number {
+  return Math.min(
+    input.atomicNumbers.length,
+    Math.floor(input.positions.length / 3),
+  );
+}
+
+function coordinationCenterFilter(
+  options: CoordinationPolyhedraOptions,
+): ReadonlySet<number> | null {
+  return options.centerAtomicNumbers
+    ? new Set(options.centerAtomicNumbers.filter(Number.isInteger))
+    : null;
+}
+
+function coordinationCenterSelectionKey(
+  options: CoordinationPolyhedraOptions,
+  atomCount: number,
+): string {
+  const centers = options.centerAtoms === undefined
+    ? "auto"
+    : `explicit:${normalizedAtomIndices(options.centerAtoms, atomCount).join(",")}`;
+  const filter = coordinationCenterFilter(options);
+  const atomicNumbers = filter
+    ? [...filter].sort((left, right) => left - right).join(",")
+    : "*";
+  return `${centers}|${atomicNumbers}`;
+}
+
+function validBond(left: number, right: number, atomCount: number): boolean {
+  return Number.isInteger(left)
+    && Number.isInteger(right)
+    && left >= 0
+    && right >= 0
+    && left < atomCount
+    && right < atomCount
+    && left !== right;
 }
 
 function coordinationPolyhedron(
@@ -488,24 +641,6 @@ function pointCloudScale(points: readonly THREE.Vector3[]): number {
   return maximum;
 }
 
-function autoCenterAtoms(
-  atomicNumbers: readonly number[],
-  adjacency: readonly Set<number>[],
-  filter: ReadonlySet<number> | null,
-): number[] {
-  const result: number[] = [];
-  const count = Math.min(atomicNumbers.length, adjacency.length);
-  for (let atom = 0; atom < count; atom += 1) {
-    const atomicNumber = atomicNumbers[atom] ?? 0;
-    if (
-      adjacency[atom].size >= 1
-      && isSuitableCoordinationCenter(atomicNumber)
-      && (!filter || filter.has(atomicNumber))
-    ) result.push(atom);
-  }
-  return result;
-}
-
 function coordinationShell(
   input: CoordinationPolyhedraInput,
   centerAtom: number,
@@ -570,29 +705,6 @@ function periodicNeighborPoints(
 
 function pointKey(point: THREE.Vector3): string {
   return `${Math.round(point.x * 1e5)}:${Math.round(point.y * 1e5)}:${Math.round(point.z * 1e5)}`;
-}
-
-function bondAdjacency(
-  bonds: ReadonlyArray<readonly [number, number]>,
-  atomCount: number,
-): Set<number>[] {
-  const adjacency = Array.from({ length: atomCount }, () => new Set<number>());
-  for (const bond of bonds) {
-    const left = bond[0];
-    const right = bond[1];
-    if (
-      !Number.isInteger(left)
-      || !Number.isInteger(right)
-      || left < 0
-      || right < 0
-      || left >= atomCount
-      || right >= atomCount
-      || left === right
-    ) continue;
-    adjacency[left].add(right);
-    adjacency[right].add(left);
-  }
-  return adjacency;
 }
 
 function normalizedAtomIndices(values: readonly number[], atomCount: number): number[] {

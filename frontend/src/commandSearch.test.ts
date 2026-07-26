@@ -71,13 +71,21 @@ describe("command suggestions", () => {
 });
 
 describe("command matching", () => {
-  it("omits disabled actions even when they match", () => {
+  it("shows disabled actions only when their reason should remain discoverable", () => {
     const result = searchCommandActions([
       { id: "show", label: "Show forces" },
-      { id: "hide", label: "Hide forces", disabled: true },
+      {
+        id: "hide",
+        label: "Hide forces",
+        detail: "No force data",
+        disabled: true,
+        discoverableWhenDisabled: true,
+      },
+      { id: "pause", label: "Pause forces", disabled: true },
     ], "forces");
 
-    expect(result.map(({ id }) => id)).toEqual(["show"]);
+    expect(result.map(({ id }) => id)).toEqual(["show", "hide"]);
+    expect(result[1].detail).toBe("No force data");
   });
 
   it("matches every query term across labels, keywords, and details", () => {

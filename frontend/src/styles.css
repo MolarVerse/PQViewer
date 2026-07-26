@@ -1366,7 +1366,7 @@ input[type="range"]::-moz-range-thumb {
   background: var(--accent-soft);
 }
 
-.command-results > button:disabled {
+.command-results > button[aria-disabled="true"] {
   color: var(--disabled);
   cursor: default;
 }
@@ -1374,6 +1374,14 @@ input[type="range"]::-moz-range-thumb {
 .command-results > button kbd {
   color: var(--quiet);
   font-size: 10px;
+}
+
+.command-results > button small {
+  max-width: 56%;
+  color: var(--quiet);
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: right;
 }
 
 .command-results > p {
@@ -6186,11 +6194,6 @@ button.measurement-plot__legend-item:hover {
 
 .selection-summary-panel .readout-section {
   padding-top: 4px;
-}
-
-.command-results button:disabled {
-  opacity: 0.42;
-  cursor: default;
 }
 
 @media (max-width: 760px) {

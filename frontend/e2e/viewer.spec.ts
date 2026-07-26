@@ -13,6 +13,12 @@ const pqInputFixture = path.join(repositoryRoot, "examples/periodic-boundary.in"
 const crossingFixture = path.join(repositoryRoot, "examples/periodic-crossing.extxyz");
 const acofFixture = path.join(repositoryRoot, "examples/acof-triclinic.xyz");
 const waterFixture = path.join(repositoryRoot, "examples/water.xyz");
+const naclFixture = path.join(
+  repositoryRoot,
+  "docs/assets/sources/nacl.extxyz",
+);
+const polyhedraRequirement =
+  "Requires a supported center with 3+ bonded ligands";
 
 test.afterEach(async ({ request }) => {
   const response = await request.post("/api/open", {
@@ -78,6 +84,21 @@ function changedPixelCount(bytes: Buffer): number {
   return changed;
 }
 
+function differentPixelCount(leftBytes: Buffer, rightBytes: Buffer): number {
+  const left = PNG.sync.read(leftBytes);
+  const right = PNG.sync.read(rightBytes);
+  expect([right.width, right.height]).toEqual([left.width, left.height]);
+  let changed = 0;
+  for (let index = 0; index < left.data.length; index += 4) {
+    const difference = Math.abs(left.data[index] - right.data[index])
+      + Math.abs(left.data[index + 1] - right.data[index + 1])
+      + Math.abs(left.data[index + 2] - right.data[index + 2])
+      + Math.abs(left.data[index + 3] - right.data[index + 3]);
+    if (difference > 24) changed += 1;
+  }
+  return changed;
+}
+
 function littleEndianTiffTag(bytes: Buffer, tag: number): {
   type: number;
   count: number;
@@ -98,7 +119,9 @@ function littleEndianTiffTag(bytes: Buffer, tag: number): {
   return null;
 }
 
-test("restores a figure recipe and exports an exact TIFF", async ({ page }) => {
+test("restores a figure recipe, rejects unsupported polyhedra, and exports an exact TIFF", async ({
+  page,
+}) => {
   const errors = collectBrowserErrors(page);
   await openPeriodicFixture(page);
 
@@ -225,6 +248,34 @@ test("restores a figure recipe and exports an exact TIFF", async ({ page }) => {
   await page.getByRole("button", { name: "Show display controls" }).click();
   await expect(page.getByRole("button", { name: "Ball + stick" }))
     .toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+
+  const unsupportedPolyhedraRecipe = structuredClone(firstRecipe);
+  unsupportedPolyhedraRecipe.scene.presentation.mode = "polyhedra";
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await page.getByRole("button", { name: "Lines", exact: true }).click();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  const unsupportedPolyhedraChooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "open figure recipe",
+  );
+  await page.keyboard.press("Enter");
+  await (await unsupportedPolyhedraChooser).setFiles({
+    name: "unsupported-polyhedra.pqfigure.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(unsupportedPolyhedraRecipe)),
+  });
+  await expect(page.locator(".notice")).toContainText(
+    `Polyhedra unavailable · ${polyhedraRequirement}`,
+  );
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await expect(page.getByRole("button", { name: "Lines", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", {
+    name: "Polyhedra",
+    exact: true,
+  })).toBeDisabled();
   await page.getByRole("button", { name: "Close", exact: true }).click();
 
   const invalidLabelRecipe = structuredClone(firstRecipe);
@@ -701,6 +752,74 @@ test("opens display controls and exports a publication PNG", async ({ page }) =>
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("periodic-boundary-2400x1800.png");
 
+  const file = await download.path();
+  expect(file).not.toBeNull();
+  const png = await readFile(file!);
+  expect(png.subarray(1, 4).toString()).toBe("PNG");
+  expect(png.readUInt32BE(16)).toBe(2400);
+  expect(png.readUInt32BE(20)).toBe(1800);
+  expect(changedPixelCount(png)).toBeGreaterThan(10_000);
+  expect(errors).toEqual([]);
+});
+
+test("disables unsupported polyhedra with an explicit reason", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  const polyhedra = page.getByRole("button", {
+    name: "Polyhedra",
+    exact: true,
+  });
+  await expect(polyhedra).toBeDisabled();
+  await expect(polyhedra).toHaveAttribute(
+    "aria-describedby",
+    "polyhedra-requirement",
+  );
+  await expect(page.locator("#polyhedra-requirement")).toHaveText(
+    `Polyhedra · ${polyhedraRequirement}`,
+  );
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+
+  await page.getByRole("button", { name: "Search commands" }).click();
+  await page.getByRole("combobox", { name: "Search commands" }).fill(
+    "polyhedra",
+  );
+  const command = page.getByRole("option", {
+    name: /Representation · Polyhedra/,
+  });
+  await expect(command).toBeVisible();
+  await expect(command).toHaveAttribute("aria-disabled", "true");
+  await expect(command).toContainText(polyhedraRequirement);
+  expect(errors).toEqual([]);
+});
+
+test("renders and exports supported NaCl polyhedra", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+  await openFixture(page, naclFixture, "nacl.extxyz");
+
+  const canvas = page.locator("canvas");
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  const polyhedra = page.getByRole("button", {
+    name: "Polyhedra",
+    exact: true,
+  });
+  await expect(polyhedra).toBeEnabled();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  const ballStick = await canvas.screenshot();
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await polyhedra.click();
+  await expect(polyhedra).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect.poll(
+    async () => differentPixelCount(ballStick, await canvas.screenshot()),
+  ).toBeGreaterThan(2_000);
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Figure", exact: true }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("nacl-2400x1800.png");
   const file = await download.path();
   expect(file).not.toBeNull();
   const png = await readFile(file!);
