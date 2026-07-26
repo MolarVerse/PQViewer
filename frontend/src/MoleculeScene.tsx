@@ -2,8 +2,13 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { frameArray } from "./api";
+import type {
+  FigureAnnotation,
+  FigureBackground,
+  FigureCorner,
+} from "./figureRecipe";
 import {
-  encodeRgbaPng,
+  flipRgbaRowsInPlace,
   hasVisiblePngContent,
   MAX_PNG_EXPORT_PIXELS,
   pngExportAoScale,
@@ -11,12 +16,15 @@ import {
   resolvePngExportOptions,
 } from "./scene/pngExport";
 import type { PngExportLimits, PngExportOptions, ResolvedPngExportOptions } from "./scene/pngExport";
+import { encodeFigurePng, encodeFigureTiff } from "./scene/figureEncoding";
 import { publicationCamera, publicationContextUsesPoints } from "./scene/publication";
+import { loadPublicationFont } from "./scene/publicationFont";
 import {
   backboneResidues,
   cellImageCorners,
   centeredFramePositions,
   detectWaterAtoms,
+  fractionalStructureCenter,
   framePbc,
   frameGeometryLayout,
   hasFrameCell,
@@ -31,6 +39,7 @@ import {
   prepareTopology,
   publicationBondGeometry,
   sameFrameGeometryLayout,
+  transformDisplayVector,
   unwrapPointNear,
   usesHighDetailGeometry,
   usesPointAtoms,
@@ -52,25 +61,82 @@ import type {
   SceneCapabilities,
   ScenePresentation,
 } from "./types";
+import type { SceneSelectionContext } from "./scientificSelection";
 
 type GtaoPassConstructor = typeof import("three/examples/jsm/postprocessing/GTAOPass.js").GTAOPass;
 type LineMaterialConstructor = typeof import("three/examples/jsm/lines/LineMaterial.js").LineMaterial;
 type LineSegments2Constructor = typeof import("three/examples/jsm/lines/LineSegments2.js").LineSegments2;
 type LineSegmentsGeometryConstructor = typeof import("three/examples/jsm/lines/LineSegmentsGeometry.js").LineSegmentsGeometry;
 
+const MAX_SELECTION_RING_MARKERS = 512;
+export const MAX_TRAIL_ATOMS = 16;
+export const MAX_TRAIL_POINTS = 512;
+export const MAX_DISPLACEMENT_ATOMS = 32;
+
+const emptyTrajectoryOverlays: TrajectoryOverlays = Object.freeze({
+  trails: Object.freeze([]),
+  displacements: Object.freeze([]),
+});
+
+export interface SelectionMarkerState {
+  mode: "rings" | "points";
+  pointCapacity: number;
+  reusePointBuffer: boolean;
+  clearRingMarkers: boolean;
+}
+
+export interface SelectionRenderState {
+  selection: THREE.Group;
+  selectionGeometry: THREE.RingGeometry;
+  selectionMaterial: THREE.MeshBasicMaterial;
+  selectionPoints: THREE.Points;
+  instanceToAtom: Uint32Array;
+  instanceImages: Int8Array;
+  baseImages: Int32Array;
+  model: PreparedScene | null;
+}
+
+export function selectionMarkerState(
+  selectedCount: number,
+  instanceCount: number,
+  currentPointCapacity: number | null,
+): SelectionMarkerState {
+  const mode = selectedCount > MAX_SELECTION_RING_MARKERS ? "points" : "rings";
+  const pointCapacity = mode === "points"
+    ? Math.min(selectedCount, instanceCount)
+    : 0;
+  return {
+    mode,
+    pointCapacity,
+    reusePointBuffer: mode === "points"
+      && currentPointCapacity !== null
+      && currentPointCapacity >= pointCapacity,
+    clearRingMarkers: mode === "points",
+  };
+}
+
 export {
   centeredFramePositions,
+  fractionalStructureCenter,
   framePbc,
   hasFrameCell,
   periodicBondSegments,
 } from "./scene/model";
 export type { PngExportOptions } from "./scene/pngExport";
 
+interface SelectionRectangle {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 interface MoleculeSceneProps {
   manifest: Manifest;
   frame: FrameData | null;
   presentation: ScenePresentation;
   selectedAtoms: AtomSelection[];
+  trajectoryOverlays?: TrajectoryOverlays;
   resetSignal: number;
   forceScale: number;
   velocityScale: number;
@@ -78,14 +144,43 @@ interface MoleculeSceneProps {
   viewPreset?: ViewPreset;
   viewSignal?: number;
   onSelect: (selection: AtomSelection | null, additive: boolean) => void;
+  onSelectMany?: (selections: AtomSelection[], additive: boolean) => void;
   onSceneInfo?: (info: RenderedSceneInfo | null) => void;
+  onSelectionContext?: (context: SceneSelectionContext | null) => void;
   onSelectionPositions?: (positions: Float64Array | null) => void;
 }
 
 export type ViewPreset = "perspective" | "xy" | "xz" | "yz";
 
+export interface SceneCameraState {
+  position: [number, number, number];
+  target: [number, number, number];
+  up: [number, number, number];
+  fov: number;
+  zoom: number;
+  near: number;
+  far: number;
+}
+
 export interface MoleculeSceneHandle {
   exportPng: (options: PngExportOptions) => Promise<Blob>;
+  exportFigure: (options: FigureExportOptions) => Promise<Blob>;
+  captureCamera: () => SceneCameraState;
+  restoreCamera: (camera: SceneCameraState) => void;
+}
+
+export interface FigureExportOptions extends PngExportOptions {
+  format?: "png" | "tiff";
+  dpi?: number;
+  background?: FigureBackground;
+  annotations?: readonly FigureAnnotation[];
+}
+
+interface ResolvedFigureExportOptions extends ResolvedPngExportOptions {
+  format: "png" | "tiff";
+  dpi: number;
+  background: FigureBackground;
+  annotations: readonly FigureAnnotation[];
 }
 
 export interface RenderedSceneInfo {
@@ -95,6 +190,26 @@ export interface RenderedSceneInfo {
   velocityCount: number;
   velocityTotal: number;
   capabilities: SceneCapabilities;
+}
+
+export interface AtomTrailOverlay {
+  id: string;
+  atom: number;
+  image: CellOffset;
+  points: Float32Array;
+}
+
+export interface AtomDisplacementOverlay {
+  id: string;
+  atom: number;
+  image: CellOffset;
+  from: [number, number, number];
+  to: [number, number, number];
+}
+
+export interface TrajectoryOverlays {
+  trails: readonly AtomTrailOverlay[];
+  displacements: readonly AtomDisplacementOverlay[];
 }
 
 export function isAdditivePick(
@@ -128,14 +243,18 @@ interface SceneState {
   forces: THREE.Group | null;
   velocities: THREE.Group | null;
   ribbon: THREE.Mesh | null;
+  trajectoryOverlays: THREE.Group;
   selection: THREE.Group;
   selectionGeometry: THREE.RingGeometry;
   selectionMaterial: THREE.MeshBasicMaterial;
+  selectionPoints: THREE.Points;
+  selectionPointsMaterial: THREE.PointsMaterial;
   keyboardFocus: THREE.Mesh;
   keyboardFocusMaterial: THREE.MeshBasicMaterial;
   pickables: THREE.Object3D[];
   instanceToAtom: Uint32Array;
   instanceImages: Int8Array;
+  baseImages: Int32Array;
   model: PreparedScene | null;
   topologyManifest: Manifest | null;
   preparedTopology: PreparedTopology | null;
@@ -147,6 +266,7 @@ interface SceneState {
   lastViewSignal: number;
   lastFittedAspect: number;
   fitContext: FitContext | null;
+  cameraMode: "fit" | "manual";
 }
 
 interface PublicationSnapshot {
@@ -169,6 +289,7 @@ interface ScenePalette {
   selectionOpacity: number;
   force: string;
   velocity: string;
+  displacement: string;
   ribbon: string;
   hemisphereSky: string;
   hemisphereGround: string;
@@ -191,6 +312,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
     selectionOpacity: 0.34,
     force: "#B8522D",
     velocity: "#6B62A8",
+    displacement: "#087F8C",
     ribbon: "#3D879D",
     hemisphereSky: "#ffffff",
     hemisphereGround: "#c6d2d5",
@@ -211,6 +333,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
     selectionOpacity: 0.42,
     force: "#f0a75a",
     velocity: "#9e98d7",
+    displacement: "#72d4df",
     ribbon: "#6cb9ca",
     hemisphereSky: "#f5f6f2",
     hemisphereGround: "#17272c",
@@ -272,6 +395,31 @@ function renderedSceneInfo(
   };
 }
 
+function sceneSelectionContext(
+  manifest: Manifest,
+  model: PreparedScene,
+): SceneSelectionContext {
+  const cell = model.basis
+    ? Float64Array.from(model.basis.vectors.flatMap((vector) => [
+        vector.x,
+        vector.y,
+        vector.z,
+      ]))
+    : null;
+  return {
+    count: model.count,
+    atomicNumbers: model.atomicNumbers,
+    positions: model.positions,
+    baseImages: model.baseImages,
+    cell,
+    bonds: model.bonds,
+    waterAtoms: model.waterAtoms,
+    instanceToAtom: model.instanceToAtom,
+    instanceImages: model.instanceImages,
+    atomResidueIndex: manifest.topology.atom_residue_index,
+  };
+}
+
 function sameRenderedSceneInfo(left: RenderedSceneInfo, right: RenderedSceneInfo): boolean {
   return left.imageCount === right.imageCount
     && left.forceCount === right.forceCount
@@ -289,6 +437,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   frame,
   presentation,
   selectedAtoms,
+  trajectoryOverlays = emptyTrajectoryOverlays,
   resetSignal,
   forceScale,
   velocityScale,
@@ -296,38 +445,70 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   viewPreset = "perspective",
   viewSignal = 0,
   onSelect,
+  onSelectMany,
   onSceneInfo,
+  onSelectionContext,
   onSelectionPositions,
 }: MoleculeSceneProps, ref) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<SceneState | null>(null);
   const selectRef = useRef(onSelect);
+  const selectManyRef = useRef(onSelectMany);
   const selectedAtomsRef = useRef(selectedAtoms);
   const sceneInfoRef = useRef(onSceneInfo);
+  const selectionContextRef = useRef(onSelectionContext);
   const selectionPositionsRef = useRef(onSelectionPositions);
   const reportedInfoRef = useRef<{ manifest: Manifest; info: RenderedSceneInfo } | null>(null);
   const exportActiveRef = useRef(false);
   const [keyboardSelection, setKeyboardSelection] = useState<AtomSelection | null>(null);
+  const [boxSelection, setBoxSelection] = useState<SelectionRectangle | null>(null);
   const keyboardSelectionRef = useRef<AtomSelection | null>(null);
   const keyboardInstanceRef = useRef<number | null>(null);
   selectRef.current = onSelect;
+  selectManyRef.current = onSelectMany;
   selectedAtomsRef.current = selectedAtoms;
   keyboardSelectionRef.current = keyboardSelection;
   sceneInfoRef.current = onSceneInfo;
+  selectionContextRef.current = onSelectionContext;
   selectionPositionsRef.current = onSelectionPositions;
 
   useImperativeHandle(ref, () => ({
     exportPng: async (options) => {
-      if (exportActiveRef.current) throw new Error("A PNG export is already in progress");
+      if (exportActiveRef.current) throw new Error("A figure export is already in progress");
       const state = stateRef.current;
       if (!state?.model) throw new Error("The molecular scene is not ready to export");
       const snapshot = capturePublicationSnapshot(state);
       exportActiveRef.current = true;
       try {
-        return await exportScenePng(state.renderer, snapshot, options);
+        return await exportSceneFigure(state.renderer, snapshot, {
+          ...options,
+          format: "png",
+        });
       } finally {
         exportActiveRef.current = false;
       }
+    },
+    exportFigure: async (options) => {
+      if (exportActiveRef.current) throw new Error("A figure export is already in progress");
+      const state = stateRef.current;
+      if (!state?.model) throw new Error("The molecular scene is not ready to export");
+      const snapshot = capturePublicationSnapshot(state);
+      exportActiveRef.current = true;
+      try {
+        return await exportSceneFigure(state.renderer, snapshot, options);
+      } finally {
+        exportActiveRef.current = false;
+      }
+    },
+    captureCamera: () => {
+      const state = stateRef.current;
+      if (!state) throw new Error("The molecular scene is not ready");
+      return captureCameraState(state.camera, state.controls.target);
+    },
+    restoreCamera: (camera) => {
+      const state = stateRef.current;
+      if (!state) throw new Error("The molecular scene is not ready");
+      restoreCameraState(state, camera);
     },
   }), []);
 
@@ -372,6 +553,22 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       depthTest: false,
     });
     root.add(selection);
+    const selectionPointsMaterial = new THREE.PointsMaterial({
+      color: palette.selection,
+      size: 7,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+    });
+    const selectionPoints = new THREE.Points(
+      new THREE.BufferGeometry(),
+      selectionPointsMaterial,
+    );
+    selectionPoints.renderOrder = 10;
+    selectionPoints.frustumCulled = false;
+    selectionPoints.visible = false;
+    root.add(selectionPoints);
     const keyboardFocusMaterial = new THREE.MeshBasicMaterial({
       color: palette.selection,
       transparent: true,
@@ -383,6 +580,9 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     keyboardFocus.renderOrder = 11;
     keyboardFocus.visible = false;
     root.add(keyboardFocus);
+    const trajectoryOverlayGroup = new THREE.Group();
+    trajectoryOverlayGroup.renderOrder = 7;
+    root.add(trajectoryOverlayGroup);
     const state: SceneState = {
       renderer,
       scene,
@@ -398,14 +598,18 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       forces: null,
       velocities: null,
       ribbon: null,
+      trajectoryOverlays: trajectoryOverlayGroup,
       selection,
       selectionGeometry,
       selectionMaterial,
+      selectionPoints,
+      selectionPointsMaterial,
       keyboardFocus,
       keyboardFocusMaterial,
       pickables: [],
       instanceToAtom: new Uint32Array(),
       instanceImages: new Int8Array(),
+      baseImages: new Int32Array(),
       model: null,
       topologyManifest: null,
       preparedTopology: null,
@@ -417,8 +621,13 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       lastViewSignal: viewSignal,
       lastFittedAspect: 1,
       fitContext: null,
+      cameraMode: "fit",
     };
     stateRef.current = state;
+    const markCameraManual = () => {
+      state.cameraMode = "manual";
+    };
+    controls.addEventListener("start", markCameraManual);
 
     let renderWidth = 0;
     let renderHeight = 0;
@@ -434,7 +643,11 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       renderer.setDrawingBufferSize(width, height, pixelRatio);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      if (state.fitContext && Math.abs(Math.log(camera.aspect / state.lastFittedAspect)) > 0.06) {
+      if (
+        state.cameraMode === "fit"
+        && state.fitContext
+        && Math.abs(Math.log(camera.aspect / state.lastFittedAspect)) > 0.06
+      ) {
         fitCamera(state, state.fitContext);
       }
     };
@@ -445,27 +658,12 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
 
     const pointerStart = new THREE.Vector2();
     let pickPointerId: number | null = null;
+    let boxPointerId: number | null = null;
     let multiPointerGesture = false;
     const pointer = new THREE.Vector2();
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points!.threshold = 0.24;
-    const onPointerDown = (event: PointerEvent) => {
-      if (pickPointerId !== null && event.pointerId !== pickPointerId) {
-        multiPointerGesture = true;
-        return;
-      }
-      if (!event.isPrimary) return;
-      pickPointerId = event.pointerId;
-      multiPointerGesture = false;
-      pointerStart.set(event.clientX, event.clientY);
-    };
-    const onPointerUp = (event: PointerEvent) => {
-      if (event.pointerId !== pickPointerId) return;
-      pickPointerId = null;
-      const moved = pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5;
-      const gesture = multiPointerGesture;
-      multiPointerGesture = false;
-      if (moved || gesture) return;
+    const pickAt = (event: PointerEvent, additive = isAdditivePick(event)) => {
       const bounds = canvas.getBoundingClientRect();
       pointer.set(
         ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
@@ -481,15 +679,98 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
           : null;
         setKeyboardSelection(picked);
       }
-      selectRef.current(
-        picked,
-        isAdditivePick(event),
-      );
+      selectRef.current(picked, additive);
+    };
+    const resetBoxSelection = () => {
+      if (boxPointerId !== null && canvas.hasPointerCapture(boxPointerId)) {
+        canvas.releasePointerCapture(boxPointerId);
+      }
+      boxPointerId = null;
+      controls.enabled = true;
+      setBoxSelection(null);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        event.pointerType === "mouse"
+        && event.button === 0
+        && event.shiftKey
+        && boxPointerId === null
+      ) {
+        boxPointerId = event.pointerId;
+        pointerStart.set(event.clientX, event.clientY);
+        controls.enabled = false;
+        canvas.setPointerCapture(event.pointerId);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (pickPointerId !== null && event.pointerId !== pickPointerId) {
+        multiPointerGesture = true;
+        return;
+      }
+      if (!event.isPrimary) return;
+      pickPointerId = event.pointerId;
+      multiPointerGesture = false;
+      pointerStart.set(event.clientX, event.clientY);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerId !== boxPointerId) return;
+      const bounds = canvas.getBoundingClientRect();
+      const left = Math.max(bounds.left, Math.min(pointerStart.x, event.clientX));
+      const right = Math.min(bounds.right, Math.max(pointerStart.x, event.clientX));
+      const top = Math.max(bounds.top, Math.min(pointerStart.y, event.clientY));
+      const bottom = Math.min(bounds.bottom, Math.max(pointerStart.y, event.clientY));
+      if (pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5) {
+        setBoxSelection({
+          left,
+          top,
+          width: Math.max(0, right - left),
+          height: Math.max(0, bottom - top),
+        });
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (event.pointerId === boxPointerId) {
+        const moved = pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5;
+        if (moved) {
+          selectManyRef.current?.(
+            selectionsInRectangle(state, canvas.getBoundingClientRect(), pointerStart, {
+              x: event.clientX,
+              y: event.clientY,
+            }),
+            true,
+          );
+        } else {
+          pickAt(event, true);
+        }
+        resetBoxSelection();
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (event.pointerId !== pickPointerId) return;
+      pickPointerId = null;
+      const moved = pointerStart.distanceTo(new THREE.Vector2(event.clientX, event.clientY)) > 5;
+      const gesture = multiPointerGesture;
+      multiPointerGesture = false;
+      if (moved || gesture) return;
+      pickAt(event);
     };
     const onPointerCancel = (event: PointerEvent) => {
+      if (event.pointerId === boxPointerId) {
+        resetBoxSelection();
+        return;
+      }
       if (event.pointerId !== pickPointerId) return;
       pickPointerId = null;
       multiPointerGesture = false;
+    };
+    const onWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || boxPointerId === null) return;
+      resetBoxSelection();
+      event.preventDefault();
     };
     const updateKeyboardSelection = (
       selection: AtomSelection | null,
@@ -507,6 +788,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
         selectedAtomsRef.current.at(-1) ?? null,
         null,
         0,
+        state.baseImages,
       );
       updateKeyboardSelection(cursor?.selection ?? null, cursor?.instance ?? null);
     };
@@ -526,6 +808,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
           keyboardSelectionRef.current,
           keyboardInstanceRef.current,
           direction,
+          state.baseImages,
         );
         updateKeyboardSelection(cursor?.selection ?? null, cursor?.instance ?? null);
         return;
@@ -539,17 +822,20 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
         keyboardSelectionRef.current ?? selectedAtomsRef.current.at(-1) ?? null,
         keyboardInstanceRef.current,
         0,
+        state.baseImages,
       );
       if (!cursor) return;
       updateKeyboardSelection(cursor.selection, cursor.instance);
       selectRef.current(cursor.selection, true);
     };
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointercancel", onPointerCancel);
+    canvas.addEventListener("pointerdown", onPointerDown, true);
+    canvas.addEventListener("pointermove", onPointerMove, true);
+    canvas.addEventListener("pointerup", onPointerUp, true);
+    canvas.addEventListener("pointercancel", onPointerCancel, true);
     canvas.addEventListener("focus", onFocus);
     canvas.addEventListener("blur", onBlur);
     canvas.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onWindowKeyDown);
     renderer.setAnimationLoop(() => {
       controls.update();
       selection.children.forEach((marker) => {
@@ -563,22 +849,31 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       renderer.setAnimationLoop(null);
       observer.disconnect();
       window.removeEventListener("resize", resize);
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointerup", onPointerUp);
-      canvas.removeEventListener("pointercancel", onPointerCancel);
+      canvas.removeEventListener("pointerdown", onPointerDown, true);
+      canvas.removeEventListener("pointermove", onPointerMove, true);
+      canvas.removeEventListener("pointerup", onPointerUp, true);
+      canvas.removeEventListener("pointercancel", onPointerCancel, true);
       canvas.removeEventListener("focus", onFocus);
       canvas.removeEventListener("blur", onBlur);
       canvas.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onWindowKeyDown);
+      controls.removeEventListener("start", markCameraManual);
       controls.dispose();
       root.remove(selection);
+      root.remove(selectionPoints);
       root.remove(keyboardFocus);
+      root.remove(trajectoryOverlayGroup);
       disposeObject(root);
+      disposeObject(trajectoryOverlayGroup);
       selection.clear();
       selectionGeometry.dispose();
       selectionMaterial.dispose();
+      selectionPoints.geometry.dispose();
+      selectionPointsMaterial.dispose();
       keyboardFocusMaterial.dispose();
       renderer.dispose();
       stateRef.current = null;
+      selectionContextRef.current?.(null);
       selectionPositionsRef.current?.(null);
     };
   }, []);
@@ -604,6 +899,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
         reportedInfoRef.current = null;
         sceneInfoRef.current?.(null);
       }
+      selectionContextRef.current?.(null);
       return;
     }
     const forces = frameArray(frame, ["forces", "force"]);
@@ -654,9 +950,11 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     state.model = model;
     state.instanceToAtom = model.instanceToAtom;
     state.instanceImages = model.instanceImages;
+    state.baseImages = model.baseImages;
     state.renderTopology = state.preparedTopology;
     state.renderConfigKey = configKey;
     state.frameLayout = frameLayout;
+    selectionContextRef.current?.(sceneSelectionContext(manifest, model));
 
     const fitContext = { model, presentation, preset: viewPreset };
     state.fitContext = fitContext;
@@ -684,7 +982,20 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
 
   useEffect(() => {
     const state = stateRef.current;
-    const positions = state ? updateSelection(state, selectedAtoms) : null;
+    if (!state) return;
+    updateTrajectoryOverlayGroup(
+      state.trajectoryOverlays,
+      state.model,
+      trajectoryOverlays,
+      appearance,
+    );
+  }, [appearance, frame, presentation, trajectoryOverlays]);
+
+  useEffect(() => {
+    const state = stateRef.current;
+    const positions = state
+      ? updateSelectionMarkers(state, selectedAtoms, Boolean(selectionPositionsRef.current))
+      : null;
     let resolved = keyboardSelection;
     let resolvedInstance = keyboardInstanceRef.current;
     const canvasFocused = document.activeElement === canvasRef.current;
@@ -700,6 +1011,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
         selectedAtoms.at(-1) ?? null,
         null,
         0,
+        state.baseImages,
       );
       resolved = cursor?.selection ?? null;
       resolvedInstance = cursor?.instance ?? null;
@@ -715,9 +1027,6 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       setKeyboardSelection(resolved);
     }
     selectionPositionsRef.current?.(positions);
-    if (selectedAtoms.length > 0 && positions === null) {
-      selectRef.current(null, false);
-    }
   }, [frame, keyboardSelection, presentation, selectedAtoms]);
 
   const keyboardLabel = keyboardSelection
@@ -726,13 +1035,21 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   return <>
     <canvas
       ref={canvasRef}
-      className="molecule-canvas"
+      className={boxSelection ? "molecule-canvas is-box-selecting" : "molecule-canvas"}
       role="region"
       aria-label="Molecular structure"
-      aria-description="Use Up and Down to browse visible atoms. Press Enter to toggle an atom selection."
+      aria-description="Use Up and Down to browse visible atoms. Press Enter to toggle an atom selection. Shift-drag to select a box."
       aria-keyshortcuts="ArrowUp ArrowDown Enter"
       tabIndex={0}
     />
+    {boxSelection && (
+      <div
+        className="selection-marquee"
+        data-testid="selection-marquee"
+        style={boxSelection}
+        aria-hidden="true"
+      />
+    )}
     <span className="sr-only" aria-live="polite">
       {keyboardLabel ? `${keyboardLabel}. Press Enter to toggle selection.` : ""}
     </span>
@@ -749,6 +1066,8 @@ function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
     manifest,
     presentation: {
       ...presentation,
+      cellOrigin: [...presentation.cellOrigin] as CellOffset,
+      mirror: [...presentation.mirror] as [boolean, boolean, boolean],
       images: {
         min: [...presentation.images.min] as CellOffset,
         max: [...presentation.images.max] as CellOffset,
@@ -761,9 +1080,13 @@ function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
   };
 }
 
-async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: PublicationSnapshot, options: PngExportOptions): Promise<Blob> {
+async function exportSceneFigure(
+  renderer: THREE.WebGLRenderer,
+  snapshot: PublicationSnapshot,
+  options: FigureExportOptions,
+): Promise<Blob> {
   const gl = renderer.getContext();
-  if (gl.isContextLost()) throw new Error("PNG export is unavailable because the WebGL context was lost");
+  if (gl.isContextLost()) throw new Error("Figure export is unavailable because the WebGL context was lost");
   const [
     { GTAOPass },
     { OutputPass },
@@ -779,7 +1102,7 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
     import("three/examples/jsm/lines/LineSegments2.js"),
     import("three/examples/jsm/lines/LineSegmentsGeometry.js"),
   ]);
-  const resolved = resolvePngExportOptions(options, rendererPngLimits(renderer, gl));
+  const resolved = resolveFigureExportOptions(options, rendererPngLimits(renderer, gl));
   const publication = buildPublicationScene(snapshot, resolved, { LineMaterial, LineSegments2, LineSegmentsGeometry });
   const camera = publicationCamera(
     publication.root,
@@ -840,7 +1163,7 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
     : null;
   const outputPass = new OutputPass();
   outputPass.renderToScreen = false;
-  configurePublicationOutput(outputPass, resolved.transparent);
+  configurePublicationOutput(outputPass, resolved.background);
 
   const previousTarget = renderer.getRenderTarget();
   const previousCubeFace = renderer.getActiveCubeFace();
@@ -889,6 +1212,11 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
     renderer.readRenderTargetPixels(outputTarget, 0, 0, resolved.width, resolved.height, pixels);
     const error = gl.getError();
     if (error !== gl.NO_ERROR) throw new Error(webGlExportError(error, gl));
+    if (!hasVisiblePngContent(pixels, resolved.transparent)) {
+      throw new Error("the rendered image was blank");
+    }
+    flipRgbaRowsInPlace(pixels, resolved.width, resolved.height);
+    await applyFigureAnnotations(pixels, publication, camera, snapshot, resolved);
   } catch (error) {
     renderError = error;
   } finally {
@@ -917,12 +1245,371 @@ async function exportScenePng(renderer: THREE.WebGLRenderer, snapshot: Publicati
 
   if (renderError) {
     const detail = renderError instanceof Error ? renderError.message : "unknown rendering error";
-    throw new Error(`PNG export failed: ${detail}`);
+    throw new Error(`Figure export failed: ${detail}`);
   }
-  if (!hasVisiblePngContent(pixels, resolved.transparent)) {
-    throw new Error("PNG export failed because the rendered image was blank");
+  return resolved.format === "tiff"
+    ? encodeFigureTiff(pixels, resolved)
+    : encodeFigurePng(pixels, resolved);
+}
+
+function resolveFigureExportOptions(
+  options: FigureExportOptions,
+  limits: PngExportLimits,
+): ResolvedFigureExportOptions {
+  const background = options.background ?? (
+    options.transparent
+      ? { kind: "transparent" as const }
+      : { kind: "solid" as const, color: "#ffffff" }
+  );
+  if (
+    background.kind === "solid"
+    && !/^#[0-9a-f]{6}$/i.test(background.color)
+  ) {
+    throw new Error("Figure background must use #RRGGBB");
   }
-  return encodeRgbaPng(pixels, resolved.width, resolved.height);
+  const dpi = options.dpi ?? 300;
+  if (!Number.isFinite(dpi) || dpi <= 0 || dpi > 1_000_000) {
+    throw new Error("Figure DPI must be between 0 and 1,000,000");
+  }
+  const base = resolvePngExportOptions({
+    ...options,
+    transparent: background.kind === "transparent",
+  }, limits);
+  return {
+    ...base,
+    format: options.format ?? "png",
+    dpi,
+    background,
+    annotations: options.annotations ?? [],
+  };
+}
+
+async function applyFigureAnnotations(
+  pixels: Uint8Array,
+  publication: PublicationScene,
+  camera: THREE.Camera,
+  snapshot: PublicationSnapshot,
+  options: ResolvedFigureExportOptions,
+): Promise<void> {
+  if (options.annotations.length === 0) return;
+  if (typeof document === "undefined") {
+    throw new Error("Figure annotations require a browser canvas");
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = options.width;
+  canvas.height = options.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Figure annotations are unavailable");
+  const image = context.createImageData(options.width, options.height);
+  image.data.set(pixels);
+  context.putImageData(image, 0, 0);
+
+  const fontSize = Math.max(
+    12,
+    Math.min(34, Math.round(Math.min(options.width, options.height) / 70)),
+  );
+  const margin = Math.max(16, Math.round(fontSize * 1.25));
+  context.font = await loadPublicationFont(
+    fontSize,
+    figureAnnotationFontSample(snapshot, options.annotations),
+  );
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  for (const annotation of options.annotations) {
+    if (annotation.kind === "atom-label") {
+      const position = annotationAtomPosition(snapshot.model, annotation.atom);
+      if (!position) {
+        throw new Error("A figure atom label is outside the rendered scene");
+      }
+      const screen = projectFigurePoint(
+        position,
+        camera,
+        options.width,
+        options.height,
+      );
+      if (!screen || screen.depth < -1 || screen.depth > 1) continue;
+      const label = annotation.text
+        ?? defaultAtomLabel(snapshot.manifest, annotation.atom.atom);
+      const offset = annotation.offset ?? [fontSize * 0.72, -fontSize * 0.72];
+      drawHaloText(
+        context,
+        label,
+        screen.x + offset[0],
+        screen.y + offset[1],
+        fontSize,
+        "left",
+      );
+      continue;
+    }
+    if (annotation.kind === "legend") {
+      drawFigureLegend(
+        context,
+        figureLegendEntries(snapshot, annotation.content),
+        annotation.position,
+        options.width,
+        options.height,
+        fontSize,
+        margin,
+      );
+      continue;
+    }
+    drawFigureScaleBar(
+      context,
+      publication.root,
+      camera,
+      annotation.length,
+      annotation.unit,
+      annotation.position,
+      options.width,
+      options.height,
+      fontSize,
+      margin,
+    );
+  }
+  pixels.set(context.getImageData(0, 0, options.width, options.height).data);
+}
+
+function figureAnnotationFontSample(
+  snapshot: PublicationSnapshot,
+  annotations: readonly FigureAnnotation[],
+): string {
+  const labels = ["PQ", "Å", "nm"];
+  for (const annotation of annotations) {
+    if (annotation.kind === "atom-label") {
+      labels.push(
+        annotation.text
+        ?? defaultAtomLabel(snapshot.manifest, annotation.atom.atom),
+      );
+      continue;
+    }
+    if (annotation.kind === "legend") {
+      labels.push(...figureLegendEntries(snapshot, annotation.content).map(({ label }) => label));
+      continue;
+    }
+    labels.push(formatAnnotationNumber(annotation.length));
+  }
+  return labels.join(" ");
+}
+
+function annotationAtomPosition(
+  model: PreparedScene,
+  selection: AtomSelection,
+): THREE.Vector3 | null {
+  const point = new THREE.Vector3();
+  for (let instance = 0; instance < model.instanceToAtom.length; instance += 1) {
+    if (
+      selectionMatchesInstance(
+        model.instanceToAtom,
+        model.instanceImages,
+        instance,
+        selection,
+        model.baseImages,
+      )
+    ) {
+      return setInstancePosition(point, model, instance).clone();
+    }
+  }
+  return null;
+}
+
+function projectFigurePoint(
+  position: THREE.Vector3,
+  camera: THREE.Camera,
+  width: number,
+  height: number,
+): { x: number; y: number; depth: number } | null {
+  const projected = position.clone().project(camera);
+  if (![projected.x, projected.y, projected.z].every(Number.isFinite)) return null;
+  return {
+    x: (projected.x + 1) * width * 0.5,
+    y: (1 - projected.y) * height * 0.5,
+    depth: projected.z,
+  };
+}
+
+function defaultAtomLabel(manifest: Manifest, atom: number): string {
+  const symbol = manifest.topology.symbols?.[atom]
+    ?? manifest.topology.atom_names?.[atom]
+    ?? "Atom";
+  return `${symbol}${atom + 1}`;
+}
+
+interface FigureLegendEntry {
+  color: string;
+  label: string;
+}
+
+function figureLegendEntries(
+  snapshot: PublicationSnapshot,
+  content: Extract<FigureAnnotation, { kind: "legend" }>["content"],
+): FigureLegendEntry[] {
+  if (content === "forces") {
+    return [{ color: publicationPalette.force, label: "Forces" }];
+  }
+  if (content === "velocities") {
+    return [{ color: publicationPalette.velocity, label: "Velocities" }];
+  }
+  const { manifest, model, presentation } = snapshot;
+  const atoms = [...new Set(model.instanceToAtom)];
+  if (content === "residues") {
+    const residueIndices = manifest.topology.atom_residue_index;
+    const residues = manifest.topology.residues;
+    if (!residueIndices || !residues) return [];
+    const firstAtoms = new Map<number, number>();
+    for (const atom of atoms) {
+      const residue = residueIndices[atom];
+      if (Number.isInteger(residue) && !firstAtoms.has(residue)) {
+        firstAtoms.set(residue, atom);
+      }
+    }
+    return [...firstAtoms.entries()].slice(0, 12).map(([residue, atom]) => ({
+      color: `#${atomColor(manifest, atom, model.atomicNumbers[atom], "residue", "light")
+        .getHexString(THREE.SRGBColorSpace)}`,
+      label: residues[residue]?.name?.trim() || `Residue ${residue + 1}`,
+    }));
+  }
+  const firstAtoms = new Map<number, number>();
+  for (const atom of atoms) {
+    const atomicNumber = model.atomicNumbers[atom];
+    if (!firstAtoms.has(atomicNumber)) firstAtoms.set(atomicNumber, atom);
+  }
+  return [...firstAtoms.entries()]
+    .sort(([left], [right]) => left - right)
+    .slice(0, 16)
+    .map(([atomicNumber, atom]) => ({
+      color: `#${atomColor(manifest, atom, atomicNumber, presentation.color, "light")
+        .getHexString(THREE.SRGBColorSpace)}`,
+      label: manifest.topology.symbols?.[atom] ?? `Z ${atomicNumber}`,
+    }));
+}
+
+function drawFigureLegend(
+  context: CanvasRenderingContext2D,
+  entries: readonly FigureLegendEntry[],
+  position: Extract<FigureAnnotation, { kind: "legend" }>["position"],
+  width: number,
+  height: number,
+  fontSize: number,
+  margin: number,
+): void {
+  if (entries.length === 0) return;
+  const gap = Math.max(6, Math.round(fontSize * 0.45));
+  const dot = Math.max(8, Math.round(fontSize * 0.72));
+  const rowHeight = Math.round(fontSize * 1.4);
+  const boxWidth = Math.max(...entries.map(({ label }) => context.measureText(label).width))
+    + dot + gap + fontSize;
+  const boxHeight = entries.length * rowHeight + fontSize;
+  const { x, y } = figureCornerBox(position, width, height, boxWidth, boxHeight, margin);
+  context.save();
+  context.fillStyle = "rgba(255, 255, 255, 0.88)";
+  context.fillRect(x, y, boxWidth, boxHeight);
+  entries.forEach((entry, index) => {
+    const centerY = y + fontSize * 0.5 + rowHeight * (index + 0.5);
+    context.fillStyle = entry.color;
+    context.beginPath();
+    context.arc(x + fontSize, centerY, dot * 0.5, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = "#17302e";
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.fillText(entry.label, x + fontSize + dot * 0.5 + gap, centerY);
+  });
+  context.restore();
+}
+
+function drawFigureScaleBar(
+  context: CanvasRenderingContext2D,
+  root: THREE.Object3D,
+  camera: THREE.Camera,
+  length: number,
+  unit: "angstrom" | "nanometer",
+  position: FigureCorner,
+  width: number,
+  height: number,
+  fontSize: number,
+  margin: number,
+): void {
+  if (!(camera instanceof THREE.OrthographicCamera)) {
+    throw new Error("Scale bars require orthographic projection");
+  }
+  const angstrom = unit === "nanometer" ? length * 10 : length;
+  const center = new THREE.Box3().setFromObject(root).getCenter(new THREE.Vector3());
+  const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+  const start = projectFigurePoint(center, camera, width, height);
+  const end = projectFigurePoint(
+    center.clone().addScaledVector(right, angstrom),
+    camera,
+    width,
+    height,
+  );
+  if (!start || !end) throw new Error("Scale bar could not be projected");
+  const pixelLength = Math.hypot(end.x - start.x, end.y - start.y);
+  if (!Number.isFinite(pixelLength) || pixelLength < 8 || pixelLength > width * 0.7) {
+    throw new Error("Scale bar length does not fit the figure");
+  }
+  const boxWidth = pixelLength + fontSize * 1.5;
+  const boxHeight = fontSize * 2.6;
+  const corner = figureCornerBox(position, width, height, boxWidth, boxHeight, margin);
+  const lineY = corner.y + fontSize * 0.78;
+  const lineX = corner.x + fontSize * 0.75;
+  context.save();
+  context.strokeStyle = "#17302e";
+  context.fillStyle = "#17302e";
+  context.lineWidth = Math.max(2, Math.round(fontSize * 0.12));
+  context.beginPath();
+  context.moveTo(lineX, lineY);
+  context.lineTo(lineX + pixelLength, lineY);
+  context.moveTo(lineX, lineY - fontSize * 0.22);
+  context.lineTo(lineX, lineY + fontSize * 0.22);
+  context.moveTo(lineX + pixelLength, lineY - fontSize * 0.22);
+  context.lineTo(lineX + pixelLength, lineY + fontSize * 0.22);
+  context.stroke();
+  context.textAlign = "center";
+  context.textBaseline = "top";
+  context.fillText(
+    `${formatAnnotationNumber(length)} ${unit === "nanometer" ? "nm" : "Å"}`,
+    lineX + pixelLength * 0.5,
+    lineY + fontSize * 0.45,
+  );
+  context.restore();
+}
+
+function figureCornerBox(
+  position: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+  width: number,
+  height: number,
+  boxWidth: number,
+  boxHeight: number,
+  margin: number,
+): { x: number; y: number } {
+  return {
+    x: position.endsWith("right") ? width - margin - boxWidth : margin,
+    y: position.startsWith("bottom") ? height - margin - boxHeight : margin,
+  };
+}
+
+function drawHaloText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  align: CanvasTextAlign,
+): void {
+  context.save();
+  context.textAlign = align;
+  context.textBaseline = "middle";
+  context.strokeStyle = "rgba(255, 255, 255, 0.94)";
+  context.lineWidth = Math.max(3, fontSize * 0.28);
+  context.strokeText(text, x, y);
+  context.fillStyle = "#17302e";
+  context.fillText(text, x, y);
+  context.restore();
+}
+
+function formatAnnotationNumber(value: number): string {
+  return Number(value.toPrecision(5)).toString();
 }
 
 function rendererPngLimits(
@@ -968,6 +1655,7 @@ const publicationPalette: ScenePalette = {
   selectionOpacity: 0,
   force: "#b34c2b",
   velocity: "#625c9f",
+  displacement: "#087F8C",
   ribbon: "#347f96",
   hemisphereSky: "#ffffff",
   hemisphereGround: "#d8e0df",
@@ -1136,7 +1824,7 @@ function buildPublicationCells(
   const seen = new Set<string>();
   for (const image of model.images) {
     const values: number[] = [];
-    appendCellLines(values, model.basis, image);
+    appendCellLines(values, model.basis, image, model.cellCenter);
     for (let offset = 0; offset < values.length; offset += 6) {
       const from = values.slice(offset, offset + 3);
       const to = values.slice(offset + 3, offset + 6);
@@ -1305,6 +1993,9 @@ function publicationGtaoPass(
   const bounds = new THREE.Box3().setFromObject(root);
   const radius = THREE.MathUtils.clamp(bounds.getSize(new THREE.Vector3()).length() * 0.018, 0.18, 0.55);
   const pass = new GtaoPass(scene, camera, width, height);
+  pass.pdNoiseTexture.dispose();
+  pass.pdNoiseTexture = publicationNoiseTexture();
+  pass.pdMaterial.uniforms.tNoise.value = pass.pdNoiseTexture;
   pass.renderToScreen = false;
   pass.blendIntensity = 0.38;
   pass.setSceneClipBox(bounds);
@@ -1321,21 +2012,46 @@ function publicationGtaoPass(
   return pass;
 }
 
+function publicationNoiseTexture(size = 64): THREE.DataTexture {
+  const data = new Uint8Array(size * size * 4);
+  let state = 0x6d2b79f5;
+  for (let index = 0; index < data.length; index += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    data[index] = state >>> 24;
+  }
+  const texture = new THREE.DataTexture(
+    data,
+    size,
+    size,
+    THREE.RGBAFormat,
+    THREE.UnsignedByteType,
+  );
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
 function configurePublicationOutput(
   pass: InstanceType<typeof import("three/examples/jsm/postprocessing/OutputPass.js").OutputPass>,
-  transparent: boolean,
+  background: FigureBackground,
 ): void {
   const sample = "gl_FragColor = texture2D( tDiffuse, vUv );";
   const source = pass.material.fragmentShader;
   const fragmentShader = source
-    .replace("uniform sampler2D tDiffuse;", "uniform sampler2D tDiffuse;\nuniform float publicationTransparent;")
+    .replace(
+      "uniform sampler2D tDiffuse;",
+      "uniform sampler2D tDiffuse;\nuniform float publicationTransparent;\nuniform vec3 publicationBackground;",
+    )
     .replace(sample, `${sample}
       float publicationCoverage = gl_FragColor.a;
       gl_FragColor.rgb = publicationCoverage > 0.000001
         ? gl_FragColor.rgb / publicationCoverage
         : vec3( 0.0 );`)
     .replace("// color space", `if ( publicationTransparent < 0.5 ) {
-        gl_FragColor.rgb = gl_FragColor.rgb * publicationCoverage + vec3( 1.0 ) * ( 1.0 - publicationCoverage );
+        gl_FragColor.rgb = gl_FragColor.rgb * publicationCoverage + publicationBackground * ( 1.0 - publicationCoverage );
         gl_FragColor.a = 1.0;
       }
 
@@ -1344,7 +2060,14 @@ function configurePublicationOutput(
     throw new Error("Publication output shader is incompatible");
   }
   pass.material.fragmentShader = fragmentShader;
-  pass.material.uniforms.publicationTransparent = { value: transparent ? 1 : 0 };
+  pass.material.uniforms.publicationTransparent = {
+    value: background.kind === "transparent" ? 1 : 0,
+  };
+  pass.material.uniforms.publicationBackground = {
+    value: new THREE.Color(
+      background.kind === "solid" ? background.color : "#000000",
+    ),
+  };
   pass.material.needsUpdate = true;
 }
 
@@ -1382,6 +2105,7 @@ function applyScenePalette(state: SceneState, palette: ScenePalette): void {
   state.rim.intensity = palette.rimIntensity;
   state.selectionMaterial.color.set(palette.selection);
   state.selectionMaterial.opacity = palette.selectionOpacity;
+  state.selectionPointsMaterial.color.set(palette.selection);
   state.keyboardFocusMaterial.color.set(palette.selection);
 }
 
@@ -1455,6 +2179,202 @@ function clearRenderables(state: SceneState): void {
   state.velocities = null;
   state.ribbon = null;
   state.pickables = [];
+}
+
+function updateTrajectoryOverlayGroup(
+  group: THREE.Group,
+  model: PreparedScene | null,
+  overlays: TrajectoryOverlays,
+  appearance: Appearance,
+): void {
+  while (group.children.length > 0) {
+    const child = group.children[group.children.length - 1];
+    group.remove(child);
+    disposeObject(child);
+  }
+  if (!model) return;
+
+  const palette = scenePalettes[appearance];
+  const fade = new THREE.Color(palette.background);
+  const trailColor = new THREE.Color(palette.selection);
+  for (const overlay of overlays.trails.slice(0, MAX_TRAIL_ATOMS)) {
+    const positions = alignedTrailSegments(model, overlay);
+    if (positions.length === 0) continue;
+    const segmentCount = positions.length / 6;
+    const colors = new Float32Array(segmentCount * 6);
+    for (let segment = 0; segment < segmentCount; segment += 1) {
+      const from = segmentCount === 1 ? 0.35 : segment / segmentCount;
+      const to = (segment + 1) / segmentCount;
+      fade.clone().lerp(trailColor, 0.16 + from * 0.84).toArray(colors, segment * 6);
+      fade.clone().lerp(trailColor, 0.16 + to * 0.84).toArray(colors, segment * 6 + 3);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    const line = new THREE.LineSegments(
+      geometry,
+      new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.82,
+        depthWrite: false,
+      }),
+    );
+    line.name = `trail:${overlay.id}`;
+    line.renderOrder = 7;
+    group.add(line);
+  }
+
+  const arrows = overlays.displacements
+    .slice(0, MAX_DISPLACEMENT_ATOMS)
+    .map((overlay) => alignedDisplacementArrow(model, overlay))
+    .filter((arrow): arrow is VectorArrow => arrow !== null);
+  const displacement = buildExplicitVectors(arrows, palette.displacement);
+  if (displacement) {
+    displacement.name = "reference-displacements";
+    group.add(displacement);
+  }
+}
+
+export function alignedTrailSegments(
+  model: Pick<
+    PreparedScene,
+    "count" | "positions" | "baseImages" | "basis" | "displayTransform"
+  >,
+  overlay: AtomTrailOverlay,
+): Float32Array {
+  if (
+    !Number.isSafeInteger(overlay.atom)
+    || overlay.atom < 0
+    || overlay.atom >= model.count
+    || overlay.image.length !== 3
+    || !overlay.image.every(Number.isInteger)
+    || overlay.points.length < 6
+    || overlay.points.length % 3 !== 0
+  ) {
+    return new Float32Array();
+  }
+  const pointCount = Math.min(
+    MAX_TRAIL_POINTS,
+    Math.floor(overlay.points.length / 3),
+  );
+  const firstPoint = Math.floor(overlay.points.length / 3) - pointCount;
+  const lastOffset = overlay.points.length - 3;
+  const last = new THREE.Vector3().fromArray(overlay.points, lastOffset);
+  if (![last.x, last.y, last.z].every(Number.isFinite)) return new Float32Array();
+  const anchor = selectedDisplayedPosition(model, overlay.atom, overlay.image);
+  if (!anchor) return new Float32Array();
+  const aligned: THREE.Vector3[] = [];
+  const point = new THREE.Vector3();
+  for (let index = firstPoint; index < firstPoint + pointCount; index += 1) {
+    point.fromArray(overlay.points, index * 3);
+    if (![point.x, point.y, point.z].every(Number.isFinite)) {
+      aligned.push(new THREE.Vector3(Number.NaN, Number.NaN, Number.NaN));
+      continue;
+    }
+    aligned.push(
+      point.clone()
+        .sub(last)
+        .applyMatrix3(model.displayTransform)
+        .add(anchor),
+    );
+  }
+  const segments: number[] = [];
+  for (let index = 1; index < aligned.length; index += 1) {
+    const from = aligned[index - 1];
+    const to = aligned[index];
+    if (
+      ![from.x, from.y, from.z, to.x, to.y, to.z].every(Number.isFinite)
+    ) continue;
+    segments.push(...from.toArray(), ...to.toArray());
+  }
+  return new Float32Array(segments);
+}
+
+export function selectedDisplayedPosition(
+  model: Pick<
+    PreparedScene,
+    "count" | "positions" | "baseImages" | "basis"
+  >,
+  atom: number,
+  image: CellOffset,
+): THREE.Vector3 | null {
+  if (
+    !Number.isSafeInteger(atom)
+    || atom < 0
+    || atom >= model.count
+    || image.length !== 3
+    || !image.every(Number.isInteger)
+  ) return null;
+  const point = new THREE.Vector3().fromArray(model.positions, atom * 3);
+  if (!model.basis) return point;
+  const offset = atom * 3;
+  const relative: CellOffset = [
+    image[0] - (model.baseImages[offset] ?? 0),
+    image[1] - (model.baseImages[offset + 1] ?? 0),
+    image[2] - (model.baseImages[offset + 2] ?? 0),
+  ];
+  return point.add(imageTranslation(relative, model.basis));
+}
+
+function alignedDisplacementArrow(
+  model: Pick<
+    PreparedScene,
+    "count" | "positions" | "baseImages" | "basis" | "displayTransform" | "radii"
+  >,
+  overlay: AtomDisplacementOverlay,
+): VectorArrow | null {
+  const tip = selectedDisplayedPosition(model, overlay.atom, overlay.image);
+  if (!tip || ![...overlay.from, ...overlay.to].every(Number.isFinite)) return null;
+  const displacement = new THREE.Vector3(
+    overlay.to[0] - overlay.from[0],
+    overlay.to[1] - overlay.from[1],
+    overlay.to[2] - overlay.from[2],
+  ).applyMatrix3(model.displayTransform);
+  const length = displacement.length();
+  if (!Number.isFinite(length) || length <= 1e-10) return null;
+  const direction = displacement.clone().multiplyScalar(1 / length);
+  const head = Math.min(0.22, Math.max(0.07, length * 0.18), length * 0.45);
+  return {
+    tail: tip.clone().sub(displacement),
+    tip,
+    direction,
+    head,
+  };
+}
+
+function buildExplicitVectors(
+  arrows: readonly VectorArrow[],
+  color: string,
+): THREE.Group | null {
+  if (arrows.length === 0) return null;
+  const group = new THREE.Group();
+  const shafts = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.014, 0.014, 1, 8, 1, false),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.82,
+      depthWrite: false,
+    }),
+    arrows.length,
+  );
+  shafts.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  group.add(shafts);
+  const heads = new THREE.InstancedMesh(
+    new THREE.ConeGeometry(1, 1, 9),
+    new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0.88,
+      depthWrite: false,
+    }),
+    arrows.length,
+  );
+  heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  group.add(heads);
+  updateVectors(group, [...arrows]);
+  return group;
 }
 
 function buildFrameRenderables(
@@ -1604,7 +2524,7 @@ function updateBonds(object: THREE.Object3D, segments: Segment[]): void {
 function updateCells(cell: THREE.LineSegments, model: PreparedScene): void {
   if (!model.basis) return;
   const values: number[] = [];
-  model.images.forEach((image) => appendCellLines(values, model.basis!, image));
+  model.images.forEach((image) => appendCellLines(values, model.basis!, image, model.cellCenter));
   const positions = cell.geometry.getAttribute("position") as THREE.BufferAttribute;
   (positions.array as Float32Array).set(values);
   positions.needsUpdate = true;
@@ -1616,7 +2536,6 @@ function renderConfigKey(presentation: ScenePresentation): string {
     presentation.mode,
     presentation.water,
     presentation.hydrogens,
-    presentation.wrap,
     presentation.images.min,
     presentation.images.max,
     presentation.cell,
@@ -1745,7 +2664,7 @@ function updateBondMatrices(mesh: THREE.InstancedMesh, segments: Segment[]): voi
 function buildCells(model: PreparedScene, palette: ScenePalette): THREE.LineSegments | null {
   if (!model.basis || model.images.length === 0) return null;
   const values: number[] = [];
-  model.images.forEach((image) => appendCellLines(values, model.basis!, image));
+  model.images.forEach((image) => appendCellLines(values, model.basis!, image, model.cellCenter));
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(values, 3).setUsage(THREE.DynamicDrawUsage));
   return new THREE.LineSegments(
@@ -1754,8 +2673,13 @@ function buildCells(model: PreparedScene, palette: ScenePalette): THREE.LineSegm
   );
 }
 
-function appendCellLines(values: number[], basis: CellBasis, offset: CellOffset): void {
-  const corners = cellImageCorners(basis, offset);
+function appendCellLines(
+  values: number[],
+  basis: CellBasis,
+  offset: CellOffset,
+  center: THREE.Vector3,
+): void {
+  const corners = cellImageCorners(basis, offset, center);
   const index = (a: number, b: number, c: number) => a * 4 + b * 2 + c;
   const edges: Array<[number, number]> = [];
   for (let a = 0; a <= 1; a += 1) {
@@ -1828,7 +2752,7 @@ function vectorArrows(
     const offset = atom * 3;
     direction.set(vectors[offset], vectors[offset + 1], vectors[offset + 2]);
     const magnitude = direction.length();
-    direction.normalize();
+    transformDisplayVector(direction.normalize(), model);
     setInstancePosition(atomPosition, model, instance);
     const length = magnitude * scale;
     const head = Math.min(Math.min(0.24, Math.max(0.075, length * 0.24)), length * 0.5);
@@ -1934,10 +2858,15 @@ function buildRibbon(
   );
 }
 
-function updateSelection(state: SceneState, selectedAtoms: AtomSelection[]): Float64Array | null {
+export function updateSelectionMarkers(
+  state: SelectionRenderState,
+  selectedAtoms: AtomSelection[],
+  collectPositions = true,
+): Float64Array | null {
   const model = state.model;
   if (!model) {
     state.selection.clear();
+    state.selectionPoints.visible = false;
     return null;
   }
 
@@ -1948,35 +2877,77 @@ function updateSelection(state: SceneState, selectedAtoms: AtomSelection[]): Flo
       selected.set(selectionKey(atom, image), index);
     }
   });
-  const positions = new Float64Array(selectedAtoms.length * 3);
-  const found = new Uint8Array(selectedAtoms.length);
+  const positions = collectPositions ? new Float64Array(selectedAtoms.length * 3) : null;
+  let pointAttribute: THREE.BufferAttribute | null = null;
+  let pointPositions: Float32Array | null = null;
+  const currentPointAttribute = state.selectionPoints.geometry.getAttribute("position");
+  const reusablePointAttribute = currentPointAttribute instanceof THREE.BufferAttribute
+    && currentPointAttribute.itemSize === 3
+    && currentPointAttribute.array instanceof Float32Array
+    ? currentPointAttribute
+    : null;
+  const markers = selectionMarkerState(
+    selectedAtoms.length,
+    state.instanceToAtom.length,
+    reusablePointAttribute?.count ?? null,
+  );
+  if (markers.mode === "points") {
+    if (markers.reusePointBuffer) {
+      pointAttribute = reusablePointAttribute!;
+    } else {
+      pointAttribute = new THREE.BufferAttribute(
+        new Float32Array(markers.pointCapacity * 3),
+        3,
+      );
+      pointAttribute.setUsage(THREE.DynamicDrawUsage);
+      state.selectionPoints.geometry.setAttribute("position", pointAttribute);
+    }
+    pointPositions = pointAttribute.array as Float32Array;
+  }
+  const found = collectPositions ? new Uint8Array(selectedAtoms.length) : null;
+  const point = new THREE.Vector3();
   for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
     const selectedAtom = state.instanceToAtom[instance];
     const imageOffset = instance * 3;
+    const baseOffset = selectedAtom * 3;
     const image: CellOffset = [
-      state.instanceImages[imageOffset],
-      state.instanceImages[imageOffset + 1],
-      state.instanceImages[imageOffset + 2],
+      (state.baseImages[baseOffset] ?? 0) + state.instanceImages[imageOffset],
+      (state.baseImages[baseOffset + 1] ?? 0) + state.instanceImages[imageOffset + 1],
+      (state.baseImages[baseOffset + 2] ?? 0) + state.instanceImages[imageOffset + 2],
     ];
     const selectedIndex = selected.get(selectionKey(selectedAtom, image));
     if (selectedIndex === undefined) continue;
-    let marker = state.selection.children[visible] as THREE.Mesh | undefined;
-    if (!marker) {
-      marker = new THREE.Mesh(state.selectionGeometry, state.selectionMaterial);
-      marker.renderOrder = 10;
-      state.selection.add(marker);
+    setInstancePosition(point, model, instance);
+    if (positions) point.toArray(positions, selectedIndex * 3);
+    if (pointPositions) {
+      point.toArray(pointPositions, visible * 3);
+    } else {
+      let marker = state.selection.children[visible] as THREE.Mesh | undefined;
+      if (!marker) {
+        marker = new THREE.Mesh(state.selectionGeometry, state.selectionMaterial);
+        marker.renderOrder = 10;
+        state.selection.add(marker);
+      }
+      marker.position.copy(point);
+      marker.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
+      marker.visible = true;
     }
-    setInstancePosition(marker.position, model, instance);
-    marker.position.toArray(positions, selectedIndex * 3);
-    found[selectedIndex] = 1;
-    marker.scale.setScalar(Math.max(0.24, model.radii[selectedAtom] || 0.3) * 1.35);
-    marker.visible = true;
+    if (found) found[selectedIndex] = 1;
     visible += 1;
   }
-  while (state.selection.children.length > visible) {
+  const visibleRings = markers.clearRingMarkers ? 0 : visible;
+  while (state.selection.children.length > visibleRings) {
     state.selection.remove(state.selection.children[state.selection.children.length - 1]);
   }
-  return selectedAtoms.length > 0 && found.every((value) => value === 1)
+  if (pointPositions) {
+    pointAttribute!.needsUpdate = true;
+    state.selectionPoints.geometry.setDrawRange(0, visible);
+    state.selectionPoints.visible = visible > 0;
+  } else {
+    state.selectionPoints.geometry.setDrawRange(0, 0);
+    state.selectionPoints.visible = false;
+  }
+  return positions && found && selectedAtoms.length > 0 && found.every((value) => value === 1)
     ? positions
     : null;
 }
@@ -1994,6 +2965,7 @@ function updateKeyboardFocus(
       state.instanceImages,
       preferredInstance,
       selection,
+      state.baseImages,
     )) {
     setKeyboardFocusInstance(state, selection, preferredInstance);
     return preferredInstance;
@@ -2004,6 +2976,7 @@ function updateKeyboardFocus(
       state.instanceImages,
       instance,
       selection,
+      state.baseImages,
     )) continue;
     setKeyboardFocusInstance(state, selection, instance);
     return instance;
@@ -2036,6 +3009,7 @@ export function nextKeyboardAtomCursor(
   current: AtomSelection | null,
   currentInstance: number | null,
   direction: number,
+  baseImages: Int32Array = new Int32Array(),
 ): KeyboardAtomCursor | null {
   const count = Math.min(instanceToAtom.length, Math.floor(instanceImages.length / 3));
   if (count === 0) return null;
@@ -2044,12 +3018,19 @@ export function nextKeyboardAtomCursor(
       instanceImages,
       currentInstance,
       current,
+      baseImages,
     )
     ? currentInstance
     : -1;
   if (currentIndex < 0 && current) {
     for (let instance = 0; instance < count; instance += 1) {
-      if (!selectionMatchesInstance(instanceToAtom, instanceImages, instance, current)) continue;
+      if (!selectionMatchesInstance(
+        instanceToAtom,
+        instanceImages,
+        instance,
+        current,
+        baseImages,
+      )) continue;
       currentIndex = instance;
       break;
     }
@@ -2059,7 +3040,12 @@ export function nextKeyboardAtomCursor(
     : currentIndex >= 0
       ? (currentIndex + Math.sign(direction) + count) % count
       : direction < 0 ? count - 1 : 0;
-  const selection = atomSelectionForInstance(instanceToAtom, instanceImages, instance);
+  const selection = atomSelectionForInstance(
+    instanceToAtom,
+    instanceImages,
+    instance,
+    baseImages,
+  );
   return selection ? { selection, instance } : null;
 }
 
@@ -2068,6 +3054,7 @@ export function nextKeyboardAtomSelection(
   instanceImages: Int8Array,
   current: AtomSelection | null,
   direction: number,
+  baseImages: Int32Array = new Int32Array(),
 ): AtomSelection | null {
   return nextKeyboardAtomCursor(
     instanceToAtom,
@@ -2075,6 +3062,7 @@ export function nextKeyboardAtomSelection(
     current,
     null,
     direction,
+    baseImages,
   )?.selection ?? null;
 }
 
@@ -2083,6 +3071,7 @@ function selectionMatchesInstance(
   instanceImages: Int8Array,
   instance: number,
   selection: AtomSelection | null,
+  baseImages: Int32Array = new Int32Array(),
 ): boolean {
   if (
     !selection
@@ -2091,11 +3080,12 @@ function selectionMatchesInstance(
     || instance >= instanceToAtom.length
   ) return false;
   const offset = instance * 3;
+  const atomOffset = instanceToAtom[instance] * 3;
   return offset + 2 < instanceImages.length
     && instanceToAtom[instance] === selection.atom
-    && instanceImages[offset] === selection.image[0]
-    && instanceImages[offset + 1] === selection.image[1]
-    && instanceImages[offset + 2] === selection.image[2];
+    && (baseImages[atomOffset] ?? 0) + instanceImages[offset] === selection.image[0]
+    && (baseImages[atomOffset + 1] ?? 0) + instanceImages[offset + 1] === selection.image[1]
+    && (baseImages[atomOffset + 2] ?? 0) + instanceImages[offset + 2] === selection.image[2];
 }
 
 function pickedAtom(hit: THREE.Intersection, state: SceneState): AtomSelection | null {
@@ -2103,11 +3093,25 @@ function pickedAtom(hit: THREE.Intersection, state: SceneState): AtomSelection |
     const instance = hit.instanceId ?? hit.index;
     return instance === undefined
       ? null
-      : atomSelectionForInstance(state.instanceToAtom, state.instanceImages, instance);
+      : atomSelectionForInstance(
+        state.instanceToAtom,
+        state.instanceImages,
+        instance,
+        state.baseImages,
+      );
   }
   if (hit.object === state.ribbon && hit.face) {
     const attribute = state.ribbon.geometry.getAttribute("atomIndex");
-    return { atom: Math.round(attribute.getX(hit.face.a)), image: [0, 0, 0] };
+    const atom = Math.round(attribute.getX(hit.face.a));
+    const offset = atom * 3;
+    return {
+      atom,
+      image: [
+        state.baseImages[offset] ?? 0,
+        state.baseImages[offset + 1] ?? 0,
+        state.baseImages[offset + 2] ?? 0,
+      ],
+    };
   }
   return null;
 }
@@ -2116,16 +3120,19 @@ export function atomSelectionForInstance(
   instanceToAtom: Uint32Array,
   instanceImages: Int8Array,
   instance: number,
+  baseImages: Int32Array = new Int32Array(),
 ): AtomSelection | null {
   if (!Number.isInteger(instance) || instance < 0 || instance >= instanceToAtom.length) return null;
   const imageOffset = instance * 3;
   if (imageOffset + 2 >= instanceImages.length) return null;
+  const atom = instanceToAtom[instance];
+  const atomOffset = atom * 3;
   return {
-    atom: instanceToAtom[instance],
+    atom,
     image: [
-      instanceImages[imageOffset],
-      instanceImages[imageOffset + 1],
-      instanceImages[imageOffset + 2],
+      (baseImages[atomOffset] ?? 0) + instanceImages[imageOffset],
+      (baseImages[atomOffset + 1] ?? 0) + instanceImages[imageOffset + 1],
+      (baseImages[atomOffset + 2] ?? 0) + instanceImages[imageOffset + 2],
     ],
   };
 }
@@ -2157,6 +3164,48 @@ function keyboardAtomLabel(manifest: Manifest, selection: AtomSelection): string
     })
     .join("");
   return image ? `${atom} (${image})` : atom;
+}
+
+function selectionsInRectangle(
+  state: SceneState,
+  bounds: DOMRect,
+  start: Pick<THREE.Vector2, "x" | "y">,
+  end: Pick<THREE.Vector2, "x" | "y">,
+): AtomSelection[] {
+  const model = state.model;
+  if (!model || !state.atomObject || bounds.width <= 0 || bounds.height <= 0) return [];
+  const left = Math.max(bounds.left, Math.min(start.x, end.x));
+  const right = Math.min(bounds.right, Math.max(start.x, end.x));
+  const top = Math.max(bounds.top, Math.min(start.y, end.y));
+  const bottom = Math.min(bounds.bottom, Math.max(start.y, end.y));
+  if (right <= left || bottom <= top) return [];
+
+  state.camera.updateMatrixWorld();
+  const point = new THREE.Vector3();
+  const result: AtomSelection[] = [];
+  const seen = new Set<string>();
+  for (let instance = 0; instance < state.instanceToAtom.length; instance += 1) {
+    setInstancePosition(point, model, instance);
+    point.project(state.camera);
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.z < -1 || point.z > 1) {
+      continue;
+    }
+    const x = bounds.left + ((point.x + 1) * 0.5) * bounds.width;
+    const y = bounds.top + ((1 - point.y) * 0.5) * bounds.height;
+    if (x < left || x > right || y < top || y > bottom) continue;
+    const selection = atomSelectionForInstance(
+      state.instanceToAtom,
+      state.instanceImages,
+      instance,
+      state.baseImages,
+    );
+    if (!selection) continue;
+    const key = selectionKey(selection.atom, selection.image);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(selection);
+  }
+  return result;
 }
 
 function setInstancePosition(
@@ -2214,7 +3263,7 @@ function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | nu
   }
   if (presentation.cell && model.basis) {
     const cellBounds = new THREE.Box3();
-    model.images.forEach((image) => expandByCell(cellBounds, model.basis!, image));
+    model.images.forEach((image) => expandByCell(cellBounds, model.basis!, image, model.cellCenter));
     const atomSpan = bounds.getSize(new THREE.Vector3()).length();
     const cellSpan = cellBounds.getSize(new THREE.Vector3()).length();
     if (includeCellInFit(atomSpan, cellSpan, model.images)) bounds.union(cellBounds);
@@ -2252,6 +3301,55 @@ function fitCamera(state: SceneState, context: FitContext): void {
   state.controls.target.copy(center);
   state.controls.update();
   state.lastFittedAspect = state.camera.aspect;
+  state.cameraMode = "fit";
+}
+
+export function captureCameraState(
+  camera: THREE.PerspectiveCamera,
+  target: THREE.Vector3,
+): SceneCameraState {
+  return {
+    position: camera.position.toArray(),
+    target: target.toArray(),
+    up: camera.up.toArray(),
+    fov: camera.fov,
+    zoom: camera.zoom,
+    near: camera.near,
+    far: camera.far,
+  };
+}
+
+function restoreCameraState(state: SceneState, value: SceneCameraState): void {
+  const numbers = [
+    ...value.position,
+    ...value.target,
+    ...value.up,
+    value.fov,
+    value.zoom,
+    value.near,
+    value.far,
+  ];
+  if (
+    numbers.some((entry) => !Number.isFinite(entry))
+    || value.fov <= 0
+    || value.fov >= 180
+    || value.zoom <= 0
+    || value.near <= 0
+    || value.far <= value.near
+  ) {
+    throw new Error("The saved camera is invalid");
+  }
+  clearOrbitMotion(state.controls);
+  state.camera.position.fromArray(value.position);
+  state.camera.up.fromArray(value.up).normalize();
+  state.camera.fov = value.fov;
+  state.camera.zoom = value.zoom;
+  state.camera.near = value.near;
+  state.camera.far = value.far;
+  state.controls.target.fromArray(value.target);
+  state.camera.updateProjectionMatrix();
+  state.controls.update();
+  state.cameraMode = "manual";
 }
 
 export function clearOrbitMotion(controls: OrbitControls): void {
@@ -2266,11 +3364,25 @@ export function clearOrbitMotion(controls: OrbitControls): void {
 
 function layoutKey(model: PreparedScene, presentation: ScenePresentation): string {
   const imageLayout = imageLayoutShape(model.images);
-  return `${presentation.mode}:${presentation.wrap}:${presentation.cell}:${model.visibleAtoms.length}:${imageLayout.count}:${imageLayout.span.join(",")}`;
+  return [
+    presentation.mode,
+    presentation.wrap,
+    presentation.cellOrigin.join(","),
+    presentation.mirror.join(","),
+    presentation.cell,
+    model.visibleAtoms.length,
+    imageLayout.count,
+    imageLayout.span.join(","),
+  ].join(":");
 }
 
-function expandByCell(bounds: THREE.Box3, basis: CellBasis, offset: CellOffset): void {
-  cellImageCorners(basis, offset).forEach((corner) => bounds.expandByPoint(corner));
+function expandByCell(
+  bounds: THREE.Box3,
+  basis: CellBasis,
+  offset: CellOffset,
+  center: THREE.Vector3,
+): void {
+  cellImageCorners(basis, offset, center).forEach((corner) => bounds.expandByPoint(corner));
 }
 
 function boxCorners(bounds: THREE.Box3): THREE.Vector3[] {

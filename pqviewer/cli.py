@@ -6,23 +6,26 @@ import argparse
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import sys
 from threading import Timer
 from typing import Iterator
 import webbrowser
 
 import uvicorn
 
-from .app import (
+from pqviewer.app import (
     CHARGES_ENV,
     ENERGY_ENV,
     FORCES_ENV,
     INFO_ENV,
     MOLDESCRIPTOR_ENV,
+    RECIPE_ENV,
     TOPOLOGY_ENV,
     TRAJECTORY_ENV,
     VELOCITIES_ENV,
     create_app,
 )
+from pqviewer.recipe import is_figure_recipe_path, open_figure_recipe_dataset
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -34,14 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="pqviewer",
-        description="Open a molecular trajectory.",
+        description="Open molecular structures and trajectories.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "path",
         nargs="?",
-        type=Path,
-        help="Optional trajectory file to open.",
+        help=(
+            "Trajectory, PQ input, run directory, or path@start:stop:step "
+            "to open."
+        ),
     )
     parser.add_argument("--energy", type=Path, help="Optional PQ energy file.")
     parser.add_argument("--info", type=Path, help="Optional PQ info file.")
@@ -64,11 +69,26 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     """Run PQViewer."""
 
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["render"]:
+        from pqviewer.render_cli import main as render_main
 
-    if args.path is not None:
-        _require_file(parser, args.path, "trajectory")
+        render_main(arguments[1:])
+        return
+    parser = build_parser()
+    args = parser.parse_args(arguments)
+    source = _source_argument(args.path)
+    recipe_path: Path | None = None
+    initial_recipe = None
+    recipe_dataset = None
+    if source is not None and is_figure_recipe_path(source):
+        recipe_path = Path(source).expanduser().resolve()
+        try:
+            initial_recipe, recipe_dataset = open_figure_recipe_dataset(recipe_path)
+            source = None
+        except (FileNotFoundError, ValueError) as error:
+            parser.error(str(error))
+
     if args.info is not None and args.energy is None:
         parser.error("--info requires --energy.")
     if args.energy is not None:
@@ -85,30 +105,9 @@ def main(argv: list[str] | None = None) -> None:
         _require_file(parser, args.moldescriptor, "moldescriptor")
     if args.topology is not None:
         _require_file(parser, args.topology, "topology")
-    if not 1 <= args.port <= 65535:
-        parser.error("--port must be between 1 and 65535.")
-
-    try:
-        application = create_app(
-            args.path,
-            energy_path=args.energy,
-            info_path=args.info,
-            forces_path=args.forces,
-            velocities_path=args.velocities,
-            charges_path=args.charges,
-            moldescriptor_path=args.moldescriptor,
-            topology_path=args.topology,
-        )
-        application.state.dataset.manifest()
-    except Exception as error:  # pylint: disable=broad-exception-caught
-        parser.error(f"Could not open trajectory: {error}")
-
-    if not args.no_open:
-        _open_browser_later(_browser_url(args.host, args.port))
-
-    if args.reload:
-        with _source_environment(
-            args.path,
+    if recipe_path is not None and any(
+        value is not None
+        for value in (
             args.energy,
             args.info,
             args.forces,
@@ -116,6 +115,43 @@ def main(argv: list[str] | None = None) -> None:
             args.charges,
             args.moldescriptor,
             args.topology,
+        )
+    ):
+        parser.error("A figure recipe already defines its companion files.")
+    if not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535.")
+
+    try:
+        application = create_app(
+            source,
+            energy_path=args.energy,
+            info_path=args.info,
+            forces_path=args.forces,
+            velocities_path=args.velocities,
+            charges_path=args.charges,
+            moldescriptor_path=args.moldescriptor,
+            topology_path=args.topology,
+            dataset=recipe_dataset,
+            initial_recipe=initial_recipe,
+        )
+        application.state.dataset.manifest()
+    except Exception as error:  # pylint: disable=broad-exception-caught
+        parser.error(f"Could not open source: {error}")
+
+    if not args.no_open:
+        _open_browser_later(_browser_url(args.host, args.port))
+
+    if args.reload:
+        with _source_environment(
+            source,
+            args.energy,
+            args.info,
+            args.forces,
+            args.velocities,
+            args.charges,
+            args.moldescriptor,
+            args.topology,
+            recipe_path,
         ):
             uvicorn.run(
                 "pqviewer.app:create_app_from_env",
@@ -139,8 +175,15 @@ def _require_file(parser: argparse.ArgumentParser, path: Path, label: str) -> No
         parser.error(f"{label.capitalize()} file not found: {path}")
 
 
+def _source_argument(value: str | None) -> str | Path | None:
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    return path.resolve() if path.exists() else value
+
+
 def _set_source_environment(
-    trajectory_path: Path | None,
+    trajectory_path: str | Path | None,
     energy_path: Path | None,
     info_path: Path | None,
     forces_path: Path | None,
@@ -148,8 +191,12 @@ def _set_source_environment(
     charges_path: Path | None,
     moldescriptor_path: Path | None = None,
     topology_path: Path | None = None,
+    recipe_path: Path | None = None,
 ) -> None:
-    _set_optional_environment(TRAJECTORY_ENV, trajectory_path)
+    if trajectory_path is None:
+        os.environ.pop(TRAJECTORY_ENV, None)
+    else:
+        os.environ[TRAJECTORY_ENV] = str(trajectory_path)
     _set_optional_environment(ENERGY_ENV, energy_path)
     _set_optional_environment(INFO_ENV, info_path)
     _set_optional_environment(FORCES_ENV, forces_path)
@@ -157,11 +204,12 @@ def _set_source_environment(
     _set_optional_environment(CHARGES_ENV, charges_path)
     _set_optional_environment(MOLDESCRIPTOR_ENV, moldescriptor_path)
     _set_optional_environment(TOPOLOGY_ENV, topology_path)
+    _set_optional_environment(RECIPE_ENV, recipe_path)
 
 
 @contextmanager
 def _source_environment(
-    trajectory_path: Path | None,
+    trajectory_path: str | Path | None,
     energy_path: Path | None,
     info_path: Path | None,
     forces_path: Path | None,
@@ -169,6 +217,7 @@ def _source_environment(
     charges_path: Path | None,
     moldescriptor_path: Path | None = None,
     topology_path: Path | None = None,
+    recipe_path: Path | None = None,
 ) -> Iterator[None]:
     names = (
         TRAJECTORY_ENV,
@@ -179,6 +228,7 @@ def _source_environment(
         CHARGES_ENV,
         MOLDESCRIPTOR_ENV,
         TOPOLOGY_ENV,
+        RECIPE_ENV,
     )
     previous = {name: os.environ.get(name) for name in names}
     _set_source_environment(
@@ -190,6 +240,7 @@ def _source_environment(
         charges_path,
         moldescriptor_path,
         topology_path,
+        recipe_path,
     )
     try:
         yield

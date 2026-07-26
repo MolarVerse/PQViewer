@@ -35,6 +35,36 @@ export interface Manifest {
   topology: Topology;
   properties?: Record<string, PropertySpec>;
   series?: Record<string, unknown> | SeriesSpec[];
+  source?: SourceManifest;
+}
+
+export interface SourceManifest {
+  kind?: string;
+  path?: string;
+  slice?: {
+    start?: number | null;
+    stop?: number | null;
+    step?: number | null;
+  };
+  segments?: SourceSegmentManifest[];
+}
+
+export interface SourceSegmentManifest {
+  source_id: string;
+  kind: string;
+  path?: string | null;
+  input?: string | null;
+  frame_count: number;
+  files?: Record<string, string>;
+}
+
+export interface FrameKey {
+  source_id: string;
+  source_index: number;
+  segment_index: number;
+  step?: number | null;
+  time?: number | null;
+  time_unit?: string | null;
 }
 
 export interface PropertySpec {
@@ -60,6 +90,7 @@ export interface FrameHeader {
   scalar_units?: Record<string, string | null>;
   frame_index?: number;
   index?: number;
+  frame_key?: FrameKey;
   step?: number;
   time?: number;
   energy?: number;
@@ -69,7 +100,7 @@ export interface FrameHeader {
 
 export interface FrameData {
   header: FrameHeader;
-  arrays: Map<string, Float32Array>;
+  arrays: Map<string, Float32Array | Int32Array>;
 }
 
 export interface DisplaySeries {
@@ -94,7 +125,9 @@ export interface ScenePresentation {
   mode: RepresentationMode;
   water: "show" | "hide" | "only";
   hydrogens: boolean;
-  wrap: "atom" | "molecule" | "none";
+  wrap: "atom" | "molecule" | "unwrapped" | "none";
+  cellOrigin: CellOffset;
+  mirror: [boolean, boolean, boolean];
   images: {
     min: CellOffset;
     max: CellOffset;

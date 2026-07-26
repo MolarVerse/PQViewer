@@ -1,110 +1,99 @@
+<p align="center">
+  <img src="frontend/public/pq-logo.png" alt="PQViewer logo" width="72">
+</p>
+
 # PQViewer
 
-PQViewer is a local molecular trajectory viewer built on PQAnalysis. It pairs
-indexed trajectory access with a fast Three.js interface for trajectories,
-forces, periodic systems, solvent filtering, and structural inspection.
-Periodic cells use PQ's centered `[-0.5, 0.5)` convention.
+PQViewer is a local molecular structure and trajectory viewer built on
+[PQAnalysis](https://github.com/MolarVerse/PQAnalysis). It combines indexed
+trajectory access, correct PQ-centered periodic cells, direct measurements, and
+reproducible publication figures in a modern browser interface.
 
-## Install
+PQViewer is preparing for its first public beta. File and Python interfaces may
+still change before 1.0.
 
-PQViewer requires Python 3.12 or newer. From a checkout:
+![A triclinic framework in PQViewer](frontend/e2e/__screenshots__/darwin/acof-centered.png)
+
+## Quick start
+
+PQViewer requires Python 3.12 or newer.
 
 ```bash
+git clone https://github.com/MolarVerse/PQViewer.git
+cd PQViewer
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install .
+pqviewer examples/water.xyz
 ```
 
-The web interface is bundled with the Python package, so Node.js is not needed
-to install or run PQViewer.
+The interface is bundled with the Python package. Node.js is not required to
+install or run the viewer.
 
-## View a trajectory
+Open a trajectory, PQ input, run directory, or frame slice:
 
 ```bash
-pqviewer path/to/md.xyz
+pqviewer trajectory.xyz
+pqviewer run.in
+pqviewer path/to/run-directory
+pqviewer 'trajectory.xyz@100:1000:10'
 ```
 
-Try the included trajectory with `pqviewer examples/water.xyz`.
-Use `pqviewer examples/periodic-boundary.extxyz` to inspect centered wrapping,
-forces, step/time metadata, and minimum-image measurements.
-Run `pqviewer` without a path to open an empty workspace.
-
-Same-stem PQ companions are detected automatically; override them explicitly:
+ASE file and object support is optional:
 
 ```bash
-pqviewer path/to/md.xyz \
-  --forces path/to/md.force \
-  --velocities path/to/md.vel \
-  --charges path/to/md.chrg
+python -m pip install '.[ase]'
+pqviewer structure.cif
+pqviewer optimization.traj
 ```
 
-Add semantic residue and bond data when available:
+## What it does
+
+- Opens structures, trajectories, PQ inputs, and joined restart runs.
+- Uses indexed access for PQ sources, ASE `.traj`, and indexed ASE sequences
+  without retaining every coordinate frame in memory.
+- Displays forces, velocities, charges, periodic images, water, and ribbons
+  when the source provides them.
+- Uses PQ's centered fractional cell convention, `[-0.5, 0.5)`, including
+  triclinic cells.
+- Selects atoms by pointer, box, element, molecule, residue, connectivity, or
+  distance.
+- Measures periodic distances, angles, and dihedrals and plots them over time.
+- Tracks selected atoms, bookmarks frames, compares against a reference, and
+  calculates pair-distribution and coordination curves through PQAnalysis.
+- Exports publication PNG and TIFF figures plus CSV, SVG, and PDF plots.
+- Saves source-validated figure recipes for reproducible headless rendering.
+- Keeps major viewer actions available through command search and keyboard
+  shortcuts.
+
+Try the included periodic fixtures:
 
 ```bash
-pqviewer path/to/md.xyz \
-  --moldescriptor path/to/moldescriptor \
-  --topology path/to/topology
+pqviewer examples/periodic-boundary.extxyz
+pqviewer examples/periodic-crossing.extxyz
+pqviewer examples/acof-triclinic.xyz
 ```
 
-Files can also be opened together from the interface or dropped on the canvas.
-`View` opens the controls supported by the current data in one click:
-representation, water, cell, force and velocity vectors, periodic wrapping, and
-neighboring images. Ribbon appears when residue and backbone topology are
-present. Periodic coordinates follow PQ's centered `−½…+½` convention.
+## Documentation
 
-Click an atom for a compact readout. Shift-click additional atoms to measure a
-distance, angle, or ordered dihedral. On touch screens, tap atoms in order and
-tap a selected atom again to remove it. Periodic measurements use the exact
-minimum image by default; switch to displayed images when inspecting replicas.
-`Plot` follows the measurement across the trajectory and exports CSV or SVG.
-`Details` shows the selected atom's position and available per-atom values.
+- [Getting started](docs/getting-started.md)
+- [Viewer guide](docs/viewer-guide.md)
+- [Data sources and periodic conventions](docs/data-and-conventions.md)
+- [Trajectory analysis](docs/trajectory-analysis.md)
+- [Figures and recipes](docs/figures-and-recipes.md)
+- [Python API](docs/python-api.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Product direction](PRODUCT_DIRECTION.md)
+- [Changelog](CHANGELOG.md)
 
-The trajectory bar appears only for multi-frame data. It provides first,
-previous, play/pause, next, last, scrubbing, and the current frame number.
-Playback options contain speed, stride, once, loop, and rock modes. Scalar
-properties do not change the structural view or occupy the timeline.
+## Contributing and citation
 
-Search every action with `Cmd/Ctrl+K` or `/`. Press `?` for the complete shortcut
-sheet. `Space` plays or pauses, arrow keys step frames, `Home` and `End` jump to
-the trajectory limits, `R` fits the structure, and `Escape` closes the open card.
-Optional Vim navigation adds `h`/`l`, `H`/`L`, `gg`, `G`, `:`, and `Ctrl+[`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and
+[SECURITY.md](SECURITY.md) for private vulnerability reports. If PQViewer
+supports published work, cite it using [CITATION.cff](CITATION.cff).
 
-`Figure` or `Cmd/Ctrl+Shift+S` immediately writes a publication PNG at
-2400 × 1800 px. The export uses the current orientation with a fitted
-orthographic camera, white background, complete periodic boundary bonds,
-adaptive supersampling, restrained ambient occlusion, and explicit sRGB output.
-Dense scenes stay responsive by switching large atom and bond sets to lighter
-rendering paths.
+PQViewer runs on the local machine and binds to `127.0.0.1` by default. It does
+not provide authentication; do not expose it to an untrusted network.
 
-The viewer runs locally and opens in the default browser. Use `--no-open` for
-remote or scripted use.
-
-## Develop
-
-Frontend development requires Node.js 20.19+ on the 20.x line, or 22.12+:
-
-```bash
-python -m pip install -e ".[dev]"
-cd frontend
-npm ci
-npm run build
-cd ..
-```
-
-Run the API and Vite development server in separate terminals:
-
-```bash
-pqviewer path/to/md.xyz --no-open
-cd frontend && npm run dev
-```
-
-Run the checks with:
-
-```bash
-python -m pytest
-cd frontend
-npm test
-npm run build
-npx playwright install chromium
-npm run test:e2e
-```
+PQViewer is available under the [MIT License](LICENSE). Redistributed example
+data is covered in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

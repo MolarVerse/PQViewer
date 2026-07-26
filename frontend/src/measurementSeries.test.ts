@@ -1,11 +1,19 @@
 import { describe, expect, it } from "vitest";
+import { PDFDocument } from "pdf-lib";
 import { DatasetChangedError } from "./api";
 import {
+  calculateMeasurementComparison,
   calculateMeasurementSeries,
+  measurementComparisonPlotData,
   measurementSeriesCsv,
+  measurementSeriesPdf,
   measurementSeriesSvg,
+  plotShelfCsv,
+  plotShelfPdf,
+  plotShelfSvg,
 } from "./measurementSeries";
 import type {
+  MeasurementComparisonProgress,
   MeasurementSeries,
   MeasurementSeriesProgress,
 } from "./measurementSeries";
@@ -67,6 +75,21 @@ describe("measurement series", () => {
     });
   });
 
+  it("keeps trajectory measurements physical in unwrapped display mode", async () => {
+    const frame = trajectoryFrame([4.8, 0, 0, -4.8, 0, 0]);
+    const result = await calculateMeasurementSeries({
+      manifest: trajectoryManifest(1),
+      frameCount: 1,
+      selections: primaryPair,
+      wrap: "unwrapped",
+      minimumImage: true,
+      signal: new AbortController().signal,
+      loadFrame: async () => frame,
+    });
+
+    expect(result.values[0]).toBeCloseTo(0.4, 5);
+  });
+
   it("wraps selected atoms in a centered triclinic cell without preparing the full scene", async () => {
     const triclinic = new Float32Array([
       4, 0, 0,
@@ -81,7 +104,10 @@ describe("measurement series", () => {
     const result = await calculateMeasurementSeries({
       manifest: trajectoryManifest(1),
       frameCount: 1,
-      selections: primaryPair,
+      selections: [
+        { atom: 0, image: [-1, 0, 0] },
+        { atom: 1, image: [0, 0, 0] },
+      ],
       wrap: "atom",
       minimumImage: false,
       signal: new AbortController().signal,
@@ -96,7 +122,10 @@ describe("measurement series", () => {
     const result = await calculateMeasurementSeries({
       manifest: trajectoryManifest(1, [[0, 1]]),
       frameCount: 1,
-      selections: primaryPair,
+      selections: [
+        { atom: 0, image: [0, 0, 0] },
+        { atom: 1, image: [1, 0, 0] },
+      ],
       wrap: "molecule",
       minimumImage: false,
       signal: new AbortController().signal,
@@ -104,6 +133,24 @@ describe("measurement series", () => {
     });
 
     expect(result.values[0]).toBeCloseTo(0.4, 5);
+  });
+
+  it("does not apply a canonical atom-wrap image twice", async () => {
+    const source = trajectoryFrame([6, 0, 0, 4, 0, 0]);
+    const result = await calculateMeasurementSeries({
+      manifest: trajectoryManifest(1),
+      frameCount: 1,
+      selections: [
+        { atom: 0, image: [-1, 0, 0] },
+        { atom: 1, image: [0, 0, 0] },
+      ],
+      wrap: "atom",
+      minimumImage: false,
+      signal: new AbortController().signal,
+      loadFrame: async () => source,
+    });
+
+    expect(result.values).toEqual([8]);
   });
 
   it("keeps selected periodic replicas distinct", async () => {
@@ -431,6 +478,181 @@ describe("measurement series", () => {
   });
 });
 
+describe("measurement comparison", () => {
+  it("loads each frame once and preserves exact frame identity for every line", async () => {
+    const frames = [
+      trajectoryFrame([0, 0, 0, 1, 0, 0, 3, 0, 0], { time: 0, timeUnit: "fs" }),
+      trajectoryFrame([0, 0, 0, 2, 0, 0, 5, 0, 0], { time: 0.5, timeUnit: "fs" }),
+      trajectoryFrame([0, 0, 0, 3, 0, 0, 7, 0, 0], { time: 1, timeUnit: "fs" }),
+    ];
+    frames[1].arrays.set("positions", new Float32Array([0, 0, 0, 2, 0, 0]));
+    frames.forEach((frame, index) => {
+      frame.header.frame_key = {
+        source_id: "trajectory.extxyz",
+        source_index: 40 + index,
+        segment_index: 2,
+        step: 100 + index * 10,
+        time: index * 0.5,
+        time_unit: "fs",
+      };
+    });
+    const calls: number[] = [];
+    const progress: MeasurementComparisonProgress[] = [];
+    const result = await calculateMeasurementComparison({
+      manifest: trajectoryManifest(3, [], ["C", "O", "H"]),
+      frameCount: 3,
+      definitions: [
+        {
+          id: "co",
+          label: "C1–O2",
+          selections: primaryPair,
+          minimumImage: false,
+        },
+        {
+          id: "ch",
+          selections: [
+            { atom: 0, image: [0, 0, 0] },
+            { atom: 2, image: [0, 0, 0] },
+          ],
+          minimumImage: false,
+        },
+      ],
+      wrap: "none",
+      signal: new AbortController().signal,
+      loadFrame: async (index) => {
+        calls.push(index);
+        return frames[index];
+      },
+      onProgress: (snapshot) => progress.push(snapshot),
+    });
+
+    expect(calls).toEqual([0, 1, 2]);
+    expect(result).toMatchObject({
+      title: "Measurement comparison",
+      unit: "angstrom",
+      axis: { kind: "time", label: "Time", unit: "fs" },
+      xValues: [0, 0.5, 1],
+      frameIndices: [0, 1, 2],
+      loadedCount: 3,
+      complete: true,
+    });
+    expect(result.frameKeys.map((key) => key?.source_index)).toEqual([40, 41, 42]);
+    expect(result.lines.map(({ id, values }) => [id, values])).toEqual([
+      ["co", [1, 2, 3]],
+      ["ch", [3, null, 7]],
+    ]);
+    expect(progress.at(-1)).toBe(result);
+    expect(Object.isFrozen(result.frameKeys)).toBe(true);
+    expect(Object.isFrozen(result.lines[0].selections)).toBe(true);
+  });
+
+  it("keeps gaps aligned across definitions and cancels without another load", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const promise = calculateMeasurementComparison({
+      manifest: trajectoryManifest(5, [], ["C", "O", "H"]),
+      frameCount: 5,
+      definitions: [
+        { id: "co", selections: primaryPair, minimumImage: false },
+        {
+          id: "ch",
+          selections: [
+            { atom: 0, image: [0, 0, 0] },
+            { atom: 2, image: [0, 0, 0] },
+          ],
+          minimumImage: false,
+        },
+      ],
+      wrap: "none",
+      signal: controller.signal,
+      loadFrame: async () => {
+        calls += 1;
+        controller.abort(new DOMException("Stopped", "AbortError"));
+        return trajectoryFrame([0, 0, 0, 1, 0, 0, 2, 0, 0]);
+      },
+    });
+
+    await expect(promise).rejects.toMatchObject({ name: "AbortError" });
+    expect(calls).toBe(1);
+  });
+
+  it("rejects mixed units and more than eight definitions before loading", async () => {
+    let calls = 0;
+    const base = {
+      manifest: trajectoryManifest(1, [], ["C", "O", "H"]),
+      frameCount: 1,
+      wrap: "none" as const,
+      signal: new AbortController().signal,
+      loadFrame: async () => {
+        calls += 1;
+        return trajectoryFrame([0, 0, 0, 1, 0, 0, 2, 0, 0]);
+      },
+    };
+    await expect(calculateMeasurementComparison({
+      ...base,
+      definitions: [
+        { id: "distance", selections: primaryPair, minimumImage: false },
+        {
+          id: "angle",
+          selections: [
+            ...primaryPair,
+            { atom: 2, image: [0, 0, 0] },
+          ],
+          minimumImage: false,
+        },
+      ],
+    })).rejects.toThrow("same unit");
+    await expect(calculateMeasurementComparison({
+      ...base,
+      definitions: Array.from({ length: 9 }, (_, index) => ({
+        id: `line-${index}`,
+        selections: primaryPair,
+        minimumImage: false,
+      })),
+    })).rejects.toThrow("one to 8 measurements");
+    expect(calls).toBe(0);
+  });
+
+  it("keeps eight long comparison traces in one bounded sequential pass", async () => {
+    const frameCount = 10_001;
+    const source = trajectoryFrame([0, 0, 0, 1, 0, 0]);
+    const progress: MeasurementComparisonProgress[] = [];
+    let calls = 0;
+    let active = 0;
+    let peak = 0;
+    const result = await calculateMeasurementComparison({
+      manifest: trajectoryManifest(frameCount),
+      frameCount,
+      definitions: Array.from({ length: 8 }, (_, index) => ({
+        id: `distance-${index}`,
+        selections: primaryPair,
+        minimumImage: false,
+      })),
+      wrap: "none",
+      signal: new AbortController().signal,
+      loadFrame: async () => {
+        calls += 1;
+        active += 1;
+        peak = Math.max(peak, active);
+        await Promise.resolve();
+        active -= 1;
+        return source;
+      },
+      onProgress: (snapshot) => progress.push(snapshot),
+    });
+
+    expect(calls).toBe(frameCount);
+    expect(peak).toBe(1);
+    expect(progress.length).toBeLessThanOrEqual(23);
+    expect(result.lines).toHaveLength(8);
+    expect(result.lines.every(({ values }) => (
+      values.length === frameCount
+      && values[0] === 1
+      && values.at(-1) === 1
+    ))).toBe(true);
+  });
+});
+
 describe("measurement series exports", () => {
   const series: MeasurementSeries = Object.freeze({
     title: "Distance · C1–O2",
@@ -486,6 +708,48 @@ describe("measurement series exports", () => {
     expect(path.match(/L/g)).toHaveLength(2);
   });
 
+  it("writes a valid vector PDF with exact page dimensions and metadata", async () => {
+    const bytes = measurementSeriesPdf(series, { width: 720, height: 432 });
+    const pdf = new TextDecoder().decode(bytes);
+    const parsed = await PDFDocument.load(bytes);
+
+    expect(pdf.startsWith("%PDF-1.4\n%PQV1\n")).toBe(true);
+    expect(pdf.endsWith("%%EOF\n")).toBe(true);
+    expect(pdf).toContain("/MediaBox [0 0 720 432]");
+    expect(pdf).toContain("/BaseFont /Helvetica");
+    expect(pdf).toContain("/BaseFont /Helvetica-Bold");
+    expect(pdf).toContain("/Title <FEFF00440069007300740061006E00630065002000B70020004300312013004F0032>");
+    expect(pdf).toContain("(Distance \\267 C1\\226O2) Tj");
+    expect(pdf).toContain("(Time [fs]) Tj");
+    expect(pdf).toContain("(Distance [\\305]) Tj");
+    expect(pdf).not.toContain("/Subtype /Image");
+    expect(pdf).not.toMatch(/NaN|Infinity/);
+    expect(parsed.getPageCount()).toBe(1);
+    expect(parsed.getPage(0).getSize()).toEqual({
+      width: 720,
+      height: 432,
+    });
+
+    const startXref = Number(pdf.match(/startxref\n(\d+)\n%%EOF/)?.[1]);
+    expect(pdf.slice(startXref)).toMatch(/^xref\n/);
+    const xrefRows = pdf.slice(startXref).split("\n").slice(3, 10);
+    xrefRows.forEach((row, index) => {
+      const offset = Number(row.slice(0, 10));
+      expect(pdf.slice(offset)).toMatch(new RegExp(`^${index + 1} 0 obj\\n`));
+    });
+  });
+
+  it("keeps PDF trace gaps as separate vector subpaths", () => {
+    const pdf = new TextDecoder().decode(measurementSeriesPdf(series));
+    const trace = pdf.match(
+      /0\.075 0\.498 0\.471 RG\n1\.7 w\n1 J 1 j\n([\s\S]*?)\nS/,
+    )?.[1] ?? "";
+
+    expect(trace.match(/ m/g)).toHaveLength(2);
+    expect(trace.match(/ l/g)).toBeNull();
+    expect(pdf).toMatch(/ c\n/);
+  });
+
   it("renders an explicit empty state and rejects invalid dimensions", () => {
     const empty = measurementSeriesSvg({
       ...series,
@@ -498,6 +762,126 @@ describe("measurement series exports", () => {
     expect(() => measurementSeriesSvg(series, { width: 0 })).toThrow(
       "SVG width must be a positive integer",
     );
+    const emptyPdf = new TextDecoder().decode(measurementSeriesPdf({
+      ...series,
+      xValues: [1, 2],
+      values: [null, null],
+      loadedCount: 2,
+    }));
+    expect(emptyPdf).toContain("(No valid measurements) Tj");
+    expect(() => measurementSeriesPdf(series, { width: 0 })).toThrow(
+      "PDF width must be a positive integer",
+    );
+  });
+});
+
+describe("generic plot exports", () => {
+  const plot = {
+    requestId: 4,
+    kind: "comparison" as const,
+    title: "Pinned distances",
+    xLabel: "Time",
+    xUnit: "ps",
+    yLabel: "Distance",
+    yUnit: "Å",
+    context: "3 frames sampled",
+    xValues: [0, 0.5, 1],
+    frameIndices: [0, 4, 9],
+    frameKeys: [
+      {
+        source_id: "segment-a",
+        source_index: 0,
+        segment_index: 0,
+        step: 0,
+        time: 0,
+        time_unit: "ps",
+      },
+      {
+        source_id: "segment-a",
+        source_index: 4,
+        segment_index: 0,
+        step: 4,
+        time: 0.5,
+        time_unit: "ps",
+      },
+      {
+        source_id: "segment-b",
+        source_index: 1,
+        segment_index: 1,
+        step: 9,
+        time: 1,
+        time_unit: "ps",
+      },
+    ],
+    lines: [
+      { id: "a", label: "C1–O2", values: [1, null, 2], color: "#137f78" },
+      { id: "b", label: "C1–H3", values: [2, 3, 4], color: "#b35c2e" },
+    ],
+    loadedCount: 3,
+    totalCount: 3,
+    complete: true,
+  };
+
+  it("writes aligned multi-series CSV with units and gaps", () => {
+    expect(plotShelfCsv(plot)).toBe(
+      "Frame index,Source,Segment index,Source frame index,Time [ps],C1–O2 [Å],C1–H3 [Å]\n"
+      + "0,segment-a,0,0,0,1,2\n"
+      + "4,segment-a,0,4,0.5,,3\n"
+      + "9,segment-b,1,1,1,2,4\n",
+    );
+  });
+
+  it("writes standalone multi-series SVG and vector PDF", async () => {
+    const svg = plotShelfSvg(plot, { width: 800, height: 500 });
+    const pdf = plotShelfPdf(plot, { width: 720, height: 432 });
+    const parsed = await PDFDocument.load(pdf);
+
+    expect(svg).toContain("Pinned distances");
+    expect(svg).toContain("3 frames sampled");
+    expect(svg).toContain("C1–O2");
+    expect(svg).toContain('stroke="#137f78"');
+    expect(svg).toContain('stroke="#b35c2e"');
+    expect(svg.match(/<path d=/g)).toHaveLength(2);
+    expect(svg).not.toMatch(/NaN|Infinity/);
+    expect(new TextDecoder().decode(pdf)).not.toContain("/Subtype /Image");
+    expect(parsed.getPage(0).getSize()).toEqual({ width: 720, height: 432 });
+  });
+
+  it("adapts a calculated comparison into a typed plot shelf", () => {
+    const comparison = {
+      title: "Pinned distances",
+      unit: "angstrom" as const,
+      axis: { kind: "frame" as const, label: "Frame" },
+      xValues: [1, 2],
+      frameIndices: [3, 8],
+      frameKeys: [null, null],
+      lines: [{
+        id: "a",
+        label: "C1–O2",
+        kind: "distance" as const,
+        unit: "angstrom" as const,
+        selections: primaryPair,
+        minimumImage: true,
+        values: [1, 2],
+      }],
+      loadedCount: 2,
+      complete: true,
+    };
+    const adapted = measurementComparisonPlotData(comparison, 12);
+
+    expect(adapted).toMatchObject({
+      requestId: 12,
+      kind: "measurement",
+      yLabel: "Distance",
+      yUnit: "Å",
+      frameIndices: [3, 8],
+      complete: true,
+    });
+    expect(adapted.lines[0]).toMatchObject({
+      id: "a",
+      selection: primaryPair,
+      minimumImage: true,
+    });
   });
 });
 

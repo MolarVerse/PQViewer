@@ -1,8 +1,6 @@
 import { DatasetChangedError, frameArray } from "./api";
 import {
   createCellBasis,
-  prepareScene,
-  prepareTopology,
   resolvePbc,
 } from "./scene/model";
 import {
@@ -13,9 +11,11 @@ import type { MeasurementKind, MeasurementSuccess } from "./selection";
 import type {
   AtomSelection,
   FrameData,
+  FrameKey,
   Manifest,
   ScenePresentation,
 } from "./types";
+import type { PlotShelfData } from "./trajectoryStudy";
 
 export type MeasurementAxisKind = "time" | "step" | "frame";
 
@@ -32,11 +32,44 @@ export interface MeasurementSeries {
   readonly axis: MeasurementSeriesAxis;
   readonly xValues: readonly number[];
   readonly values: readonly (number | null)[];
+  readonly frameIndices?: readonly number[];
+  readonly frameKeys?: readonly (FrameKey | null)[];
   readonly loadedCount: number;
   readonly complete: boolean;
 }
 
 export type MeasurementSeriesProgress = MeasurementSeries;
+
+export interface MeasurementComparisonDefinition {
+  readonly id: string;
+  readonly label?: string;
+  readonly selections: readonly AtomSelection[];
+  readonly minimumImage: boolean;
+}
+
+export interface MeasurementComparisonLine {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: MeasurementKind;
+  readonly unit: MeasurementSuccess["unit"];
+  readonly selections: readonly AtomSelection[];
+  readonly minimumImage: boolean;
+  readonly values: readonly (number | null)[];
+}
+
+export interface MeasurementComparison {
+  readonly title: string;
+  readonly unit: MeasurementSuccess["unit"];
+  readonly axis: MeasurementSeriesAxis;
+  readonly xValues: readonly number[];
+  readonly frameIndices: readonly number[];
+  readonly frameKeys: readonly (FrameKey | null)[];
+  readonly lines: readonly MeasurementComparisonLine[];
+  readonly loadedCount: number;
+  readonly complete: boolean;
+}
+
+export type MeasurementComparisonProgress = MeasurementComparison;
 
 export type MeasurementFrameLoader = (
   index: number,
@@ -54,28 +87,32 @@ export interface CalculateMeasurementSeriesOptions {
   onProgress?: (progress: MeasurementSeriesProgress) => void;
 }
 
+export interface CalculateMeasurementComparisonOptions {
+  manifest: Manifest;
+  frameCount: number;
+  definitions: readonly MeasurementComparisonDefinition[];
+  wrap: ScenePresentation["wrap"];
+  signal: AbortSignal;
+  loadFrame: MeasurementFrameLoader;
+  title?: string;
+  onProgress?: (progress: MeasurementComparisonProgress) => void;
+}
+
 export interface MeasurementSeriesSvgOptions {
   width?: number;
   height?: number;
 }
 
+export interface MeasurementSeriesPdfOptions {
+  /** Page width in PDF points. */
+  width?: number;
+  /** Page height in PDF points. */
+  height?: number;
+}
+
 const MAX_COUNT_PROGRESS_UPDATES = 60;
 const MAX_LARGE_COUNT_PROGRESS_UPDATES = 20;
-
-const measurementPresentation: ScenePresentation = {
-  mode: "ball-stick",
-  water: "show",
-  hydrogens: true,
-  wrap: "none",
-  images: { min: [0, 0, 0], max: [0, 0, 0] },
-  cell: false,
-  forces: false,
-  velocities: false,
-  atomScale: 1,
-  bondScale: 1,
-  color: "element",
-  quality: "auto",
-};
+const MAX_COMPARISON_DEFINITIONS = 8;
 
 export async function calculateMeasurementSeries({
   manifest,
@@ -100,10 +137,12 @@ export async function calculateMeasurementSeries({
   const values = Array<number | null>(frameCount).fill(null);
   const times = Array<number | null>(frameCount).fill(null);
   const steps = Array<number | null>(frameCount).fill(null);
+  const frameIndices = Object.freeze(
+    Array.from({ length: frameCount }, (_, index) => index),
+  );
+  const frameKeys = Array<FrameKey | null>(frameCount).fill(null);
   const frameValues = Object.freeze(oneBasedFrames(frameCount));
   const timeUnits = new Set<string>();
-  const presentation = { ...measurementPresentation, wrap };
-  let topology: ReturnType<typeof prepareTopology> | undefined;
   let loadedCount = 0;
   let lastProgressCount = 0;
   let consecutiveLoadFailures = 0;
@@ -120,6 +159,8 @@ export async function calculateMeasurementSeries({
       frameAxis(),
       frameValues,
       values,
+      frameIndices,
+      frameKeys,
       0,
       false,
     ));
@@ -135,30 +176,22 @@ export async function calculateMeasurementSeries({
       throwIfAborted(signal);
       times[index] = numericMetadata(frame, "time");
       steps[index] = numericMetadata(frame, "step");
+      frameKeys[index] = cloneFrameKey(frame.header.frame_key);
       const timeUnit = metadataUnit(frame, "time");
       if (timeUnit) timeUnits.add(timeUnit);
 
-      if (wrap === "molecule") {
-        if (topology === undefined) topology = prepareTopology(manifest, frame);
-        const scene = prepareScene(manifest, frame, presentation, topology);
-        values[index] = scene
-          ? measureFrame(frame, scene.positions, scene.pbc, selected, minimumImage, "none")
-          : null;
-      } else {
-        const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
-        const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
-        const basis = createCellBasis(cell);
-        values[index] = positions
-          ? measureFrame(
-              frame,
-              positions,
-              resolvePbc(frame, basis),
-              selected,
-              minimumImage,
-              wrap,
-            )
-          : null;
-      }
+      const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+      const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+      const basis = createCellBasis(cell);
+      values[index] = positions
+        ? measureFrame(
+            frame,
+            positions,
+            resolvePbc(frame, basis),
+            selected,
+            minimumImage,
+          )
+        : null;
     } catch (error) {
       if (signal.aborted || isAbortError(error)) throw abortReason(signal, error);
       if (error instanceof DatasetChangedError) throw error;
@@ -184,6 +217,8 @@ export async function calculateMeasurementSeries({
           frameAxis(),
           frameValues,
           values,
+          frameIndices,
+          frameKeys,
           loadedCount,
           false,
         ));
@@ -201,9 +236,141 @@ export async function calculateMeasurementSeries({
     axis,
     xValues,
     values,
+    frameIndices,
+    frameKeys,
     loadedCount,
     true,
   );
+  onProgress?.(result);
+  return result;
+}
+
+export async function calculateMeasurementComparison({
+  manifest,
+  frameCount,
+  definitions,
+  wrap,
+  signal,
+  loadFrame,
+  title,
+  onProgress,
+}: CalculateMeasurementComparisonOptions): Promise<MeasurementComparison> {
+  validateComparisonRequest(manifest, frameCount, definitions, wrap);
+  throwIfAborted(signal);
+
+  const prepared = definitions.map((definition) => {
+    const selections = definition.selections.map(({ atom, image }) => ({
+      atom,
+      image: [...image] as AtomSelection["image"],
+    }));
+    const kind = measurementKind(selections.length);
+    return {
+      id: definition.id.trim(),
+      label: definition.label?.trim() || measurementTitle(manifest, selections, kind),
+      selections,
+      minimumImage: definition.minimumImage,
+      kind,
+      unit: measurementUnit(kind),
+      values: Array<number | null>(frameCount).fill(null),
+    };
+  });
+  const unit = prepared[0].unit;
+  if (prepared.some((definition) => definition.unit !== unit)) {
+    throw new TypeError("Compared measurements must use the same unit");
+  }
+
+  const comparisonTitle = title?.trim() || (
+    prepared.length === 1 ? prepared[0].label : "Measurement comparison"
+  );
+  const times = Array<number | null>(frameCount).fill(null);
+  const steps = Array<number | null>(frameCount).fill(null);
+  const frameIndices = Object.freeze(
+    Array.from({ length: frameCount }, (_, index) => index),
+  );
+  const frameKeys = Array<FrameKey | null>(frameCount).fill(null);
+  const frameValues = Object.freeze(oneBasedFrames(frameCount));
+  const timeUnits = new Set<string>();
+  let loadedCount = 0;
+  let lastProgressCount = 0;
+  let consecutiveLoadFailures = 0;
+  const maximumProgressUpdates = frameCount >= 10_000
+    ? MAX_LARGE_COUNT_PROGRESS_UPDATES
+    : MAX_COUNT_PROGRESS_UPDATES;
+  const progressStep = Math.max(1, Math.ceil(frameCount / maximumProgressUpdates));
+
+  const emit = (
+    axis: MeasurementSeriesAxis,
+    xValues: readonly number[],
+    complete: boolean,
+  ) => comparisonSnapshot(
+    comparisonTitle,
+    unit,
+    axis,
+    xValues,
+    frameIndices,
+    frameKeys,
+    prepared,
+    loadedCount,
+    complete,
+  );
+
+  onProgress?.(emit(frameAxis(), frameValues, false));
+
+  for (let index = 0; index < frameCount; index += 1) {
+    throwIfAborted(signal);
+    let frameLoaded = false;
+    try {
+      const frame = await loadFrame(index, signal);
+      frameLoaded = true;
+      consecutiveLoadFailures = 0;
+      throwIfAborted(signal);
+      times[index] = numericMetadata(frame, "time");
+      steps[index] = numericMetadata(frame, "step");
+      frameKeys[index] = cloneFrameKey(frame.header.frame_key);
+      const timeUnit = metadataUnit(frame, "time");
+      if (timeUnit) timeUnits.add(timeUnit);
+
+      const positions = frameArray(frame, ["positions", "position", "pos", "coordinates", "coords"]);
+      const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
+      const basis = createCellBasis(cell);
+      const pbc = resolvePbc(frame, basis);
+      for (const definition of prepared) {
+        definition.values[index] = positions
+          ? measureFrame(
+              frame,
+              positions,
+              pbc,
+              definition.selections,
+              definition.minimumImage,
+            )
+          : null;
+      }
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw abortReason(signal, error);
+      if (error instanceof DatasetChangedError) throw error;
+      if (!frameLoaded) {
+        consecutiveLoadFailures += 1;
+        if (consecutiveLoadFailures >= 3) {
+          throw new Error("Trajectory frames could not be loaded", { cause: error });
+        }
+      }
+      for (const definition of prepared) definition.values[index] = null;
+    }
+
+    loadedCount = index + 1;
+    if (
+      onProgress
+      && loadedCount < frameCount
+      && (loadedCount === 1 || loadedCount - lastProgressCount >= progressStep)
+    ) {
+      onProgress(emit(frameAxis(), frameValues, false));
+      lastProgressCount = loadedCount;
+    }
+  }
+
+  throwIfAborted(signal);
+  const { axis, xValues } = resolveAxis(times, steps, timeUnits);
+  const result = emit(axis, xValues, true);
   onProgress?.(result);
   return result;
 }
@@ -220,6 +387,308 @@ export function measurementSeriesCsv(series: MeasurementSeries): string {
     ]);
   }
   return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+export function measurementComparisonPlotData(
+  comparison: MeasurementComparison,
+  requestId: number,
+): PlotShelfData {
+  const kinds = new Set(comparison.lines.map(({ kind }) => kind));
+  return Object.freeze({
+    requestId,
+    kind: comparison.lines.length > 1 ? "comparison" : "measurement",
+    title: comparison.title,
+    xLabel: comparison.axis.label,
+    xUnit: comparison.axis.unit,
+    yLabel: kinds.size === 1
+      ? titleCase(comparison.lines[0].kind)
+      : "Measurement",
+    yUnit: displayUnit(comparison.unit),
+    xValues: comparison.xValues,
+    frameIndices: comparison.frameIndices,
+    frameKeys: comparison.frameKeys,
+    lines: Object.freeze(comparison.lines.map((line, index) => Object.freeze({
+      id: line.id,
+      label: line.label,
+      values: line.values,
+      color: PLOT_COLORS[index % PLOT_COLORS.length],
+      selection: line.selections,
+      minimumImage: line.minimumImage,
+      discontinuity: line.unit === "degree" ? 180 : undefined,
+    }))),
+    loadedCount: comparison.loadedCount,
+    totalCount: comparison.frameIndices.length,
+    complete: comparison.complete,
+  });
+}
+
+export function plotShelfCsv(plot: PlotShelfData): string {
+  validatePlotShelf(plot);
+  const frameIndices = plot.frameIndices?.length === plot.xValues.length
+    ? plot.frameIndices
+    : undefined;
+  const frameKeys = plot.frameKeys?.length === plot.xValues.length
+    ? plot.frameKeys
+    : undefined;
+  const rows: string[][] = [[
+    ...(frameIndices ? ["Frame index"] : []),
+    ...(frameKeys ? ["Source", "Segment index", "Source frame index"] : []),
+    withUnit(plot.xLabel, plot.xUnit),
+    ...plot.lines.map((line) => withUnit(line.label, plot.yUnit)),
+  ]];
+  for (let index = 0; index < plot.xValues.length; index += 1) {
+    const key = frameKeys?.[index];
+    rows.push([
+      ...(frameIndices ? [csvNumber(frameIndices[index], 15)] : []),
+      ...(frameKeys ? [
+        key?.source_id ?? "",
+        csvNumber(key?.segment_index, 15),
+        csvNumber(key?.source_index, 15),
+      ] : []),
+      csvNumber(plot.xValues[index], 15),
+      ...plot.lines.map((line) => csvNumber(line.values[index], 10)),
+    ]);
+  }
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
+}
+
+export function plotShelfSvg(
+  plot: PlotShelfData,
+  options: MeasurementSeriesSvgOptions = {},
+): string {
+  validatePlotShelf(plot);
+  const width = positiveDimension(options.width ?? 1200, "width");
+  const height = positiveDimension(options.height ?? 720, "height");
+  const legendRows = Math.ceil(plot.lines.length / 2);
+  const margin = {
+    top: 82 + legendRows * 22,
+    right: 48,
+    bottom: 86,
+    left: 96,
+  };
+  const plotWidth = Math.max(1, width - margin.left - margin.right);
+  const plotHeight = Math.max(1, height - margin.top - margin.bottom);
+  const xDomain = expandedDomain(plot.xValues.filter(Number.isFinite));
+  const yDomain = plotExpandedYDomain(plot);
+  const xMap = (value: number) => (
+    margin.left + (value - xDomain[0]) / (xDomain[1] - xDomain[0]) * plotWidth
+  );
+  const yMap = (value: number) => (
+    margin.top + (1 - (value - yDomain[0]) / (yDomain[1] - yDomain[0])) * plotHeight
+  );
+  const xTicks = ticks(xDomain[0], xDomain[1], 5);
+  const yTicks = ticks(yDomain[0], yDomain[1], 5);
+  const xLabel = withUnit(plot.xLabel, plot.xUnit);
+  const yLabel = withUnit(plot.yLabel, plot.yUnit);
+  const status = plotStatus(plot);
+  const paths = plot.lines.map((line, index) => {
+    const color = normalizedPlotColor(line.color, index);
+    const path = genericSvgPath(
+      plot.xValues,
+      line.values,
+      line.discontinuity,
+      xMap,
+      yMap,
+    );
+    return path
+      ? `<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`
+      : "";
+  });
+  const hasValues = paths.some(Boolean);
+
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="title description">`,
+    "<title id=\"title\">", escapeXml(plot.title), "</title>",
+    "<desc id=\"description\">", escapeXml(`${plot.title}; ${status}.`), "</desc>",
+    "<rect width=\"100%\" height=\"100%\" fill=\"#ffffff\"/>",
+    `<text x="${margin.left}" y="38" fill="#172321" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="600">${escapeXml(plot.title)}</text>`,
+    `<text x="${margin.left}" y="60" fill="#64706d" font-family="Arial, Helvetica, sans-serif" font-size="13">${escapeXml(status)}</text>`,
+    ...plot.lines.map((line, index) => {
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      const x = margin.left + column * Math.max(1, plotWidth / 2);
+      const y = 83 + row * 22;
+      const color = normalizedPlotColor(line.color, index);
+      return [
+        `<line x1="${x}" y1="${y}" x2="${x + 22}" y2="${y}" stroke="${color}" stroke-width="3" stroke-linecap="round"/>`,
+        `<text x="${x + 31}" y="${y}" dy="0.35em" fill="#394642" font-family="Arial, Helvetica, sans-serif" font-size="12">${escapeXml(line.label)}</text>`,
+      ].join("");
+    }),
+    ...yTicks.flatMap((value) => {
+      const y = plotNumber(yMap(value));
+      return [
+        `<line x1="${margin.left}" y1="${y}" x2="${width - margin.right}" y2="${y}" stroke="#e2e8e6" stroke-width="1"/>`,
+        `<text x="${margin.left - 14}" y="${y}" dy="0.35em" text-anchor="end" fill="#596663" font-family="Arial, Helvetica, sans-serif" font-size="12">${escapeXml(tickNumber(value))}</text>`,
+      ];
+    }),
+    ...xTicks.flatMap((value) => {
+      const x = plotNumber(xMap(value));
+      return [
+        `<line x1="${x}" y1="${margin.top}" x2="${x}" y2="${height - margin.bottom}" stroke="#edf1f0" stroke-width="1"/>`,
+        `<text x="${x}" y="${height - margin.bottom + 26}" text-anchor="middle" fill="#596663" font-family="Arial, Helvetica, sans-serif" font-size="12">${escapeXml(tickNumber(value))}</text>`,
+      ];
+    }),
+    `<line x1="${margin.left}" y1="${height - margin.bottom}" x2="${width - margin.right}" y2="${height - margin.bottom}" stroke="#84908d" stroke-width="1.2"/>`,
+    `<line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${height - margin.bottom}" stroke="#84908d" stroke-width="1.2"/>`,
+    ...paths,
+    hasValues
+      ? ""
+      : `<text x="${margin.left + plotWidth / 2}" y="${margin.top + plotHeight / 2}" text-anchor="middle" fill="#7b8784" font-family="Arial, Helvetica, sans-serif" font-size="14">No valid data</text>`,
+    `<text x="${margin.left + plotWidth / 2}" y="${height - 24}" text-anchor="middle" fill="#293633" font-family="Arial, Helvetica, sans-serif" font-size="14">${escapeXml(xLabel)}</text>`,
+    `<text x="24" y="${margin.top + plotHeight / 2}" transform="rotate(-90 24 ${margin.top + plotHeight / 2})" text-anchor="middle" fill="#293633" font-family="Arial, Helvetica, sans-serif" font-size="14">${escapeXml(yLabel)}</text>`,
+    "</svg>",
+  ].join("");
+}
+
+export function plotShelfPdf(
+  plot: PlotShelfData,
+  options: MeasurementSeriesPdfOptions = {},
+): Uint8Array {
+  validatePlotShelf(plot);
+  const width = positivePdfDimension(options.width ?? 720, "width");
+  const height = positivePdfDimension(options.height ?? 432, "height");
+  const legendRows = Math.ceil(plot.lines.length / 2);
+  const margin = {
+    top: 58 + legendRows * 14,
+    right: 30,
+    bottom: 54,
+    left: 62,
+  };
+  const plotWidth = Math.max(1, width - margin.left - margin.right);
+  const plotHeight = Math.max(1, height - margin.top - margin.bottom);
+  const xDomain = expandedDomain(plot.xValues.filter(Number.isFinite));
+  const yDomain = plotExpandedYDomain(plot);
+  const xMap = (value: number) => (
+    margin.left + (value - xDomain[0]) / (xDomain[1] - xDomain[0]) * plotWidth
+  );
+  const yMap = (value: number) => (
+    margin.top + (1 - (value - yDomain[0]) / (yDomain[1] - yDomain[0])) * plotHeight
+  );
+  const xTicks = ticks(xDomain[0], xDomain[1], 5);
+  const yTicks = ticks(yDomain[0], yDomain[1], 5);
+  const commands: string[] = [
+    "1 1 1 rg",
+    `0 0 ${pdfNumber(width)} ${pdfNumber(height)} re f`,
+  ];
+
+  for (const value of yTicks) {
+    const y = height - yMap(value);
+    commands.push(
+      "0.886 0.91 0.902 RG",
+      "0.6 w",
+      `${pdfNumber(margin.left)} ${pdfNumber(y)} m ${pdfNumber(width - margin.right)} ${pdfNumber(y)} l S`,
+      pdfText(tickNumber(value), margin.left - 8, y - 3.2, {
+        align: "right",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+  for (const value of xTicks) {
+    const x = xMap(value);
+    commands.push(
+      "0.929 0.945 0.941 RG",
+      "0.6 w",
+      `${pdfNumber(x)} ${pdfNumber(margin.bottom)} m ${pdfNumber(x)} ${pdfNumber(height - margin.top)} l S`,
+      pdfText(tickNumber(value), x, margin.bottom - 17, {
+        align: "center",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+  commands.push(
+    "0.518 0.565 0.553 RG",
+    "0.8 w",
+    `${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} m ${pdfNumber(width - margin.right)} ${pdfNumber(margin.bottom)} l S`,
+    `${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} m ${pdfNumber(margin.left)} ${pdfNumber(height - margin.top)} l S`,
+  );
+
+  let hasValues = false;
+  plot.lines.forEach((line, index) => {
+    const path = genericPdfPath(
+      plot.xValues,
+      line.values,
+      line.discontinuity,
+      xMap,
+      yMap,
+      height,
+    );
+    if (!path) return;
+    hasValues = true;
+    const [red, green, blue] = plotColorRgb(line.color, index);
+    commands.push(
+      `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} RG`,
+      "1.7 w",
+      "1 J 1 j",
+      path,
+      "S",
+    );
+  });
+  if (!hasValues) {
+    commands.push(pdfText(
+      "No valid data",
+      margin.left + plotWidth * 0.5,
+      margin.bottom + plotHeight * 0.5,
+      {
+        align: "center",
+        color: [0.482, 0.529, 0.518],
+        size: 9,
+      },
+    ));
+  }
+
+  commands.push(
+    pdfText(plot.title, margin.left, height - 27, {
+      color: [0.09, 0.137, 0.129],
+      font: "F2",
+      size: 15,
+    }),
+    pdfText(plotStatus(plot), margin.left, height - 42, {
+      color: [0.392, 0.439, 0.427],
+      size: 8.5,
+    }),
+  );
+  plot.lines.forEach((line, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const x = margin.left + column * Math.max(1, plotWidth / 2);
+    const y = height - 58 - row * 14;
+    const [red, green, blue] = plotColorRgb(line.color, index);
+    commands.push(
+      `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} RG`,
+      "2 w",
+      `${pdfNumber(x)} ${pdfNumber(y)} m ${pdfNumber(x + 14)} ${pdfNumber(y)} l S`,
+      pdfText(line.label, x + 20, y - 3, {
+        color: [0.224, 0.275, 0.259],
+        size: 8,
+      }),
+    );
+  });
+  commands.push(
+    pdfText(withUnit(plot.xLabel, plot.xUnit), margin.left + plotWidth * 0.5, 17, {
+      align: "center",
+      color: [0.161, 0.212, 0.2],
+      size: 9,
+    }),
+    pdfVerticalText(
+      withUnit(plot.yLabel, plot.yUnit),
+      18,
+      margin.bottom + plotHeight * 0.5,
+      {
+        color: [0.161, 0.212, 0.2],
+        size: 9,
+      },
+    ),
+  );
+
+  return buildVectorPdf(
+    width,
+    height,
+    commands.filter(Boolean).join("\n"),
+    plot.title,
+  );
 }
 
 export function measurementSeriesSvg(
@@ -289,20 +758,147 @@ export function measurementSeriesSvg(
   ].join("");
 }
 
+export function measurementSeriesPdf(
+  series: MeasurementSeries,
+  options: MeasurementSeriesPdfOptions = {},
+): Uint8Array {
+  const width = positivePdfDimension(options.width ?? 720, "width");
+  const height = positivePdfDimension(options.height ?? 432, "height");
+  const margin = {
+    top: 52,
+    right: 30,
+    bottom: 54,
+    left: 62,
+  };
+  const plotWidth = Math.max(1, width - margin.left - margin.right);
+  const plotHeight = Math.max(1, height - margin.top - margin.bottom);
+  const points = finiteSeriesPoints(series);
+  const xDomain = expandedDomain(points.map(({ x }) => x));
+  const yDomain = expandedDomain(points.map(({ y }) => y));
+  const xMap = (value: number) => (
+    margin.left + (value - xDomain[0]) / (xDomain[1] - xDomain[0]) * plotWidth
+  );
+  const yMap = (value: number) => (
+    margin.top + (1 - (value - yDomain[0]) / (yDomain[1] - yDomain[0])) * plotHeight
+  );
+  const xTicks = ticks(xDomain[0], xDomain[1], 5);
+  const yTicks = ticks(yDomain[0], yDomain[1], 5);
+  const xLabel = withUnit(series.axis.label, series.axis.unit);
+  const yLabel = withUnit(titleCase(series.kind), displayUnit(series.unit));
+  const status = series.complete
+    ? `${series.values.filter((value) => value !== null).length} valid frames`
+    : `${series.loadedCount} frames loaded`;
+  const commands: string[] = [
+    "1 1 1 rg",
+    `0 0 ${pdfNumber(width)} ${pdfNumber(height)} re f`,
+  ];
+
+  for (const value of yTicks) {
+    const y = height - yMap(value);
+    commands.push(
+      "0.886 0.91 0.902 RG",
+      "0.6 w",
+      `${pdfNumber(margin.left)} ${pdfNumber(y)} m ${pdfNumber(width - margin.right)} ${pdfNumber(y)} l S`,
+      pdfText(tickNumber(value), margin.left - 8, y - 3.2, {
+        align: "right",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+  for (const value of xTicks) {
+    const x = xMap(value);
+    commands.push(
+      "0.929 0.945 0.941 RG",
+      "0.6 w",
+      `${pdfNumber(x)} ${pdfNumber(height - margin.top)} m ${pdfNumber(x)} ${pdfNumber(margin.bottom)} l S`,
+      pdfText(tickNumber(value), x, margin.bottom - 17, {
+        align: "center",
+        color: [0.35, 0.4, 0.388],
+        size: 8,
+      }),
+    );
+  }
+
+  commands.push(
+    "0.518 0.565 0.553 RG",
+    "0.8 w",
+    `${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} m ${pdfNumber(width - margin.right)} ${pdfNumber(margin.bottom)} l S`,
+    `${pdfNumber(margin.left)} ${pdfNumber(height - margin.top)} m ${pdfNumber(margin.left)} ${pdfNumber(margin.bottom)} l S`,
+  );
+  const trace = pdfSeriesPath(series, xMap, yMap, height);
+  if (trace) {
+    commands.push(
+      "0.075 0.498 0.471 RG",
+      "1.7 w",
+      "1 J 1 j",
+      trace,
+      "S",
+    );
+    for (const marker of isolatedPdfMarkers(series, xMap, yMap, height)) {
+      commands.push("0.075 0.498 0.471 rg", pdfCircle(marker.x, marker.y, 2), "f");
+    }
+  } else {
+    commands.push(pdfText(
+      "No valid measurements",
+      margin.left + plotWidth * 0.5,
+      margin.bottom + plotHeight * 0.5,
+      {
+        align: "center",
+        color: [0.482, 0.529, 0.518],
+        size: 10,
+      },
+    ));
+  }
+  commands.push(
+    pdfText(series.title, margin.left, height - 27, {
+      color: [0.09, 0.137, 0.129],
+      font: "F2",
+      size: 15,
+    }),
+    pdfText(status, margin.left, height - 42, {
+      color: [0.392, 0.439, 0.427],
+      size: 8.5,
+    }),
+    pdfText(xLabel, margin.left + plotWidth * 0.5, 17, {
+      align: "center",
+      color: [0.161, 0.212, 0.2],
+      size: 9,
+    }),
+    pdfVerticalText(
+      yLabel,
+      18,
+      margin.bottom + plotHeight * 0.5,
+      {
+        color: [0.161, 0.212, 0.2],
+        size: 9,
+      },
+    ),
+  );
+
+  return buildVectorPdf(
+    width,
+    height,
+    commands.filter(Boolean).join("\n"),
+    series.title,
+  );
+}
+
 function measureFrame(
   frame: FrameData,
   positions: Float32Array,
   fallbackPbc: readonly [boolean, boolean, boolean],
   selections: readonly AtomSelection[],
   minimumImage: boolean,
-  wrap: "atom" | "none",
 ): number | null {
   const cell = frameArray(frame, ["cell", "cell_vectors", "box"]);
   const basis = createCellBasis(cell);
   const pbc = framePbc(frame, fallbackPbc);
-  const selectedPositions = wrap === "atom" && basis
-    ? selectedWrappedAtomPositions(positions, selections, basis, pbc)
-    : selectedAtomPositions(positions, selections, basis ? cell : null);
+  const selectedPositions = selectedAtomPositions(
+    positions,
+    selections,
+    basis ? cell : null,
+  );
   if (!selectedPositions) return null;
   const indices = selections.map((_, index) => index);
   if (minimumImage && (!cell || !pbc.some(Boolean))) return null;
@@ -314,51 +910,6 @@ function measureFrame(
       })
     : measureAtomSelection(selectedPositions, indices);
   return result.ok && Number.isFinite(result.value) ? result.value : null;
-}
-
-function selectedWrappedAtomPositions(
-  source: Float32Array,
-  selections: readonly AtomSelection[],
-  basis: NonNullable<ReturnType<typeof createCellBasis>>,
-  pbc: readonly [boolean, boolean, boolean],
-): Float64Array | null {
-  const result = new Float64Array(selections.length * 3);
-  for (let index = 0; index < selections.length; index += 1) {
-    const selection = selections[index];
-    const offset = selection.atom * 3;
-    if (
-      !Number.isInteger(selection.atom)
-      || selection.atom < 0
-      || offset + 2 >= source.length
-      || selection.image.length !== 3
-      || !selection.image.every(Number.isInteger)
-    ) {
-      return null;
-    }
-    const x = source[offset];
-    const y = source[offset + 1];
-    const z = source[offset + 2];
-    if (![x, y, z].every(Number.isFinite)) return null;
-    const fractional = [
-      x * basis.reciprocal[0].x + y * basis.reciprocal[0].y + z * basis.reciprocal[0].z,
-      x * basis.reciprocal[1].x + y * basis.reciprocal[1].y + z * basis.reciprocal[1].z,
-      x * basis.reciprocal[2].x + y * basis.reciprocal[2].y + z * basis.reciprocal[2].z,
-    ];
-    for (let axis = 0; axis < 3; axis += 1) {
-      if (pbc[axis]) fractional[axis] -= Math.floor(fractional[axis] + 0.5);
-      fractional[axis] += selection.image[axis];
-    }
-    result[index * 3] = fractional[0] * basis.vectors[0].x
-      + fractional[1] * basis.vectors[1].x
-      + fractional[2] * basis.vectors[2].x;
-    result[index * 3 + 1] = fractional[0] * basis.vectors[0].y
-      + fractional[1] * basis.vectors[1].y
-      + fractional[2] * basis.vectors[2].y;
-    result[index * 3 + 2] = fractional[0] * basis.vectors[0].z
-      + fractional[1] * basis.vectors[1].z
-      + fractional[2] * basis.vectors[2].z;
-  }
-  return result;
 }
 
 function framePbc(
@@ -427,6 +978,8 @@ function seriesSnapshot(
   axis: MeasurementSeriesAxis,
   xValues: readonly number[],
   values: readonly (number | null)[],
+  frameIndices: readonly number[],
+  frameKeys: readonly (FrameKey | null)[],
   loadedCount: number,
   complete: boolean,
 ): MeasurementSeries {
@@ -437,6 +990,55 @@ function seriesSnapshot(
     axis: Object.freeze({ ...axis }),
     xValues: Object.isFrozen(xValues) ? xValues : Object.freeze([...xValues]),
     values: Object.freeze([...values]),
+    frameIndices,
+    frameKeys: Object.freeze(frameKeys.map((key) => key
+      ? Object.freeze({ ...key })
+      : null)),
+    loadedCount,
+    complete,
+  });
+}
+
+function comparisonSnapshot(
+  title: string,
+  unit: MeasurementSuccess["unit"],
+  axis: MeasurementSeriesAxis,
+  xValues: readonly number[],
+  frameIndices: readonly number[],
+  frameKeys: readonly (FrameKey | null)[],
+  definitions: readonly {
+    id: string;
+    label: string;
+    selections: readonly AtomSelection[];
+    minimumImage: boolean;
+    kind: MeasurementKind;
+    unit: MeasurementSuccess["unit"];
+    values: readonly (number | null)[];
+  }[],
+  loadedCount: number,
+  complete: boolean,
+): MeasurementComparison {
+  return Object.freeze({
+    title,
+    unit,
+    axis: Object.freeze({ ...axis }),
+    xValues: Object.freeze([...xValues]),
+    frameIndices,
+    frameKeys: Object.freeze(frameKeys.map((key) => key
+      ? Object.freeze({ ...key })
+      : null)),
+    lines: Object.freeze(definitions.map((definition) => Object.freeze({
+      id: definition.id,
+      label: definition.label,
+      kind: definition.kind,
+      unit: definition.unit,
+      selections: Object.freeze(definition.selections.map(({ atom, image }) => Object.freeze({
+        atom,
+        image: Object.freeze([...image]) as unknown as AtomSelection["image"],
+      }))),
+      minimumImage: definition.minimumImage,
+      values: Object.freeze([...definition.values]),
+    }))),
     loadedCount,
     complete,
   });
@@ -489,9 +1091,54 @@ function validateRequest(
   if (selections.length < 2 || selections.length > 4) {
     throw new RangeError("A measurement needs two to four selected atoms");
   }
-  if (!["atom", "molecule", "none"].includes(wrap)) {
+  if (!["atom", "molecule", "unwrapped", "none"].includes(wrap)) {
     throw new TypeError("Unknown coordinate wrapping mode");
   }
+}
+
+function validateComparisonRequest(
+  manifest: Manifest,
+  frameCount: number,
+  definitions: readonly MeasurementComparisonDefinition[],
+  wrap: ScenePresentation["wrap"],
+): void {
+  if (definitions.length < 1 || definitions.length > MAX_COMPARISON_DEFINITIONS) {
+    throw new RangeError(`A comparison needs one to ${MAX_COMPARISON_DEFINITIONS} measurements`);
+  }
+  const identifiers = new Set<string>();
+  for (const definition of definitions) {
+    const identifier = definition.id.trim();
+    if (!identifier) throw new TypeError("Each compared measurement needs an id");
+    if (identifiers.has(identifier)) {
+      throw new TypeError(`Duplicate measurement id: ${identifier}`);
+    }
+    identifiers.add(identifier);
+    validateRequest(manifest, frameCount, definition.selections, wrap);
+  }
+}
+
+function cloneFrameKey(key: FrameKey | undefined): FrameKey | null {
+  if (
+    !key
+    || typeof key.source_id !== "string"
+    || !key.source_id
+    || !Number.isSafeInteger(key.source_index)
+    || key.source_index < 0
+    || !Number.isSafeInteger(key.segment_index)
+    || key.segment_index < 0
+  ) {
+    return null;
+  }
+  return {
+    source_id: key.source_id,
+    source_index: key.source_index,
+    segment_index: key.segment_index,
+    step: typeof key.step === "number" && Number.isFinite(key.step) ? key.step : null,
+    time: typeof key.time === "number" && Number.isFinite(key.time) ? key.time : null,
+    time_unit: typeof key.time_unit === "string" && key.time_unit.trim()
+      ? key.time_unit.trim()
+      : null,
+  };
 }
 
 function frameAxis(): MeasurementSeriesAxis {
@@ -660,6 +1307,19 @@ function expandedDomain(values: readonly number[]): [number, number] {
   return [minimum, maximum];
 }
 
+function plotExpandedYDomain(plot: PlotShelfData): [number, number] {
+  const domain = expandedDomain(plot.lines.flatMap(({ values }) => (
+    values.filter((value): value is number => (
+      typeof value === "number" && Number.isFinite(value)
+    ))
+  )));
+  if (plot.yFloor === undefined || !Number.isFinite(plot.yFloor)) return domain;
+  return [
+    plot.yFloor,
+    domain[1] > plot.yFloor ? domain[1] : plot.yFloor + 1,
+  ];
+}
+
 function ticks(minimum: number, maximum: number, count: number): number[] {
   return Array.from(
     { length: count },
@@ -679,6 +1339,103 @@ function plotNumber(value: number): string {
   return Number(value.toFixed(3)).toString();
 }
 
+function validatePlotShelf(plot: PlotShelfData): void {
+  if (plot.lines.length < 1 || plot.lines.length > 32) {
+    throw new RangeError("A plot needs one to 32 series");
+  }
+  if (!plot.title.trim() || !plot.xLabel.trim() || !plot.yLabel.trim()) {
+    throw new TypeError("Plot title and axis labels are required");
+  }
+}
+
+function genericSvgPath(
+  xValues: readonly number[],
+  values: readonly (number | null)[],
+  discontinuity: number | undefined,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+): string {
+  const commands: string[] = [];
+  let open = false;
+  let previousValue: number | null = null;
+  const threshold = typeof discontinuity === "number" && Number.isFinite(discontinuity)
+    ? Math.abs(discontinuity)
+    : null;
+  for (let index = 0; index < xValues.length; index += 1) {
+    const x = xValues[index];
+    const y = values[index];
+    if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      open = false;
+      previousValue = null;
+      continue;
+    }
+    if (threshold !== null && previousValue !== null && Math.abs(y - previousValue) > threshold) {
+      open = false;
+    }
+    commands.push(`${open ? "L" : "M"}${plotNumber(xMap(x))} ${plotNumber(yMap(y))}`);
+    open = true;
+    previousValue = y;
+  }
+  return commands.join("");
+}
+
+function genericPdfPath(
+  xValues: readonly number[],
+  values: readonly (number | null)[],
+  discontinuity: number | undefined,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+  height: number,
+): string {
+  const commands: string[] = [];
+  let open = false;
+  let previousValue: number | null = null;
+  const threshold = typeof discontinuity === "number" && Number.isFinite(discontinuity)
+    ? Math.abs(discontinuity)
+    : null;
+  for (let index = 0; index < xValues.length; index += 1) {
+    const x = xValues[index];
+    const y = values[index];
+    if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      open = false;
+      previousValue = null;
+      continue;
+    }
+    if (threshold !== null && previousValue !== null && Math.abs(y - previousValue) > threshold) {
+      open = false;
+    }
+    commands.push(
+      `${pdfNumber(xMap(x))} ${pdfNumber(height - yMap(y))} ${open ? "l" : "m"}`,
+    );
+    open = true;
+    previousValue = y;
+  }
+  return commands.join("\n");
+}
+
+function plotStatus(plot: PlotShelfData): string {
+  const status = plot.complete
+    ? `${plot.lines.length} series · ${plot.totalCount.toLocaleString()} points`
+    : `${Math.max(0, plot.loadedCount).toLocaleString()} / ${Math.max(0, plot.totalCount).toLocaleString()} points`;
+  return plot.context ? `${status} · ${plot.context}` : status;
+}
+
+function normalizedPlotColor(color: string | undefined, index: number): string {
+  const value = color?.trim();
+  return value && /^#[0-9a-f]{6}$/i.test(value)
+    ? value
+    : PLOT_COLORS[index % PLOT_COLORS.length];
+}
+
+function plotColorRgb(color: string | undefined, index: number): [number, number, number] {
+  const value = normalizedPlotColor(color, index);
+  return [
+    Number.parseInt(value.slice(1, 3), 16) / 255,
+    Number.parseInt(value.slice(3, 5), 16) / 255,
+    Number.parseInt(value.slice(5, 7), 16) / 255,
+  ];
+}
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -694,6 +1451,239 @@ function positiveDimension(value: number, label: string): number {
   }
   return value;
 }
+
+function positivePdfDimension(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 14_400) {
+    throw new RangeError(`PDF ${label} must be a positive integer no larger than 14400 points`);
+  }
+  return value;
+}
+
+function pdfSeriesPath(
+  series: MeasurementSeries,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+  height: number,
+): string {
+  const count = Math.min(series.xValues.length, series.values.length);
+  const commands: string[] = [];
+  let open = false;
+  let previousValue: number | null = null;
+  for (let index = 0; index < count; index += 1) {
+    const x = series.xValues[index];
+    const y = series.values[index];
+    if (!Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      open = false;
+      previousValue = null;
+      continue;
+    }
+    if (
+      series.unit === "degree"
+      && previousValue !== null
+      && Math.abs(y - previousValue) > 180
+    ) {
+      open = false;
+    }
+    commands.push(
+      `${pdfNumber(xMap(x))} ${pdfNumber(height - yMap(y))} ${open ? "l" : "m"}`,
+    );
+    open = true;
+    previousValue = y;
+  }
+  return commands.join("\n");
+}
+
+function isolatedPdfMarkers(
+  series: MeasurementSeries,
+  xMap: (value: number) => number,
+  yMap: (value: number) => number,
+  height: number,
+): Array<{ x: number; y: number }> {
+  const count = Math.min(series.xValues.length, series.values.length);
+  const markers: Array<{ x: number; y: number }> = [];
+  const valid = (index: number) => {
+    if (index < 0 || index >= count) return false;
+    return Number.isFinite(series.xValues[index])
+      && typeof series.values[index] === "number"
+      && Number.isFinite(series.values[index]);
+  };
+  for (let index = 0; index < count; index += 1) {
+    if (
+      !valid(index)
+      || connectedMeasurementSamples(series, index - 1, index)
+      || connectedMeasurementSamples(series, index, index + 1)
+    ) {
+      continue;
+    }
+    markers.push({
+      x: xMap(series.xValues[index]),
+      y: height - yMap(series.values[index]!),
+    });
+  }
+  return markers;
+}
+
+function pdfCircle(x: number, y: number, radius: number): string {
+  const control = radius * 0.5522847498;
+  return [
+    `${pdfNumber(x + radius)} ${pdfNumber(y)} m`,
+    `${pdfNumber(x + radius)} ${pdfNumber(y + control)} ${pdfNumber(x + control)} ${pdfNumber(y + radius)} ${pdfNumber(x)} ${pdfNumber(y + radius)} c`,
+    `${pdfNumber(x - control)} ${pdfNumber(y + radius)} ${pdfNumber(x - radius)} ${pdfNumber(y + control)} ${pdfNumber(x - radius)} ${pdfNumber(y)} c`,
+    `${pdfNumber(x - radius)} ${pdfNumber(y - control)} ${pdfNumber(x - control)} ${pdfNumber(y - radius)} ${pdfNumber(x)} ${pdfNumber(y - radius)} c`,
+    `${pdfNumber(x + control)} ${pdfNumber(y - radius)} ${pdfNumber(x + radius)} ${pdfNumber(y - control)} ${pdfNumber(x + radius)} ${pdfNumber(y)} c`,
+    "h",
+  ].join("\n");
+}
+
+interface PdfTextOptions {
+  align?: "left" | "center" | "right";
+  color: [number, number, number];
+  font?: "F1" | "F2";
+  size: number;
+}
+
+function pdfText(
+  text: string,
+  x: number,
+  y: number,
+  options: PdfTextOptions,
+): string {
+  const width = estimatedPdfTextWidth(text, options.size);
+  const origin = options.align === "center"
+    ? x - width * 0.5
+    : options.align === "right"
+      ? x - width
+      : x;
+  const [red, green, blue] = options.color;
+  return [
+    "BT",
+    `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} rg`,
+    `/${options.font ?? "F1"} ${pdfNumber(options.size)} Tf`,
+    `1 0 0 1 ${pdfNumber(origin)} ${pdfNumber(y)} Tm`,
+    `${pdfLiteral(text)} Tj`,
+    "ET",
+  ].join("\n");
+}
+
+function pdfVerticalText(
+  text: string,
+  x: number,
+  centerY: number,
+  options: PdfTextOptions,
+): string {
+  const origin = centerY - estimatedPdfTextWidth(text, options.size) * 0.5;
+  const [red, green, blue] = options.color;
+  return [
+    "BT",
+    `${pdfNumber(red)} ${pdfNumber(green)} ${pdfNumber(blue)} rg`,
+    `/${options.font ?? "F1"} ${pdfNumber(options.size)} Tf`,
+    `0 1 -1 0 ${pdfNumber(x)} ${pdfNumber(origin)} Tm`,
+    `${pdfLiteral(text)} Tj`,
+    "ET",
+  ].join("\n");
+}
+
+function estimatedPdfTextWidth(text: string, size: number): number {
+  let units = 0;
+  for (const character of text) {
+    units += /[ilI1.,:;|]/.test(character)
+      ? 0.27
+      : /[MW@%]/.test(character)
+        ? 0.84
+        : character === " " ? 0.28 : 0.53;
+  }
+  return units * size;
+}
+
+function buildVectorPdf(
+  width: number,
+  height: number,
+  content: string,
+  title: string,
+): Uint8Array {
+  const contentBytes = new TextEncoder().encode(`${content}\n`);
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfNumber(width)} ${pdfNumber(height)}] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>`,
+    `<< /Length ${contentBytes.length} >>\nstream\n${content}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+    `<< /Title ${pdfUnicodeString(title)} /Creator (PQViewer) /Producer (PQViewer) >>`,
+  ];
+  let document = "%PDF-1.4\n%PQV1\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(new TextEncoder().encode(document).length);
+    document += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xref = new TextEncoder().encode(document).length;
+  document += `xref\n0 ${objects.length + 1}\n`;
+  document += "0000000000 65535 f \n";
+  for (const offset of offsets.slice(1)) {
+    document += `${offset.toString().padStart(10, "0")} 00000 n \n`;
+  }
+  document += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R /Info 7 0 R >>\n`;
+  document += `startxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(document);
+}
+
+function pdfLiteral(value: string): string {
+  const bytes: number[] = [];
+  for (const character of value) bytes.push(winAnsiByte(character));
+  return `(${bytes.map((byte) => {
+    if (byte === 0x28 || byte === 0x29 || byte === 0x5c) {
+      return `\\${String.fromCharCode(byte)}`;
+    }
+    if (byte < 0x20 || byte > 0x7e) {
+      return `\\${byte.toString(8).padStart(3, "0")}`;
+    }
+    return String.fromCharCode(byte);
+  }).join("")})`;
+}
+
+function pdfUnicodeString(value: string): string {
+  let encoded = "FEFF";
+  for (let index = 0; index < value.length; index += 1) {
+    encoded += value.charCodeAt(index).toString(16).padStart(4, "0").toUpperCase();
+  }
+  return `<${encoded}>`;
+}
+
+function winAnsiByte(character: string): number {
+  const code = character.codePointAt(0) ?? 0x3f;
+  if (code <= 0xff) return code;
+  return new Map<number, number>([
+    [0x2013, 0x96],
+    [0x2014, 0x97],
+    [0x2018, 0x91],
+    [0x2019, 0x92],
+    [0x201c, 0x93],
+    [0x201d, 0x94],
+    [0x2022, 0x95],
+    [0x2026, 0x85],
+    [0x20ac, 0x80],
+    [0x2122, 0x99],
+    [0x2212, 0x2d],
+  ]).get(code) ?? 0x3f;
+}
+
+function pdfNumber(value: number): string {
+  if (!Number.isFinite(value)) throw new Error("PDF contains a non-finite number");
+  const rounded = Math.abs(value) < 0.0005 ? 0 : Number(value.toFixed(3));
+  return rounded.toString();
+}
+
+const PLOT_COLORS = Object.freeze([
+  "#137f78",
+  "#b35c2e",
+  "#5468a8",
+  "#8b5a91",
+  "#4f7b45",
+  "#b08524",
+  "#366e83",
+  "#9a4d62",
+]);
 
 const elementSymbols = [
   "X", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne",

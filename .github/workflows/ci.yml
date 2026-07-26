@@ -39,11 +39,18 @@ jobs:
               for asset in re.findall(r'(?:src|href)="(/assets/[^"?]+)', html):
                   bundled = f"pqviewer/static{asset}"
                   assert bundled in files, f"missing {bundled}"
+                  if asset.endswith(".css"):
+                      css = archive.read(bundled).decode()
+                      for nested in re.findall(r"url\((/assets/[^)]+)\)", css):
+                          nested_file = f"pqviewer/static{nested}"
+                          assert nested_file in files, f"missing {nested_file}"
           PY
           python -m venv /tmp/pqviewer-smoke
           /tmp/pqviewer-smoke/bin/pip install "$wheel"
           cd /tmp
           /tmp/pqviewer-smoke/bin/pqviewer --help
+          /tmp/pqviewer-smoke/bin/pqviewer render --help
+          /tmp/pqviewer-smoke/bin/pqviewer-render --help
 
   frontend:
     runs-on: ubuntu-latest
@@ -74,7 +81,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e .
+      - run: python -m pip install -e ".[dev,render]"
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -84,8 +91,13 @@ jobs:
         run: npm ci
       - working-directory: frontend
         run: npx playwright install --with-deps chromium
+      - run: python -m playwright install chromium
       - working-directory: frontend
         run: npm run test:e2e
+      - name: Smoke-test headless rendering
+        env:
+          PQVIEWER_HEADLESS_TEST: "1"
+        run: python -m pytest tests/test_recipe.py -k headless_render_command
       - name: Upload browser artifacts
         if: failure()
         uses: actions/upload-artifact@v4

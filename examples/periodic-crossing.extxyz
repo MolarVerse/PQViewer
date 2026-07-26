@@ -1,0 +1,16 @@
+2
+Lattice="10 0 0 0 10 0 0 0 10" Properties=species:S:1:pos:R:3 pbc="T T T" step=0
+C 4.80 0.00 0.00
+O -4.80 1.00 0.00
+2
+Lattice="10 0 0 0 10 0 0 0 10" Properties=species:S:1:pos:R:3 pbc="T T T" step=1
+C -4.80 0.10 0.00
+O 4.80 0.90 0.00
+2
+Lattice="10.2 0 0 0 10 0 0 0 10" Properties=species:S:1:pos:R:3 pbc="T T T" step=2
+C -4.40 0.20 0.00
+O 4.40 0.80 0.00
+2
+Lattice="10.2 0 0 0 10 0 0 0 10" Properties=species:S:1:pos:R:3 pbc="T T T" step=3
+C -4.00 0.30 0.00
+O 4.00 0.70 0.00

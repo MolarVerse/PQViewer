@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { KeyboardEvent, PointerEvent, ReactNode } from "react";
+import type { PlotLine, PlotShelfData } from "./trajectoryStudy";
 
 const DEFAULT_PLOT_WIDTH = 720;
 const DEFAULT_PLOT_HEIGHT = 130;
@@ -17,6 +18,19 @@ export interface MeasurementPlotProps {
   onFrame: (frame: number) => void;
   onExportCsv: () => void;
   onExportSvg: () => void;
+  onExportPdf: () => void;
+}
+
+export interface PlotShelfProps {
+  plot: PlotShelfData;
+  currentFrame?: number;
+  onFrame?: (frame: number) => void;
+  onRestoreLine?: (line: PlotLine) => void;
+  onClose?: () => void;
+  headerActions?: ReactNode;
+  onExportCsv: () => void;
+  onExportSvg: () => void;
+  onExportPdf: () => void;
 }
 
 export interface MeasurementSample {
@@ -50,6 +64,7 @@ export interface MeasurementPlotGeometryOptions {
   bottom?: number;
   discontinuityThreshold?: number;
   maxPoints?: number;
+  yDomain?: [number, number];
 }
 
 export interface MeasurementPlotLayout {
@@ -59,6 +74,18 @@ export interface MeasurementPlotLayout {
   right: number;
   top: number;
   bottom: number;
+}
+
+export interface PlotShelfLineGeometry {
+  id: string;
+  color: string;
+  segments: MeasurementPlotSegment[];
+}
+
+export interface PlotShelfGeometry {
+  xDomain: [number, number];
+  yDomain: [number, number];
+  lines: PlotShelfLineGeometry[];
 }
 
 export function measurementPlotLayout(width: number, height: number): MeasurementPlotLayout {
@@ -77,6 +104,17 @@ export function measurementPlotLayout(width: number, height: number): Measuremen
 }
 
 const DEFAULT_PLOT_LAYOUT = measurementPlotLayout(DEFAULT_PLOT_WIDTH, DEFAULT_PLOT_HEIGHT);
+const MAX_PLOT_POINTS = 1_600;
+const DEFAULT_LINE_COLORS = Object.freeze([
+  "#137f78",
+  "#b35c2e",
+  "#5468a8",
+  "#8b5a91",
+  "#4f7b45",
+  "#b08524",
+  "#366e83",
+  "#9a4d62",
+]);
 
 export function MeasurementPlot({
   title,
@@ -91,7 +129,72 @@ export function MeasurementPlot({
   onFrame,
   onExportCsv,
   onExportSvg,
+  onExportPdf,
 }: MeasurementPlotProps) {
+  const plot = useMemo<PlotShelfData>(() => ({
+    requestId: 0,
+    kind: "measurement",
+    title,
+    xLabel: axisLabel,
+    xUnit: axisUnit,
+    yLabel: measurementLabel(title),
+    yUnit: unit,
+    xValues,
+    frameIndices: xValues.map((_, index) => index),
+    lines: [{
+      id: "measurement",
+      label: title,
+      values,
+      discontinuity: measurementDiscontinuityThreshold(unit),
+    }],
+    loadedCount,
+    totalCount: xValues.length,
+    complete,
+  }), [
+    axisLabel,
+    axisUnit,
+    complete,
+    loadedCount,
+    title,
+    unit,
+    values,
+    xValues,
+  ]);
+  return (
+    <PlotShelf
+      plot={plot}
+      currentFrame={currentFrame}
+      onFrame={onFrame}
+      onExportCsv={onExportCsv}
+      onExportSvg={onExportSvg}
+      onExportPdf={onExportPdf}
+    />
+  );
+}
+
+export function PlotShelf({
+  plot,
+  currentFrame,
+  onFrame,
+  onRestoreLine,
+  onClose,
+  headerActions,
+  onExportCsv,
+  onExportSvg,
+  onExportPdf,
+}: PlotShelfProps) {
+  const {
+    title,
+    xLabel: axisLabel,
+    xUnit: axisUnit,
+    yLabel,
+    yUnit,
+    xValues,
+    lines,
+    loadedCount,
+    totalCount,
+    complete,
+  } = plot;
   const [chartRef, chartSize] = useMeasuredPlotSize();
   const layout = useMemo(
     () => measurementPlotLayout(
@@ -100,56 +203,83 @@ export function MeasurementPlot({
     ),
     [chartSize?.height, chartSize?.width],
   );
-  const frameCount = xValues.length;
-  const activeFrame = clampFrame(currentFrame, frameCount);
+  const pointCount = xValues.length;
+  const frameIndices = plot.frameIndices;
+  const activeDataIndex = currentFrame === undefined
+    ? -1
+    : plotDataIndexForFrame(currentFrame, frameIndices, pointCount);
+  const seekableIndices = useMemo(
+    () => seekablePlotIndices(frameIndices, pointCount),
+    [frameIndices, pointCount],
+  );
+  const seekableBounds = useMemo(
+    () => seekableFrameBounds(frameIndices, seekableIndices),
+    [frameIndices, seekableIndices],
+  );
+  const seekable = Boolean(onFrame && seekableIndices.length > 0);
   const geometry = useMemo(
     () => chartSize === null
       ? {
-          xDomain: [0, Math.max(1, frameCount - 1)] as [number, number],
+          xDomain: [0, Math.max(1, pointCount - 1)] as [number, number],
           yDomain: [0, 1] as [number, number],
-          segments: [],
+          lines: [],
         }
-      : buildMeasurementPlotGeometry(xValues, values, {
+      : buildPlotShelfGeometry(xValues, lines, {
           width: layout.width,
           height: layout.height,
           left: layout.left,
           right: layout.right,
           top: layout.top,
           bottom: layout.bottom,
-          discontinuityThreshold: measurementDiscontinuityThreshold(unit),
-          maxPoints: Math.ceil((layout.right - layout.left) * 2),
+          yDomain: plot.yFloor === undefined
+            ? undefined
+            : plotShelfYDomain(lines, plot.yFloor),
+          maxPoints: Math.min(
+            MAX_PLOT_POINTS,
+            Math.ceil((layout.right - layout.left) * 2),
+          ),
         }),
-    [chartSize, frameCount, layout, unit, values, xValues],
+    [chartSize, layout, lines, plot.yFloor, pointCount, xValues],
   );
-  const currentX = frameCount > 0
-    ? plotXForFrame(activeFrame, xValues, geometry.xDomain, layout.left, layout.right)
+  const currentX = activeDataIndex >= 0
+    ? plotXForFrame(activeDataIndex, xValues, geometry.xDomain, layout.left, layout.right)
     : null;
-  const currentValue = finiteMeasurementValue(values[activeFrame]);
-  const currentY = currentValue === null
-    ? null
-    : scaleLinear(currentValue, geometry.yDomain, layout.bottom, layout.top);
+  const currentValues = lines.map((line) => finiteMeasurementValue(line.values[activeDataIndex]));
   const boundedLoadedCount = Math.max(
     0,
-    Math.min(frameCount, Number.isFinite(loadedCount) ? Math.floor(loadedCount) : 0),
+    Math.min(totalCount, Number.isFinite(loadedCount) ? Math.floor(loadedCount) : 0),
   );
   const axisTitle = axisUnit ? `${axisLabel} (${axisUnit})` : axisLabel;
-  const status = complete
-    ? `${frameCount.toLocaleString()} frames`
-    : `${boundedLoadedCount.toLocaleString()} / ${frameCount.toLocaleString()} frames`;
-  const valueText = frameCount > 0
-    ? currentFrameValueText(activeFrame, xValues, currentValue, axisLabel, axisUnit, unit)
-    : "No frames";
+  const yAxisTitle = yUnit ? `${yLabel} (${yUnit})` : yLabel;
+  const countNoun = plot.kind === "rdf" ? "bins" : "frames";
+  const countStatus = complete
+    ? `${totalCount.toLocaleString()} ${countNoun}`
+    : `${boundedLoadedCount.toLocaleString()} / ${totalCount.toLocaleString()} ${countNoun}`;
+  const status = plot.context ? `${countStatus} · ${plot.context}` : countStatus;
+  const valueText = activeDataIndex >= 0
+    ? currentPlotValueText(
+        activeDataIndex,
+        currentFrame!,
+        xValues,
+        lines,
+        axisLabel,
+        axisUnit,
+        yUnit,
+      )
+    : "No linked frame";
 
   const seekFromPointer = (event: PointerEvent<SVGSVGElement>) => {
-    if (frameCount === 0) return;
+    if (!seekable || !onFrame) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const plotX = clientXToPlotX(event.clientX, bounds, layout.width);
     if (plotX === null) return;
-    onFrame(nearestFrameForPlotX(plotX, xValues, layout.left, layout.right));
+    const dataIndex = nearestFrameForPlotX(plotX, xValues, layout.left, layout.right);
+    const target = exactFrameAt(frameIndices, dataIndex);
+    if (target !== null) onFrame(target);
   };
 
   const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !seekable) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     seekFromPointer(event);
   };
@@ -166,12 +296,19 @@ export function MeasurementPlot({
   };
 
   const handleKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
-    if (frameCount === 0) return;
-    let nextFrame: number | null = null;
-    if (event.key === "ArrowLeft") nextFrame = Math.max(0, activeFrame - 1);
-    if (event.key === "ArrowRight") nextFrame = Math.min(frameCount - 1, activeFrame + 1);
-    if (event.key === "Home") nextFrame = 0;
-    if (event.key === "End") nextFrame = frameCount - 1;
+    if (!seekable || !onFrame) return;
+    let nextDataIndex: number | null = null;
+    const activePosition = Math.max(0, seekableIndices.indexOf(activeDataIndex));
+    if (event.key === "ArrowLeft") {
+      nextDataIndex = seekableIndices[Math.max(0, activePosition - 1)];
+    }
+    if (event.key === "ArrowRight") {
+      nextDataIndex = seekableIndices[Math.min(seekableIndices.length - 1, activePosition + 1)];
+    }
+    if (event.key === "Home") nextDataIndex = seekableIndices[0];
+    if (event.key === "End") nextDataIndex = seekableIndices.at(-1) ?? null;
+    if (nextDataIndex === null) return;
+    const nextFrame = exactFrameAt(frameIndices, nextDataIndex);
     if (nextFrame === null) return;
     event.preventDefault();
     onFrame(nextFrame);
@@ -183,36 +320,121 @@ export function MeasurementPlot({
       aria-label={`${title} trajectory plot`}
     >
       <header className="measurement-plot__header">
-        <span className="measurement-plot__meta">
-          {complete ? status : "Calculating trace"}
-        </span>
-        <div className="measurement-plot__actions">
-          <button type="button" onClick={onExportCsv} disabled={!complete}>CSV</button>
-          <button type="button" onClick={onExportSvg} disabled={!complete}>SVG</button>
+        <div className="measurement-plot__meta">
+          <strong title={title}>{title}</strong>
+          <span title={complete ? status : undefined}>{complete ? status : "Loading data"}</span>
+        </div>
+        <div className="measurement-plot__legend" role="group" aria-label="Current values">
+          {lines.map((line, index) => {
+            const color = plotLineColor(line.color, index);
+            const value = currentValues[index];
+            const text = activeDataIndex < 0
+              ? null
+              : value === null
+                ? "unavailable"
+                : `${formatTick(value)}${yUnit ? ` ${yUnit}` : ""}`;
+            const contents = (
+              <>
+                <span
+                  className="measurement-plot__legend-swatch"
+                  aria-hidden="true"
+                  style={{ backgroundColor: color }}
+                />
+                <span>{line.label}</span>
+                {text !== null && (
+                  <output aria-label={`${line.label} current value`}>{text}</output>
+                )}
+              </>
+            );
+            return onRestoreLine && line.selection ? (
+              <button
+                className="measurement-plot__legend-item"
+                key={line.id}
+                type="button"
+                onClick={() => onRestoreLine(line)}
+                aria-label={text === null
+                  ? `Restore ${line.label}`
+                  : `Restore ${line.label}; current value ${text}`}
+              >
+                {contents}
+              </button>
+            ) : (
+              <span
+              className="measurement-plot__legend-item"
+              key={line.id}
+            >
+                {contents}
+              </span>
+            );
+          })}
+        </div>
+        <div
+          className="measurement-plot__header-actions"
+          role="group"
+          aria-label="Plot controls"
+        >
+          {headerActions && (
+            <div className="measurement-plot__context-actions">
+              {headerActions}
+            </div>
+          )}
+          <div className="measurement-plot__actions">
+            <details className="measurement-plot__export-menu">
+              <summary>Export</summary>
+              <div>
+                <button type="button" onClick={onExportCsv} disabled={!complete}>CSV</button>
+                <button type="button" onClick={onExportSvg} disabled={!complete}>SVG</button>
+                <button type="button" onClick={onExportPdf} disabled={!complete}>PDF</button>
+              </div>
+            </details>
+            <button type="button" onClick={onExportCsv} disabled={!complete}>CSV</button>
+            <button type="button" onClick={onExportSvg} disabled={!complete}>SVG</button>
+            <button type="button" onClick={onExportPdf} disabled={!complete}>PDF</button>
+            {onClose && (
+              <button
+                className="measurement-plot__close"
+                type="button"
+                onClick={onClose}
+                aria-label="Close plot"
+                title="Close"
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
       <svg
         ref={chartRef}
-        className="measurement-plot__chart"
+        className={seekable
+          ? "measurement-plot__chart is-seekable"
+          : "measurement-plot__chart"}
         viewBox={`0 0 ${layout.width} ${layout.height}`}
-        role="slider"
-        tabIndex={0}
-        aria-label={`${title} frame`}
-        aria-orientation="horizontal"
-        aria-valuemin={0}
-        aria-valuemax={Math.max(0, frameCount - 1)}
-        aria-valuenow={activeFrame}
-        aria-valuetext={valueText}
+        role={seekable ? "slider" : "img"}
+        tabIndex={seekable ? 0 : undefined}
+        aria-label={seekable ? `${title} frame` : title}
+        aria-orientation={seekable ? "horizontal" : undefined}
+        aria-valuemin={seekable ? seekableBounds?.[0] : undefined}
+        aria-valuemax={seekable ? seekableBounds?.[1] : undefined}
+        aria-valuenow={seekable && currentFrame !== undefined ? currentFrame : undefined}
+        aria-valuetext={seekable ? valueText : undefined}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={releasePointer}
         onPointerCancel={releasePointer}
-        style={{ touchAction: "none" }}
+        style={{
+          touchAction: seekable ? "none" : "auto",
+          cursor: seekable ? "crosshair" : "default",
+        }}
       >
         <title>{title}</title>
-        <desc>Tap or drag to seek. Use arrow keys, Home, or End to move between frames.</desc>
+        <desc>
+          {seekable
+            ? "Tap or drag to seek. Use arrow keys, Home, or End to move between frames."
+            : `${lines.length} plotted series.`}
+        </desc>
         <line
           className="measurement-plot__grid"
           x1={layout.left}
@@ -235,33 +457,35 @@ export function MeasurementPlot({
           y2={layout.bottom}
         />
 
-        {geometry.segments.map((segment, index) => (
+        {geometry.lines.flatMap((line) => line.segments.map((segment, index) => (
           segment.points.length === 1 ? (
             <circle
               className="measurement-plot__trace-point"
-              key={`point-${segment.points[0].frame}-${index}`}
+              key={`${line.id}-point-${segment.points[0].frame}-${index}`}
               cx={segment.points[0].x}
               cy={segment.points[0].y}
               r={2}
+              style={{ fill: line.color }}
             />
           ) : (
             <path
               className="measurement-plot__trace"
-              key={`trace-${segment.points[0].frame}-${index}`}
+              key={`${line.id}-trace-${segment.points[0].frame}-${index}`}
               d={segment.path}
               fill="none"
               vectorEffect="non-scaling-stroke"
+              style={{ stroke: line.color }}
             />
           )
-        ))}
-        {geometry.segments.length === 0 && (
+        )))}
+        {geometry.lines.every(({ segments }) => segments.length === 0) && (
           <text
             className="measurement-plot__empty"
             x={(layout.left + layout.right) / 2}
             y={(layout.top + layout.bottom) / 2}
             textAnchor="middle"
           >
-            {complete ? "No valid measurements" : "Loading measurements…"}
+            {complete ? "No valid data" : "Loading data…"}
           </text>
         )}
 
@@ -275,14 +499,16 @@ export function MeasurementPlot({
             vectorEffect="non-scaling-stroke"
           />
         )}
-        {currentX !== null && currentY !== null && (
+        {currentX !== null && currentValues.map((value, index) => value === null ? null : (
           <circle
             className="measurement-plot__cursor-point"
+            key={`cursor-${lines[index].id}`}
             cx={currentX}
-            cy={currentY}
+            cy={scaleLinear(value, geometry.yDomain, layout.bottom, layout.top)}
             r={4}
+            style={{ fill: plotLineColor(lines[index].color, index) }}
           />
-        )}
+        ))}
 
         <text className="measurement-plot__tick" x={layout.left} y={layout.bottom + 17}>
           {formatTick(geometry.xDomain[0])}
@@ -326,15 +552,15 @@ export function MeasurementPlot({
           textAnchor="middle"
           transform={`rotate(-90 12 ${(layout.top + layout.bottom) / 2})`}
         >
-          {unit}
+          {yAxisTitle}
         </text>
       </svg>
 
       {!complete && (
         <div className="measurement-plot__progress" role="status" aria-live="polite">
           <progress
-            aria-label="Frames loaded"
-            max={Math.max(1, frameCount)}
+            aria-label={plot.kind === "rdf" ? "Bins loaded" : "Frames loaded"}
+            max={Math.max(1, totalCount)}
             value={boundedLoadedCount}
           />
           <span>{status}</span>
@@ -420,11 +646,13 @@ export function buildMeasurementPlotGeometry(
     [0, Math.max(1, xValues.length - 1)],
     false,
   );
-  const yDomain = numericDomain(
-    rawSegments.flatMap((segment) => segment.map(({ value }) => value)),
-    [0, 1],
-    true,
-  );
+  const yDomain = options.yDomain
+    ? numericDomain(options.yDomain, [0, 1], false)
+    : numericDomain(
+        rawSegments.flatMap((segment) => segment.map(({ value }) => value)),
+        [0, 1],
+        true,
+      );
   const maxPoints = Math.max(
     2,
     Math.floor(positiveNumber(options.maxPoints, Math.max(2, (right - left) * 2))),
@@ -444,6 +672,61 @@ export function buildMeasurementPlotGeometry(
     };
   });
   return { xDomain, yDomain, segments };
+}
+
+export function buildPlotShelfGeometry(
+  xValues: readonly number[],
+  lines: readonly PlotLine[],
+  options: MeasurementPlotGeometryOptions = {},
+): PlotShelfGeometry {
+  const yDomain = options.yDomain ?? numericDomain(
+    lines.flatMap(({ values }) => values.flatMap((value) => (
+      typeof value === "number" && Number.isFinite(value) ? [value] : []
+    ))),
+    [0, 1],
+    true,
+  );
+  const totalBudget = Math.max(
+    2,
+    Math.floor(positiveNumber(options.maxPoints, MAX_PLOT_POINTS)),
+  );
+  const lineBudget = Math.max(2, Math.floor(totalBudget / Math.max(1, lines.length)));
+  const geometries = lines.map((line, index) => {
+    const geometry = buildMeasurementPlotGeometry(xValues, line.values, {
+      ...options,
+      yDomain,
+      discontinuityThreshold: line.discontinuity,
+      maxPoints: lineBudget,
+    });
+    return {
+      id: line.id,
+      color: plotLineColor(line.color, index),
+      segments: geometry.segments,
+    };
+  });
+  const xDomain = geometries.length > 0
+    ? buildMeasurementPlotGeometry(xValues, [], { ...options, yDomain }).xDomain
+    : numericDomain(
+        xValues.map((value, index) => finiteNumber(value, index)),
+        [0, Math.max(1, xValues.length - 1)],
+        false,
+      );
+  return { xDomain, yDomain, lines: geometries };
+}
+
+export function plotShelfYDomain(
+  lines: readonly PlotLine[],
+  floor: number,
+): [number, number] {
+  const domain = numericDomain(
+    lines.flatMap(({ values }) => values.flatMap((value) => (
+      typeof value === "number" && Number.isFinite(value) ? [value] : []
+    ))),
+    [floor, floor + 1],
+    true,
+  );
+  const minimum = Number.isFinite(floor) ? floor : domain[0];
+  return [minimum, domain[1] > minimum ? domain[1] : minimum + 1];
 }
 
 export function splitMeasurementSegments(
@@ -548,6 +831,63 @@ export function nearestFrameForPlotX(
   return Math.abs(xValues[low] - targetValue) < Math.abs(xValues[previous] - targetValue)
     ? low
     : previous;
+}
+
+export function plotDataIndexForFrame(
+  frame: number,
+  frameIndices: readonly (number | null)[] | undefined,
+  pointCount: number,
+): number {
+  if (!Number.isSafeInteger(frame) || frame < 0 || !frameIndices) return -1;
+  if (frame < pointCount && frameIndices[frame] === frame) return frame;
+  const limit = Math.min(pointCount, frameIndices.length);
+  for (let index = 0; index < limit; index += 1) {
+    if (frameIndices[index] === frame) return index;
+  }
+  return -1;
+}
+
+export function seekablePlotIndices(
+  frameIndices: readonly (number | null)[] | undefined,
+  pointCount: number,
+): number[] {
+  if (!frameIndices) return [];
+  const result: number[] = [];
+  const limit = Math.min(pointCount, frameIndices.length);
+  for (let index = 0; index < limit; index += 1) {
+    const frame = frameIndices[index];
+    if (typeof frame === "number" && Number.isSafeInteger(frame) && frame >= 0) {
+      result.push(index);
+    }
+  }
+  return result;
+}
+
+export function exactFrameAt(
+  frameIndices: readonly (number | null)[] | undefined,
+  dataIndex: number,
+): number | null {
+  const frame = frameIndices?.[dataIndex];
+  return typeof frame === "number" && Number.isSafeInteger(frame) && frame >= 0
+    ? frame
+    : null;
+}
+
+export function seekableFrameBounds(
+  frameIndices: readonly (number | null)[] | undefined,
+  dataIndices: readonly number[],
+): [number, number] | null {
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  for (const dataIndex of dataIndices) {
+    const frame = exactFrameAt(frameIndices, dataIndex);
+    if (frame === null) continue;
+    minimum = Math.min(minimum, frame);
+    maximum = Math.max(maximum, frame);
+  }
+  return Number.isFinite(minimum) && Number.isFinite(maximum)
+    ? [minimum, maximum]
+    : null;
 }
 
 function nearestFrameLinear(
@@ -706,12 +1046,6 @@ function positiveNumber(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function clampFrame(frame: number, frameCount: number): number {
-  if (frameCount <= 0) return 0;
-  const finiteFrame = Number.isFinite(frame) ? Math.round(frame) : 0;
-  return Math.max(0, Math.min(frameCount - 1, finiteFrame));
-}
-
 function evenlySpacedIndices(length: number, count: number): number[] {
   if (count <= 1) return [0];
   return Array.from(
@@ -732,19 +1066,36 @@ function formatTick(value: number): string {
   return Number(value.toPrecision(4)).toString();
 }
 
-function currentFrameValueText(
+function currentPlotValueText(
+  dataIndex: number,
   frame: number,
   xValues: readonly number[],
-  value: number | null,
+  lines: readonly PlotLine[],
   axisLabel: string,
   axisUnit: string | undefined,
-  unit: string,
+  yUnit: string | undefined,
 ): string {
-  const axisValue = finiteNumber(xValues[frame], frame);
+  const axisValue = finiteNumber(xValues[dataIndex], dataIndex);
   const axis = `${axisLabel} ${formatTick(axisValue)}${axisUnit ? ` ${axisUnit}` : ""}`;
-  return value === null
-    ? `Frame ${frame + 1}; ${axis}; unavailable`
-    : `Frame ${frame + 1}; ${axis}; ${formatTick(value)} ${unit}`;
+  const values = lines.map((line) => {
+    const value = finiteMeasurementValue(line.values[dataIndex]);
+    return `${line.label} ${value === null
+      ? "unavailable"
+      : `${formatTick(value)}${yUnit ? ` ${yUnit}` : ""}`}`;
+  });
+  return [`Frame ${frame + 1}`, axis, ...values].join("; ");
+}
+
+function measurementLabel(title: string): string {
+  const separator = title.indexOf(" · ");
+  return separator > 0 ? title.slice(0, separator) : "Measurement";
+}
+
+function plotLineColor(color: string | undefined, index: number): string {
+  const value = color?.trim();
+  return value && /^#[0-9a-f]{6}$/i.test(value)
+    ? value
+    : DEFAULT_LINE_COLORS[index % DEFAULT_LINE_COLORS.length];
 }
 
 export default MeasurementPlot;

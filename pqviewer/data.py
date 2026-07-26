@@ -2,22 +2,45 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
 import math
 from pathlib import Path
 import re
 import shlex
-from typing import Any, Mapping
+from threading import RLock
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
+from PQAnalysis.core import Cell
 from PQAnalysis.io import EnergyFileReader, MoldescriptorReader, TopologyFileReader
 from PQAnalysis.io.traj_file import get_frame_reader
 from PQAnalysis.topology import Topology
 from PQAnalysis.traj import MDEngineFormat, TrajectoryFormat
 
+from .periodic import (
+    apply_image_shifts,
+    centered_image_shifts,
+    checked_int32,
+    reverse_unwrap_image_step,
+    unwrap_image_step,
+)
 
-SCHEMA_VERSION = 1
+
+SCHEMA_VERSION = 2
+
+
+@dataclass(frozen=True, slots=True)
+class FrameKey:
+    """Stable identity for a frame inside one indexed source segment."""
+
+    source_id: str
+    source_index: int
+    segment_index: int = 0
+    step: int | None = None
+    time: float | None = None
+    time_unit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,11 +51,17 @@ class FrameData:
     positions: np.ndarray
     cell: np.ndarray
     pbc: tuple[bool, bool, bool]
+    periodic_cell: np.ndarray | None = None
     forces: np.ndarray | None = None
     velocities: np.ndarray | None = None
     charges: np.ndarray | None = None
     scalars: Mapping[str, float | int | bool] = field(default_factory=dict)
     units: Mapping[str, str | None] = field(default_factory=dict)
+    frame_key: FrameKey | None = None
+    coordinates: Literal["source", "unwrapped"] = "source"
+    unwrapped_positions: np.ndarray | None = None
+    centered_image_shifts: np.ndarray | None = None
+    unwrapped_image_shifts: np.ndarray | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +78,14 @@ class _CompanionSpec:
     extensions: tuple[str, ...]
     atom_fields: int
     unit: str
+
+
+@dataclass(frozen=True, slots=True)
+class _UnwrapAnchor:
+    positions: np.ndarray
+    cell: np.ndarray
+    pbc: tuple[bool, bool, bool]
+    shifts: np.ndarray
 
 
 _COMPANION_SPECS = {
@@ -190,6 +227,10 @@ class _CompanionFile:
         self._file_id: tuple[int, int] | None = None
         self._anchor_start = 0
         self._anchor = b""
+        self._prefix_anchor = b""
+        self._observed_size = 0
+        self._observed_mtime_ns: int | None = None
+        self._observed_ctime_ns: int | None = None
         self._scan_frames()
 
     @property
@@ -247,11 +288,20 @@ class _CompanionFile:
 
         stat = self.path.stat()
         file_id = (stat.st_dev, stat.st_ino)
+        same_size_changed = (
+            self._observed_mtime_ns is not None
+            and stat.st_size == self._observed_size
+            and (
+                stat.st_mtime_ns != self._observed_mtime_ns
+                or stat.st_ctime_ns != self._observed_ctime_ns
+            )
+        )
         if (
             self._file_id is not None
             and (
                 file_id != self._file_id
                 or stat.st_size < self._scan_offset
+                or same_size_changed
                 or not self._anchor_matches()
             )
         ):
@@ -307,17 +357,26 @@ class _CompanionFile:
                 self._scan_offset = handle.tell()
 
         self._update_anchor()
+        observed = self.path.stat()
+        self._observed_size = observed.st_size
+        self._observed_mtime_ns = observed.st_mtime_ns
+        self._observed_ctime_ns = observed.st_ctime_ns
 
     def _anchor_matches(self) -> bool:
-        if not self._anchor:
+        if not self._anchor and not self._prefix_anchor:
             return True
         with self.path.open("rb") as handle:
+            if self._prefix_anchor:
+                handle.seek(0)
+                if handle.read(len(self._prefix_anchor)) != self._prefix_anchor:
+                    return False
             handle.seek(self._anchor_start)
             return handle.read(len(self._anchor)) == self._anchor
 
     def _update_anchor(self) -> None:
         self._anchor_start = max(0, self._scan_offset - 512)
         with self.path.open("rb") as handle:
+            self._prefix_anchor = handle.read(min(512, self._scan_offset))
             handle.seek(self._anchor_start)
             self._anchor = handle.read(self._scan_offset - self._anchor_start)
 
@@ -327,6 +386,10 @@ class _CompanionFile:
         self._file_id = None
         self._anchor_start = 0
         self._anchor = b""
+        self._prefix_anchor = b""
+        self._observed_size = 0
+        self._observed_mtime_ns = None
+        self._observed_ctime_ns = None
 
 
 class EmptyTrajectoryDataset:
@@ -342,6 +405,7 @@ class EmptyTrajectoryDataset:
             "schema_version": SCHEMA_VERSION,
             "name": self.name,
             "frame_count": 0,
+            "coordinate_modes": ["source", "unwrapped"],
             "topology": {
                 "atom_count": 0,
                 "atomic_numbers": [],
@@ -372,6 +436,26 @@ class EmptyTrajectoryDataset:
                     "shape": [3],
                     "unit": None,
                 },
+                "centered_image_shifts": {
+                    "scope": "atom",
+                    "dtype": "int32",
+                    "shape": [0, 3],
+                    "unit": None,
+                },
+                "unwrapped_positions": {
+                    "scope": "atom",
+                    "dtype": "float32",
+                    "shape": [0, 3],
+                    "unit": "angstrom",
+                    "coordinate_mode": "unwrapped",
+                },
+                "unwrapped_image_shifts": {
+                    "scope": "atom",
+                    "dtype": "int32",
+                    "shape": [0, 3],
+                    "unit": None,
+                    "coordinate_mode": "unwrapped",
+                },
             },
             "series": [],
             "companion_files": {
@@ -386,7 +470,12 @@ class EmptyTrajectoryDataset:
             },
         }
 
-    def get_frame(self, index: int) -> FrameData:
+    def get_frame(
+        self,
+        index: int,
+        *,
+        coordinates: Literal["source", "unwrapped"] = "source",
+    ) -> FrameData:
         raise IndexError(f"frame index {index} is outside an empty dataset")
 
     @staticmethod
@@ -396,6 +485,9 @@ class EmptyTrajectoryDataset:
 
 class PQTrajectoryDataset:
     """Random-access XYZ and extxyz trajectory dataset."""
+
+    UNWRAP_CACHE_SIZE = 32
+    UNWRAP_CACHE_BYTES = 32 * 1024**2
 
     def __init__(
         self,
@@ -409,6 +501,7 @@ class PQTrajectoryDataset:
         moldescriptor_path: str | Path | None = None,
         topology_path: str | Path | None = None,
         topology: Topology | None = None,
+        reference_residues: Sequence[Any] | None = None,
         md_format: MDEngineFormat | str = MDEngineFormat.PQ,
         name: str | None = None,
     ) -> None:
@@ -428,10 +521,18 @@ class PQTrajectoryDataset:
         )
         self.moldescriptor_path = self._optional_file(moldescriptor_path)
         self.topology_path = self._optional_file(topology_path)
+        if self.moldescriptor_path is not None and reference_residues is not None:
+            raise ValueError(
+                "provide a moldescriptor path or reference residues, not both"
+            )
         self._reference_residues = (
-            MoldescriptorReader(str(self.moldescriptor_path)).read()
-            if self.moldescriptor_path is not None
-            else None
+            reference_residues
+            if reference_residues is not None
+            else (
+                MoldescriptorReader(str(self.moldescriptor_path)).read()
+                if self.moldescriptor_path is not None
+                else None
+            )
         )
         self._bonded_topology = (
             TopologyFileReader(str(self.topology_path)).read()
@@ -454,8 +555,15 @@ class PQTrajectoryDataset:
         self._file_id: tuple[int, int] | None = None
         self._anchor_start = 0
         self._anchor = b""
+        self._prefix_anchor = b""
+        self._observed_size = 0
+        self._observed_mtime_ns: int | None = None
+        self._observed_ctime_ns: int | None = None
         self._last_cell_source: int | None = None
         self._cell_cache: dict[int, Any] = {}
+        self._unwrapped_cache: OrderedDict[int, _UnwrapAnchor] = OrderedDict()
+        self._unwrapped_cache_bytes = 0
+        self._unwrapped_lock = RLock()
         self._sidecar_series: list[dict[str, Any]] = []
         self._companions: dict[str, _CompanionFile | None] = {}
         self._explicit_companions = {
@@ -483,6 +591,25 @@ class PQTrajectoryDataset:
             "positions": self._property_spec(
                 "atom", [topology["atom_count"], 3], "angstrom"
             ),
+            "unwrapped_positions": {
+                **self._property_spec(
+                    "atom", [topology["atom_count"], 3], "angstrom"
+                ),
+                "coordinate_mode": "unwrapped",
+            },
+            "centered_image_shifts": {
+                "scope": "atom",
+                "dtype": "int32",
+                "shape": [topology["atom_count"], 3],
+                "unit": None,
+            },
+            "unwrapped_image_shifts": {
+                "scope": "atom",
+                "dtype": "int32",
+                "shape": [topology["atom_count"], 3],
+                "unit": None,
+                "coordinate_mode": "unwrapped",
+            },
             "cell": self._property_spec("frame", [3, 3], "angstrom"),
             "pbc": {
                 "scope": "frame",
@@ -507,14 +634,37 @@ class PQTrajectoryDataset:
             "schema_version": SCHEMA_VERSION,
             "name": self.name,
             "frame_count": self.frame_count,
+            "coordinate_modes": ["source", "unwrapped"],
             "topology": topology,
             "properties": properties,
             "series": series,
             "companion_files": self._companion_manifest(),
         }
 
-    def get_frame(self, index: int) -> FrameData:
+    def get_frame(
+        self,
+        index: int,
+        *,
+        coordinates: Literal["source", "unwrapped"] = "source",
+    ) -> FrameData:
         """Decode one indexed frame with PQAnalysis."""
+        if coordinates not in {"source", "unwrapped"}:
+            raise ValueError("coordinates must be source or unwrapped")
+        source = self._get_source_frame(index)
+        if coordinates == "source":
+            return source
+        with self._unwrapped_lock:
+            shifts = self._unwrapped_shifts(index, source)
+        cell = self._frame_cell(source)
+        positions = apply_image_shifts(cell, source.positions, shifts)
+        return replace(
+            source,
+            coordinates="unwrapped",
+            unwrapped_positions=positions,
+            unwrapped_image_shifts=checked_int32(shifts),
+        )
+
+    def _get_source_frame(self, index: int) -> FrameData:
         if index < 0 or index >= self.frame_count:
             raise IndexError(
                 f"frame index {index} is outside 0..{self.frame_count - 1}"
@@ -572,11 +722,14 @@ class PQTrajectoryDataset:
                     continue
                 units[key] = companion.unit
 
+        positions = np.asarray(system.pos, dtype=np.float64).copy()
+        image_shifts = centered_image_shifts(system.cell, positions, pbc)
         return FrameData(
             index=index,
-            positions=np.asarray(system.pos, dtype=np.float64).copy(),
+            positions=positions,
             cell=cell,
             pbc=pbc,
+            centered_image_shifts=image_shifts,
             forces=arrays["forces"],
             velocities=arrays["velocities"],
             charges=arrays["charges"],
@@ -584,16 +737,230 @@ class PQTrajectoryDataset:
             units=units,
         )
 
+    def _unwrapped_shifts(
+        self,
+        index: int,
+        source: FrameData,
+    ) -> np.ndarray:
+        anchor = self._nearest_unwrap_anchor(index)
+        if anchor is None:
+            first = source if index == 0 else self._get_source_frame(0)
+            anchor_index = 0
+            anchor = self._make_unwrap_anchor(
+                first,
+                np.zeros(first.positions.shape, dtype=np.int64),
+            )
+            self._cache_unwrap_anchor(anchor_index, anchor)
+        else:
+            anchor_index, anchor = anchor
+
+        if anchor_index < index:
+            previous = anchor
+            for frame_index in range(anchor_index + 1, index + 1):
+                current_frame = (
+                    source
+                    if frame_index == index
+                    else self._get_source_frame(frame_index)
+                )
+                current = self._make_unwrap_anchor(
+                    current_frame,
+                    unwrap_image_step(
+                        self._anchor_cell(previous),
+                        previous.positions,
+                        self._frame_cell(current_frame),
+                        current_frame.positions,
+                        current_frame.pbc,
+                        previous.shifts,
+                    ),
+                )
+                previous = current
+            self._cache_unwrap_anchor(index, previous)
+            return previous.shifts.copy()
+
+        if anchor_index > index:
+            current = anchor
+            for frame_index in range(anchor_index - 1, index - 1, -1):
+                previous_frame = (
+                    source
+                    if frame_index == index
+                    else self._get_source_frame(frame_index)
+                )
+                if any(
+                    before and not after
+                    for before, after in zip(
+                        previous_frame.pbc,
+                        current.pbc,
+                        strict=True,
+                    )
+                ):
+                    return self._unwrapped_shifts_from_prior(index, source)
+                previous = self._make_unwrap_anchor(
+                    previous_frame,
+                    reverse_unwrap_image_step(
+                        self._frame_cell(previous_frame),
+                        previous_frame.positions,
+                        previous_frame.pbc,
+                        self._anchor_cell(current),
+                        current.positions,
+                        current.pbc,
+                        current.shifts,
+                    ),
+                )
+                current = previous
+            self._cache_unwrap_anchor(index, current)
+            return current.shifts.copy()
+
+        return anchor.shifts.copy()
+
+    def _nearest_unwrap_anchor(
+        self,
+        index: int,
+    ) -> tuple[int, _UnwrapAnchor] | None:
+        if not self._unwrapped_cache:
+            return None
+        anchor_index = min(
+            self._unwrapped_cache,
+            key=lambda candidate: (abs(candidate - index), candidate > index),
+        )
+        anchor = self._unwrapped_cache.pop(anchor_index)
+        self._unwrapped_cache[anchor_index] = anchor
+        return anchor_index, anchor
+
+    def _unwrapped_shifts_from_prior(
+        self,
+        index: int,
+        source: FrameData,
+    ) -> np.ndarray:
+        candidates = [
+            candidate
+            for candidate in self._unwrapped_cache
+            if candidate <= index
+        ]
+        if not candidates:
+            first = source if index == 0 else self._get_source_frame(0)
+            anchor_index = 0
+            anchor = self._make_unwrap_anchor(
+                first,
+                np.zeros(first.positions.shape, dtype=np.int64),
+            )
+            self._cache_unwrap_anchor(anchor_index, anchor)
+        else:
+            anchor_index = max(candidates)
+            anchor = self._unwrapped_cache.pop(anchor_index)
+            self._unwrapped_cache[anchor_index] = anchor
+
+        previous = anchor
+        for frame_index in range(anchor_index + 1, index + 1):
+            current_frame = (
+                source
+                if frame_index == index
+                else self._get_source_frame(frame_index)
+            )
+            previous = self._make_unwrap_anchor(
+                current_frame,
+                unwrap_image_step(
+                    self._anchor_cell(previous),
+                    previous.positions,
+                    self._frame_cell(current_frame),
+                    current_frame.positions,
+                    current_frame.pbc,
+                    previous.shifts,
+                ),
+            )
+        self._cache_unwrap_anchor(index, previous)
+        return previous.shifts.copy()
+
+    def _cache_unwrap_anchor(
+        self,
+        index: int,
+        anchor: _UnwrapAnchor,
+    ) -> None:
+        size = self._unwrap_anchor_bytes(anchor)
+        if size > self.UNWRAP_CACHE_BYTES:
+            return
+        replaced = self._unwrapped_cache.pop(index, None)
+        if replaced is not None:
+            self._unwrapped_cache_bytes -= self._unwrap_anchor_bytes(replaced)
+        self._unwrapped_cache[index] = anchor
+        self._unwrapped_cache_bytes += size
+        while (
+            len(self._unwrapped_cache) > self.UNWRAP_CACHE_SIZE
+            or self._unwrapped_cache_bytes > self.UNWRAP_CACHE_BYTES
+        ):
+            candidates = [
+                candidate
+                for candidate in self._unwrapped_cache
+                if candidate not in {0, index}
+            ]
+            if not candidates:
+                candidates = [
+                    candidate
+                    for candidate in self._unwrapped_cache
+                    if candidate != index
+                ]
+            candidate = candidates[0] if candidates else index
+            removed = self._unwrapped_cache.pop(candidate)
+            self._unwrapped_cache_bytes -= self._unwrap_anchor_bytes(removed)
+
+    @staticmethod
+    def _unwrap_anchor_bytes(anchor: _UnwrapAnchor) -> int:
+        return anchor.positions.nbytes + anchor.cell.nbytes + anchor.shifts.nbytes
+
+    @staticmethod
+    def _make_unwrap_anchor(
+        frame: FrameData,
+        shifts: np.ndarray,
+    ) -> _UnwrapAnchor:
+        cell = (
+            frame.periodic_cell
+            if frame.periodic_cell is not None
+            else frame.cell
+        )
+        return _UnwrapAnchor(
+            positions=frame.positions.copy(),
+            cell=cell.copy(),
+            pbc=frame.pbc,
+            shifts=np.asarray(shifts, dtype=np.int64).copy(),
+        )
+
+    @staticmethod
+    def _frame_cell(frame: FrameData) -> Cell:
+        matrix = np.asarray(
+            frame.periodic_cell
+            if frame.periodic_cell is not None
+            else frame.cell,
+            dtype=np.float64,
+        )
+        if not np.any(matrix):
+            return Cell()
+        return Cell.init_from_box_matrix(matrix.T)
+
+    @staticmethod
+    def _anchor_cell(anchor: _UnwrapAnchor) -> Cell:
+        matrix = np.asarray(anchor.cell, dtype=np.float64)
+        if not np.any(matrix):
+            return Cell()
+        return Cell.init_from_box_matrix(matrix.T)
+
     def refresh(self) -> int:
         """Index newly completed frames and return their count."""
         previous_count = self.frame_count
         stat = self.path.stat()
         file_id = (stat.st_dev, stat.st_ino)
+        same_size_changed = (
+            self._observed_mtime_ns is not None
+            and stat.st_size == self._observed_size
+            and (
+                stat.st_mtime_ns != self._observed_mtime_ns
+                or stat.st_ctime_ns != self._observed_ctime_ns
+            )
+        )
         if (
             self._file_id is not None
             and (
                 file_id != self._file_id
                 or stat.st_size < self._scan_offset
+                or same_size_changed
                 or not self._anchor_matches()
             )
         ):
@@ -601,7 +968,16 @@ class PQTrajectoryDataset:
             self._scan_offset = 0
             self._topology = self._initial_topology
             self._last_cell_source = None
+            self._file_id = None
+            self._anchor_start = 0
+            self._anchor = b""
+            self._prefix_anchor = b""
+            self._observed_size = 0
+            self._observed_mtime_ns = None
+            self._observed_ctime_ns = None
             self._cell_cache.clear()
+            self._unwrapped_cache.clear()
+            self._unwrapped_cache_bytes = 0
 
         if not self._spans:
             self.traj_format = self._detect_format()
@@ -760,17 +1136,26 @@ class PQTrajectoryDataset:
                 self._scan_offset = end
 
         self._update_anchor()
+        observed = self.path.stat()
+        self._observed_size = observed.st_size
+        self._observed_mtime_ns = observed.st_mtime_ns
+        self._observed_ctime_ns = observed.st_ctime_ns
 
     def _anchor_matches(self) -> bool:
-        if not self._anchor:
+        if not self._anchor and not self._prefix_anchor:
             return True
         with self.path.open("rb") as handle:
+            if self._prefix_anchor:
+                handle.seek(0)
+                if handle.read(len(self._prefix_anchor)) != self._prefix_anchor:
+                    return False
             handle.seek(self._anchor_start)
             return handle.read(len(self._anchor)) == self._anchor
 
     def _update_anchor(self) -> None:
         self._anchor_start = max(0, self._scan_offset - 512)
         with self.path.open("rb") as handle:
+            self._prefix_anchor = handle.read(min(512, self._scan_offset))
             handle.seek(self._anchor_start)
             self._anchor = handle.read(self._scan_offset - self._anchor_start)
 
