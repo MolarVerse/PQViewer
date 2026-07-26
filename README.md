@@ -12,7 +12,15 @@ reproducible publication figures in a modern browser interface.
 PQViewer is preparing for its first public beta. File and Python interfaces may
 still change before 1.0.
 
-![A triclinic framework in PQViewer](frontend/e2e/__screenshots__/darwin/acof-centered.png)
+![A 100-frame UMCM-9 trajectory in PQViewer](docs/assets/screenshots/trajectory-workspace.png)
+
+<p align="center">
+  <a href="docs/index.html"><strong>Explore the visual documentation</strong></a>
+</p>
+
+| Protein | Molecule | Framework |
+|:--:|:--:|:--:|
+| ![Crambin protein](docs/assets/renders/crambin.png) | ![C60 fullerene](docs/assets/renders/c60.png) | ![UMCM-9 MOF](docs/assets/renders/umcm-9.png) |
 
 ## Quick start
 
@@ -76,6 +84,7 @@ pqviewer examples/acof-triclinic.xyz
 
 ## Documentation
 
+- [Visual overview](docs/index.html)
 - [Getting started](docs/getting-started.md)
 - [Viewer guide](docs/viewer-guide.md)
 - [Data sources and periodic conventions](docs/data-and-conventions.md)

@@ -1,0 +1,119 @@
+{
+  "schema": "pqviewer.figure",
+  "schema_version": 1,
+  "source": {
+    "kind": "pq-trajectory",
+    "path": "../sources/c60.xyz",
+    "slice": {
+      "start": null,
+      "stop": null,
+      "step": null
+    },
+    "segments": [
+      {
+        "source_id": "../sources/c60.xyz",
+        "kind": "pq-trajectory",
+        "path": "../sources/c60.xyz",
+        "input": null,
+        "frame_count": 1,
+        "files": {
+          "trajectory": "../sources/c60.xyz"
+        }
+      }
+    ]
+  },
+  "frame": {
+    "index": 0,
+    "fingerprint": "frame-v1:00686f5c04542925",
+    "key": {
+      "source_id": "../sources/c60.xyz",
+      "source_index": 0,
+      "segment_index": 0,
+      "step": null,
+      "time": null,
+      "time_unit": null
+    }
+  },
+  "scene": {
+    "presentation": {
+      "mode": "licorice",
+      "water": "show",
+      "hydrogens": true,
+      "wrap": "none",
+      "cellOrigin": [
+        0,
+        0,
+        0
+      ],
+      "mirror": [
+        false,
+        false,
+        false
+      ],
+      "images": {
+        "min": [
+          0,
+          0,
+          0
+        ],
+        "max": [
+          0,
+          0,
+          0
+        ]
+      },
+      "cell": false,
+      "forces": false,
+      "velocities": false,
+      "atomScale": 1.15,
+      "bondScale": 1.15,
+      "color": "element",
+      "quality": "high"
+    },
+    "selection": {
+      "atoms": [],
+      "intent": "measurement",
+      "minimumImage": false
+    },
+    "vectors": {
+      "forceScale": 1,
+      "velocityScale": 1
+    }
+  },
+  "camera": {
+    "position": [
+      8,
+      5,
+      10
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
+    "up": [
+      0,
+      1,
+      0
+    ],
+    "fov": 34,
+    "zoom": 1,
+    "near": 0.02,
+    "far": 5000
+  },
+  "output": {
+    "format": "png",
+    "width": 2400,
+    "height": 1800,
+    "dpi": 300,
+    "background": {
+      "kind": "solid",
+      "color": "#f5f8f8"
+    },
+    "projection": "orthographic",
+    "fit": true,
+    "padding": 0.1,
+    "periodicContext": true
+  },
+  "annotations": []
+}

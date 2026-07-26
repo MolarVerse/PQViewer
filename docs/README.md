@@ -1,6 +1,7 @@
 # Documentation
 
-Start with [Getting started](getting-started.md), then use the focused guides:
+See the [visual overview](index.html), start with
+[Getting started](getting-started.md), then use the focused guides:
 
 - [Viewer guide](viewer-guide.md): navigation, selection, display, and keyboard
   controls

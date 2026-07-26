@@ -7,5 +7,5 @@ include SECURITY.md
 include THIRD_PARTY_NOTICES.md
 include frontend/e2e/__screenshots__/darwin/acof-centered.png
 include frontend/public/pq-logo.png
-recursive-include docs *.md
+recursive-include docs *.md *.html *.css *.png *.json *.pdb *.xyz *.extxyz
 recursive-include examples *.extxyz *.in *.md *.xyz
