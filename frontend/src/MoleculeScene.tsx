@@ -26,7 +26,13 @@ import {
   inferProteinSecondaryStructure,
   type ProteinCartoonResidue,
 } from "./scene/ribbon";
-import { buildCoordinationPolyhedraGeometry } from "./scene/polyhedra";
+import {
+  buildCoordinationPolyhedraGeometry,
+  hasCoordinationPolyhedra,
+  prepareCoordinationPolyhedraTopology,
+  type CoordinationPolyhedraInput,
+  type PreparedCoordinationPolyhedraTopology,
+} from "./scene/polyhedra";
 import {
   backboneResidues,
   cellImageCorners,
@@ -44,7 +50,6 @@ import {
   periodicBondSegments,
   prepareFrameGeometry,
   prepareScene,
-  prepareTopology,
   publicationBondGeometry,
   representationRadius,
   sameFrameGeometryLayout,
@@ -83,6 +88,8 @@ const MAX_SELECTION_RING_MARKERS = 512;
 export const MAX_TRAIL_ATOMS = 16;
 export const MAX_TRAIL_POINTS = 512;
 export const MAX_DISPLACEMENT_ATOMS = 32;
+export const POLYHEDRA_REQUIREMENT =
+  "Requires a supported center with 3+ bonded ligands";
 
 const emptyTrajectoryOverlays: TrajectoryOverlays = Object.freeze({
   trails: Object.freeze([]),
@@ -148,9 +155,27 @@ interface SelectionRectangle {
   height: number;
 }
 
+interface PreparedPolyhedraRequest {
+  input: CoordinationPolyhedraInput;
+  maxCenters: number;
+  topology?: PreparedCoordinationPolyhedraTopology;
+}
+
+interface PolyhedraCapabilityCache {
+  sceneTopology: PreparedTopology;
+  frame: FrameData | null;
+  water: ScenePresentation["water"];
+  hydrogens: boolean;
+  bonds: CoordinationPolyhedraInput["bonds"];
+  maxCenters: number;
+  available: boolean;
+  topology: PreparedCoordinationPolyhedraTopology;
+}
+
 interface MoleculeSceneProps {
   manifest: Manifest;
   frame: FrameData | null;
+  preparedTopology: PreparedTopology | null;
   presentation: ScenePresentation;
   selectedAtoms: AtomSelection[];
   trajectoryOverlays?: TrajectoryOverlays;
@@ -367,17 +392,32 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
 
 const yAxis = new THREE.Vector3(0, 1, 0);
 
-export function sceneCapabilities(manifest: Manifest, frame: FrameData | null): SceneCapabilities {
+export function sceneCapabilities(
+  manifest: Manifest,
+  frame: FrameData | null,
+  presentation?: ScenePresentation,
+  preparedTopology?: PreparedTopology | null,
+): SceneCapabilities {
   const water = detectWaterAtoms(manifest, frame).size > 0;
   const ribbon = backboneResidues(manifest).length >= 3;
   const periodic = hasFrameCell(frame) && framePbc(frame).some(Boolean);
-  return buildSceneCapabilities(manifest, water, ribbon, periodic);
+  const model = presentation
+    ? prepareScene(manifest, frame, presentation, preparedTopology)
+    : null;
+  return buildSceneCapabilities(
+    manifest,
+    water,
+    ribbon,
+    Boolean(model && hasRenderablePolyhedra(model)),
+    periodic,
+  );
 }
 
 function buildSceneCapabilities(
   manifest: Manifest,
   water: boolean,
   ribbon: boolean,
+  polyhedra: boolean,
   periodic: boolean,
 ): SceneCapabilities {
   let ribbonReason = "Backbone available";
@@ -390,6 +430,10 @@ function buildSceneCapabilities(
     water,
     ribbon,
     ribbonReason,
+    polyhedra,
+    polyhedraReason: polyhedra
+      ? "Coordination centers available"
+      : POLYHEDRA_REQUIREMENT,
     suggestedProfile: ribbon ? "protein" : periodic && !water ? "crystal" : "molecule",
   };
 }
@@ -398,6 +442,7 @@ function renderedSceneInfo(
   manifest: Manifest,
   model: PreparedScene,
   geometry: FrameGeometryPlan,
+  polyhedra: boolean,
 ): RenderedSceneInfo {
   return {
     imageCount: model.images.length,
@@ -409,6 +454,7 @@ function renderedSceneInfo(
       manifest,
       model.waterAtoms.size > 0,
       model.backbone.length >= 3,
+      polyhedra,
       Boolean(model.basis && model.pbc.some(Boolean)),
     ),
   };
@@ -448,12 +494,15 @@ function sameRenderedSceneInfo(left: RenderedSceneInfo, right: RenderedSceneInfo
     && left.capabilities.water === right.capabilities.water
     && left.capabilities.ribbon === right.capabilities.ribbon
     && left.capabilities.ribbonReason === right.capabilities.ribbonReason
+    && left.capabilities.polyhedra === right.capabilities.polyhedra
+    && left.capabilities.polyhedraReason === right.capabilities.polyhedraReason
     && left.capabilities.suggestedProfile === right.capabilities.suggestedProfile;
 }
 
 export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>(function MoleculeScene({
   manifest,
   frame,
+  preparedTopology,
   presentation,
   selectedAtoms,
   trajectoryOverlays = emptyTrajectoryOverlays,
@@ -478,6 +527,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   const selectionContextRef = useRef(onSelectionContext);
   const selectionPositionsRef = useRef(onSelectionPositions);
   const reportedInfoRef = useRef<{ manifest: Manifest; info: RenderedSceneInfo } | null>(null);
+  const polyhedraCapabilityRef = useRef<PolyhedraCapabilityCache | null>(null);
   const exportActiveRef = useRef(false);
   const [keyboardSelection, setKeyboardSelection] = useState<AtomSelection | null>(null);
   const [boxSelection, setBoxSelection] = useState<SelectionRectangle | null>(null);
@@ -910,10 +960,14 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   useEffect(() => {
     const state = stateRef.current;
     if (!state) return;
-    if (state.topologyManifest !== manifest || !state.preparedTopology) {
+    if (
+      state.topologyManifest !== manifest
+      || state.preparedTopology !== preparedTopology
+    ) {
       state.topologyManifest = manifest;
-      state.preparedTopology = prepareTopology(manifest, frame);
+      state.preparedTopology = preparedTopology;
     }
+    if (!state.preparedTopology) return;
     const model = prepareScene(manifest, frame, presentation, state.preparedTopology);
     if (!model) {
       if (reportedInfoRef.current) {
@@ -923,16 +977,49 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
       selectionContextRef.current?.(null);
       return;
     }
+    const activeTopology = state.preparedTopology;
+    if (!activeTopology) return;
     const forces = frameArray(frame, ["forces", "force"]);
     const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
     const frameGeometry = prepareFrameGeometry(model, presentation, forces, velocities);
-    const info = renderedSceneInfo(manifest, model, frameGeometry);
+    let cachedPolyhedra = polyhedraCapabilityRef.current;
     if (
-      reportedInfoRef.current?.manifest !== manifest
-      || !sameRenderedSceneInfo(reportedInfoRef.current.info, info)
+      !cachedPolyhedra
+      || cachedPolyhedra.sceneTopology !== activeTopology
+      || cachedPolyhedra.water !== presentation.water
+      || cachedPolyhedra.hydrogens !== presentation.hydrogens
     ) {
-      reportedInfoRef.current = { manifest, info };
-      sceneInfoRef.current?.(info);
+      const request = polyhedraRequest(model);
+      cachedPolyhedra = {
+        sceneTopology: activeTopology,
+        frame: null,
+        water: presentation.water,
+        hydrogens: presentation.hydrogens,
+        bonds: request.input.bonds,
+        maxCenters: request.maxCenters,
+        available: false,
+        topology: prepareCoordinationPolyhedraTopology(
+          request.input,
+          { maxCenters: request.maxCenters },
+        ),
+      };
+      polyhedraCapabilityRef.current = cachedPolyhedra;
+    }
+    const activePolyhedraRequest: PreparedPolyhedraRequest = {
+      input: polyhedraInput(model, cachedPolyhedra.bonds),
+      maxCenters: cachedPolyhedra.maxCenters,
+      topology: cachedPolyhedra.topology,
+    };
+    if (
+      presentation.mode !== "polyhedra"
+      && cachedPolyhedra.frame !== frame
+    ) {
+      cachedPolyhedra.available = hasCoordinationPolyhedra(
+        activePolyhedraRequest.input,
+        { maxCenters: activePolyhedraRequest.maxCenters },
+        activePolyhedraRequest.topology,
+      );
+      cachedPolyhedra.frame = frame;
     }
     const frameLayout = frameGeometryLayout(frameGeometry);
     const configKey = renderConfigKey(presentation);
@@ -967,7 +1054,21 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
         forceScale,
         velocityScale,
         frameGeometry,
+        activePolyhedraRequest,
       );
+    }
+    if (presentation.mode === "polyhedra") {
+      cachedPolyhedra.available = state.polyhedra !== null;
+      cachedPolyhedra.frame = frame;
+    }
+    const polyhedra = cachedPolyhedra.available;
+    const info = renderedSceneInfo(manifest, model, frameGeometry, polyhedra);
+    if (
+      reportedInfoRef.current?.manifest !== manifest
+      || !sameRenderedSceneInfo(reportedInfoRef.current.info, info)
+    ) {
+      reportedInfoRef.current = { manifest, info };
+      sceneInfoRef.current?.(info);
     }
     state.model = model;
     const mappedAtoms = state.atomObject?.userData.instanceToAtom;
@@ -1009,6 +1110,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     velocityScale,
     frame,
     manifest,
+    preparedTopology,
     presentation,
     resetSignal,
     viewPreset,
@@ -1096,6 +1198,9 @@ function capturePublicationSnapshot(state: SceneState): PublicationSnapshot {
   const manifest = state.topologyManifest;
   const presentation = state.fitContext?.presentation;
   if (!model || !manifest || !presentation) throw new Error("The molecular scene is not ready to export");
+  if (presentation.mode === "polyhedra" && !state.polyhedra) {
+    throw new Error(`Polyhedra unavailable · ${POLYHEDRA_REQUIREMENT}`);
+  }
   return {
     model,
     manifest,
@@ -1790,13 +1895,15 @@ function buildPublicationScene(
           true,
         )
       : null;
+    if (presentation.mode === "polyhedra" && !polyhedra) {
+      throw new Error(`Polyhedra unavailable · ${POLYHEDRA_REQUIREMENT}`);
+    }
     const atoms = buildAtoms(
       model,
       manifest,
       publicationPresentation,
       "light",
       true,
-      presentation.mode === "polyhedra" && !polyhedra ? "ball-stick" : undefined,
     );
     if (atoms) {
       stylePublicationMaterials(atoms, resources);
@@ -2587,6 +2694,7 @@ function buildFrameRenderables(
   forceScale: number,
   velocityScale: number,
   frameGeometry: FrameGeometryPlan,
+  polyhedraRequest: PreparedPolyhedraRequest,
 ): void {
   const palette = scenePalettes[appearance];
   if (presentation.mode === "ribbon") {
@@ -2629,21 +2737,32 @@ function buildFrameRenderables(
     }
   } else {
     state.polyhedra = presentation.mode === "polyhedra"
-      ? buildPolyhedra(model, manifest, presentation, appearance, palette)
+      ? buildPolyhedra(
+          model,
+          manifest,
+          presentation,
+          appearance,
+          palette,
+          false,
+          polyhedraRequest,
+        )
       : null;
-    state.atomObject = buildAtoms(
-      model,
-      manifest,
-      presentation,
-      appearance,
-      false,
-      presentation.mode === "polyhedra" && !state.polyhedra ? "ball-stick" : undefined,
-    );
+    const unsupportedPolyhedra = presentation.mode === "polyhedra"
+      && !state.polyhedra;
+    state.atomObject = unsupportedPolyhedra
+      ? null
+      : buildAtoms(
+          model,
+          manifest,
+          presentation,
+          appearance,
+          false,
+        );
     if (state.atomObject) {
       state.root.add(state.atomObject);
       state.pickables.push(state.atomObject);
     }
-    state.bonds = state.polyhedra
+    state.bonds = state.polyhedra || unsupportedPolyhedra
       ? null
       : buildBonds(presentation, palette, frameGeometry.bondKind, frameGeometry.bondSegments);
     if (state.bonds) state.root.add(state.bonds);
@@ -3055,21 +3174,14 @@ function buildPolyhedra(
   appearance: Appearance,
   palette: ScenePalette,
   publication = false,
+  preparedRequest?: PreparedPolyhedraRequest,
 ): THREE.Group | null {
-  const visibleAtoms = new Set(model.visibleAtoms);
+  const request = preparedRequest ?? polyhedraRequest(model);
   const geometry = buildCoordinationPolyhedraGeometry(
-    {
-      positions: model.positions,
-      atomicNumbers: model.atomicNumbers,
-      bonds: model.bonds.filter(([left, right]) => (
-        visibleAtoms.has(left) && visibleAtoms.has(right)
-      )),
-      basis: model.basis,
-      pbc: model.pbc,
-    },
+    request.input,
     {
       images: model.images,
-      maxCenters: model.visibleAtoms.length > 24 ? 8 : 64,
+      maxCenters: request.maxCenters,
       colorForCenter: (atom, atomicNumber) => atomColor(
         manifest,
         atom,
@@ -3078,6 +3190,7 @@ function buildPolyhedra(
         appearance,
       ),
     },
+    request.topology,
   );
   if (!geometry) return null;
 
@@ -3127,6 +3240,51 @@ function buildPolyhedra(
   edges.renderOrder = 2;
   group.add(edges);
   return group;
+}
+
+export function hasRenderablePolyhedra(model: PreparedScene): boolean {
+  const request = polyhedraRequest(model);
+  const topology = prepareCoordinationPolyhedraTopology(
+    request.input,
+    { maxCenters: request.maxCenters },
+  );
+  return hasCoordinationPolyhedra(
+    request.input,
+    { maxCenters: request.maxCenters },
+    topology,
+  );
+}
+
+function polyhedraRequest(model: PreparedScene): PreparedPolyhedraRequest {
+  const bonds = model.visibleAtoms.length === model.count
+    ? model.bonds
+    : visibleBonds(model);
+  return {
+    input: polyhedraInput(model, bonds),
+    maxCenters: model.visibleAtoms.length > 24 ? 8 : 64,
+  };
+}
+
+function polyhedraInput(
+  model: PreparedScene,
+  bonds: CoordinationPolyhedraInput["bonds"],
+): CoordinationPolyhedraInput {
+  return {
+    positions: model.positions,
+    atomicNumbers: model.atomicNumbers,
+    bonds,
+    basis: model.basis,
+    pbc: model.pbc,
+  };
+}
+
+function visibleBonds(
+  model: PreparedScene,
+): CoordinationPolyhedraInput["bonds"] {
+  const visibleAtoms = new Set(model.visibleAtoms);
+  return model.bonds.filter(([left, right]) => (
+    visibleAtoms.has(left) && visibleAtoms.has(right)
+  ));
 }
 
 function buildRibbon(

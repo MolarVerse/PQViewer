@@ -656,6 +656,42 @@ def test_headless_render_rejects_invalid_timeout_concisely(
     os.environ.get("PQVIEWER_HEADLESS_TEST") != "1",
     reason="requires the render extra and Chromium",
 )
+def test_headless_render_rejects_unsupported_polyhedra(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "run.xyz"
+    recipe_path = tmp_path / "polyhedra.pqfigure.json"
+    output = tmp_path / "figure.png"
+    write_source(source)
+    recipe = figure_recipe("run.xyz")
+    recipe["scene"]["presentation"]["mode"] = "polyhedra"
+    write_recipe(recipe_path, recipe)
+
+    with pytest.raises(SystemExit) as exit_info:
+        render_cli.main([
+            str(recipe_path),
+            "--output",
+            str(output),
+            "--width",
+            "320",
+            "--height",
+            "240",
+        ])
+
+    assert exit_info.value.code == 1
+    error = capsys.readouterr().err
+    assert error.startswith("pqviewer render: ")
+    assert "Polyhedra unavailable" in error
+    assert "supported center with 3+ bonded ligands" in error
+    assert "Traceback" not in error
+    assert not output.exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("PQVIEWER_HEADLESS_TEST") != "1",
+    reason="requires the render extra and Chromium",
+)
 def test_headless_render_command_produces_exact_rasters(tmp_path: Path) -> None:
     source = tmp_path / "run.xyz"
     recipe_path = tmp_path / "view.pqfigure.json"

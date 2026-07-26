@@ -49,6 +49,8 @@ import {
   framePbc,
   hasFrameCell,
   MoleculeScene,
+  POLYHEDRA_REQUIREMENT,
+  sceneCapabilities,
 } from "./MoleculeScene";
 import type {
   TrajectoryOverlays,
@@ -73,7 +75,12 @@ import {
   measureAtomSelection,
   updateSceneSelection,
 } from "./selection";
-import { MAX_ATOM_INSTANCES, MAX_PERIODIC_IMAGES } from "./scene/model";
+import {
+  MAX_ATOM_INSTANCES,
+  MAX_PERIODIC_IMAGES,
+  prepareTopology,
+} from "./scene/model";
+import type { PreparedTopology } from "./scene/model";
 import {
   cloneSelections,
   createNamedSelection,
@@ -257,6 +264,10 @@ export default function App() {
   const [opening, setOpening] = useState(false);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [sceneInfo, setSceneInfo] = useState<RenderedSceneInfo | null>(null);
+  const [sceneTopology, setSceneTopology] = useState<{
+    manifest: Manifest;
+    value: PreparedTopology;
+  } | null>(null);
   const cache = useRef(new FrameCache());
   const moleculeSceneRef = useRef<MoleculeSceneHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -285,6 +296,10 @@ export default function App() {
   const datasetCheckPending = useRef(false);
   const manifestGeneration = useRef("");
   const activeManifest = useRef<Manifest | null>(null);
+  const sceneTopologyRef = useRef<{
+    manifest: Manifest;
+    value: PreparedTopology;
+  } | null>(null);
   const datasetChannel = useRef<BroadcastChannel | null>(null);
   const playbackClock = useRef<{ key: string; requestTimeMs: number | null }>({
     key: "",
@@ -324,6 +339,8 @@ export default function App() {
     datasetReloadPending.current = false;
     manifestGeneration.current = value.dataset_generation ?? "";
     activeManifest.current = value;
+    sceneTopologyRef.current = null;
+    setSceneTopology(null);
     setManifest(value);
     setFrameIndex(0);
     setLoadedFrame(null);
@@ -412,6 +429,33 @@ export default function App() {
         ) {
           throw new Error("The saved frame content changed");
         }
+        const activeTopology = sceneTopologyRef.current?.manifest === dataset
+          ? sceneTopologyRef.current.value
+          : null;
+        const requestedTopology = activeTopology
+          ?? prepareTopology(dataset, candidate);
+        if (!requestedTopology) {
+          throw new Error("The molecular topology is unavailable");
+        }
+        const requestedCapabilities = sceneCapabilities(
+          dataset,
+          candidate,
+          recipe.scene.presentation,
+          requestedTopology,
+        );
+        if (
+          recipe.scene.presentation.mode === "polyhedra"
+          && !requestedCapabilities.polyhedra
+        ) {
+          throw new Error(
+            `Polyhedra unavailable · ${requestedCapabilities.polyhedraReason}`,
+          );
+        }
+        if (!activeTopology) {
+          const entry = { manifest: dataset, value: requestedTopology };
+          sceneTopologyRef.current = entry;
+          setSceneTopology(entry);
+        }
         setPlaying(false);
         setPlaybackOptionsOpen(false);
         setMeasurementPlotOpen(false);
@@ -472,6 +516,8 @@ export default function App() {
     datasetReloadPending.current = true;
     manifestGeneration.current = "";
     activeManifest.current = null;
+    sceneTopologyRef.current = null;
+    setSceneTopology(null);
     cache.current.clear();
     frameCoordinateModeRef.current = "source";
     setManifest(null);
@@ -948,6 +994,20 @@ export default function App() {
   }, [frameLoading, manifest?.name, rendering]);
 
   const frame = loadedFrame?.data ?? null;
+  useEffect(() => {
+    if (
+      !manifest
+      || !frame
+      || sceneTopologyRef.current?.manifest === manifest
+    ) {
+      return;
+    }
+    const value = prepareTopology(manifest, frame);
+    if (!value) return;
+    const entry = { manifest, value };
+    sceneTopologyRef.current = entry;
+    setSceneTopology(entry);
+  }, [frame, manifest]);
   const displayedFrameIndex = loadedFrame?.index ?? frameIndex;
   const displayedFrameMark = useMemo(
     () => frameMark(displayedFrameIndex, frame),
@@ -1062,6 +1122,30 @@ export default function App() {
     selectionVisibilityKey,
   ]);
   const capabilities = sceneInfo?.capabilities ?? null;
+  useEffect(() => {
+    if (!shouldNormalizePolyhedra(
+      presentation.mode,
+      capabilities?.polyhedra ?? null,
+      recipeApplying,
+    )) {
+      return;
+    }
+    setPresentation((current) => (
+      current.mode === "polyhedra"
+        ? { ...current, mode: "ball-stick" }
+        : current
+    ));
+    setProfile("custom");
+    setNotice({
+      message: `Polyhedra unavailable · ${capabilities?.polyhedraReason ?? POLYHEDRA_REQUIREMENT}`,
+      tone: "status",
+    });
+  }, [
+    capabilities?.polyhedra,
+    capabilities?.polyhedraReason,
+    presentation.mode,
+    recipeApplying,
+  ]);
   const canPlay = (manifest?.frame_count ?? 0) > 1;
   const loadedCoordinateMode = frame?.header.coordinates === "unwrapped"
     ? "unwrapped"
@@ -1984,9 +2068,16 @@ export default function App() {
   ]);
 
   const updatePresentation = useCallback((change: Partial<ScenePresentation>) => {
+    if (change.mode === "polyhedra" && !capabilities?.polyhedra) {
+      setNotice({
+        message: `Polyhedra unavailable · ${capabilities?.polyhedraReason ?? POLYHEDRA_REQUIREMENT}`,
+        tone: "status",
+      });
+      return;
+    }
     setPresentation((current) => ({ ...current, ...change }));
     setProfile("custom");
-  }, []);
+  }, [capabilities]);
 
   useEffect(() => {
     if (!manifest || !frame || !capabilities || profile !== "auto") return;
@@ -2441,13 +2532,17 @@ export default function App() {
         detail: presentation.mode === "ribbon" ? "Current" : undefined,
         run: run(() => updatePresentation({ mode: "ribbon" })),
       }] : []),
-      ...(cellAvailable ? [{
+      {
         id: "mode-polyhedra",
         label: "Representation · Polyhedra",
         keywords: "style crystal coordination octahedra tetrahedra polygons",
-        detail: presentation.mode === "polyhedra" ? "Current" : "Bond-derived",
+        detail: capabilities?.polyhedra
+          ? presentation.mode === "polyhedra" ? "Current" : "Bond-derived"
+          : capabilities?.polyhedraReason ?? POLYHEDRA_REQUIREMENT,
+        disabled: !capabilities?.polyhedra,
+        discoverableWhenDisabled: true,
         run: run(() => updatePresentation({ mode: "polyhedra" })),
-      }] : []),
+      },
       ...(capabilities?.water ? [{ id: "water", label: presentation.water === "hide" ? "Show water" : "Hide water", keywords: "solvent", detail: "W", run: run(() => updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" })) }] : []),
       ...(cellAvailable ? [{ id: "cell", label: presentation.cell ? "Hide cell" : "Show cell", keywords: "box periodic pbc", detail: "C", run: run(() => updatePresentation({ cell: !presentation.cell })) }] : []),
       ...(forceAvailable ? [{ id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", keywords: "vectors arrows", detail: "F", run: run(() => updatePresentation({ forces: !presentation.forces })) }] : []),
@@ -2836,6 +2931,11 @@ export default function App() {
             ref={moleculeSceneRef}
             manifest={manifest}
             frame={frame}
+            preparedTopology={
+              sceneTopology?.manifest === manifest
+                ? sceneTopology.value
+                : null
+            }
             presentation={presentation}
             selectedAtoms={selectedAtoms}
             resetSignal={resetSignal}
@@ -3214,7 +3314,16 @@ interface CommandAction {
   keywords?: string;
   detail?: string;
   disabled?: boolean;
+  discoverableWhenDisabled?: boolean;
   run: () => void;
+}
+
+export function shouldNormalizePolyhedra(
+  mode: RepresentationMode,
+  available: boolean | null,
+  recipeApplying: boolean,
+): boolean {
+  return mode === "polyhedra" && available === false && !recipeApplying;
 }
 
 export function filterCommandActions<T extends { label: string; keywords?: string; detail?: string; disabled?: boolean }>(
@@ -3602,11 +3711,20 @@ function CommandPalette({
           type="button"
           role="option"
           aria-selected={index === active}
-          disabled={action.disabled}
+          aria-disabled={action.disabled || undefined}
           className={index === active ? "is-active" : ""}
           onPointerMove={() => setActive(index)}
-          onClick={action.run}
-        ><span>{action.label}</span>{action.detail && <kbd>{action.detail}</kbd>}</button>)}
+          onClick={() => {
+            if (!action.disabled) action.run();
+          }}
+        >
+          <span>{action.label}</span>
+          {action.detail && (
+            action.disabled
+              ? <small>{action.detail}</small>
+              : <kbd>{action.detail}</kbd>
+          )}
+        </button>)}
         {visible.length === 0 && <p>No commands found</p>}
       </div>
     </section>
@@ -3723,15 +3841,26 @@ function ScenePanel({
   onForceScale: (scale: number) => void;
   onVelocityScale: (scale: number) => void;
 }) {
-  const modes: RepresentationMode[] = [
-    "ball-stick",
-    "spacefill",
-    "lines",
-    ...(capabilities.ribbon ? ["ribbon" as const] : []),
-    ...(cellAvailable
-      ? ["polyhedra" as const]
+  const modes: Array<{
+    mode: RepresentationMode;
+    available: boolean;
+    reason?: string;
+  }> = [
+    { mode: "ball-stick", available: true },
+    { mode: "spacefill", available: true },
+    { mode: "lines", available: true },
+    ...(capabilities.ribbon
+      ? [{ mode: "ribbon" as const, available: true }]
+      : []),
+    ...(cellAvailable || capabilities.polyhedra
+      ? [{
+          mode: "polyhedra" as const,
+          available: capabilities.polyhedra,
+          reason: capabilities.polyhedraReason,
+        }]
       : []),
   ];
+  const polyhedraNoteId = "polyhedra-requirement";
   const repeatCounts = repeatCountsFromImages(presentation.images, pbc);
   const imageBudget = Math.min(
     MAX_PERIODIC_IMAGES,
@@ -3755,14 +3884,24 @@ function ScenePanel({
       <section className="workbench-section">
         <span className="section-label">Representation</span>
         <div className="segmented-options representation-options">
-          {modes.map((mode) => <button
+          {modes.map(({ mode, available, reason }) => <button
             key={mode}
             type="button"
             className={presentation.mode === mode ? "is-active" : ""}
             aria-pressed={presentation.mode === mode}
+            aria-describedby={!available && mode === "polyhedra"
+              ? polyhedraNoteId
+              : undefined}
+            disabled={!available}
+            title={!available ? reason : undefined}
             onClick={() => onPresentation({ mode })}
           >{representationLabel(mode)}</button>)}
         </div>
+        {cellAvailable && !capabilities.polyhedra && (
+          <span className="capability-note" id={polyhedraNoteId}>
+            Polyhedra · {capabilities.polyhedraReason}
+          </span>
+        )}
       </section>
 
       {(capabilities.water || cellAvailable || forceAvailable || velocityAvailable) && <section className="workbench-section display-toggles">

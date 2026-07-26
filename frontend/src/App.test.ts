@@ -18,6 +18,7 @@ import {
   repeatImages,
   sameCellOrigin,
   selectedProfilePresentation,
+  shouldNormalizePolyhedra,
   uniqueAtomIndices,
   usesPeriodicFigureContext,
 } from "./App";
@@ -47,11 +48,20 @@ const presentation: ScenePresentation = {
 };
 
 describe("scene profiles", () => {
+  it("keeps a recipe representation while its target frame loads", () => {
+    expect(shouldNormalizePolyhedra("polyhedra", false, true)).toBe(false);
+    expect(shouldNormalizePolyhedra("polyhedra", false, false)).toBe(true);
+    expect(shouldNormalizePolyhedra("polyhedra", true, false)).toBe(false);
+    expect(shouldNormalizePolyhedra("ball-stick", false, false)).toBe(false);
+  });
+
   it("keeps periodic solids on the crystal profile when forces are present", () => {
     const capabilities: SceneCapabilities = {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
       suggestedProfile: "crystal",
     };
     expect(autoProfile(capabilities, true, true)).toBe("crystal");
@@ -68,6 +78,8 @@ describe("scene profiles", () => {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
       suggestedProfile: "crystal",
     };
     expect(selectedProfilePresentation(
@@ -85,6 +97,8 @@ describe("scene profiles", () => {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
       suggestedProfile: "crystal",
     };
     expect(selectedProfilePresentation(
@@ -102,6 +116,8 @@ describe("scene profiles", () => {
       water: true,
       ribbon: true,
       ribbonReason: "Backbone available",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
       suggestedProfile: "protein",
     };
     expect(autoProfile(capabilities, true, true)).toBe("protein");
@@ -112,6 +128,8 @@ describe("scene profiles", () => {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
       suggestedProfile: "molecule",
     };
     expect(autoProfile(capabilities, true, true)).toBe("molecule");
@@ -122,6 +140,8 @@ describe("scene profiles", () => {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
       suggestedProfile: "molecule",
     };
     expect(profilePresentation("trajectory", presentation, true, true, capabilities)).toMatchObject({

@@ -6,6 +6,7 @@ import {
   atomSelectionForInstance,
   centeredFramePositions,
   clearOrbitMotion,
+  hasRenderablePolyhedra,
   isAdditivePick,
   nextKeyboardAtomCursor,
   nextKeyboardAtomSelection,
@@ -40,6 +41,7 @@ import {
   periodicImageOffsets,
   prepareFrameGeometry,
   prepareScene,
+  prepareTopology,
   publicationBondGeometry,
   representationRadius,
   sameFrameGeometryLayout,
@@ -1363,6 +1365,96 @@ describe("scientific representations", () => {
     const unavailable = sceneCapabilities(topology, null);
     expect(unavailable.ribbon).toBe(false);
     expect(unavailable.ribbonReason.length).toBeGreaterThan(0);
+  });
+
+  it("offers polyhedra only for a supported coordination shell", () => {
+    const unsupportedManifest = manifest(
+      [8, 1, 1],
+      [[0, 1], [0, 2]],
+    );
+    const unsupportedFrame = frame(
+      [0, 0, 0, 0.9, 0, 0, -0.3, 0.85, 0],
+      [8, 0, 0, 0, 8, 0, 0, 0, 8],
+      [true, true, true],
+    );
+    const unavailable = sceneCapabilities(
+      unsupportedManifest,
+      unsupportedFrame,
+      basePresentation,
+    );
+    expect(unavailable.polyhedra).toBe(false);
+    expect(unavailable.polyhedraReason).toContain("3+ bonded ligands");
+
+    const supportedManifest = manifest(
+      [14, 8, 8, 8, 8],
+      [[0, 1], [0, 2], [0, 3], [0, 4]],
+    );
+    const supportedFrame = frame([
+      0, 0, 0,
+      1, 1, 1,
+      -1, -1, 1,
+      -1, 1, -1,
+      1, -1, -1,
+    ]);
+    const available = sceneCapabilities(
+      supportedManifest,
+      supportedFrame,
+      basePresentation,
+    );
+    const model = prepareScene(
+      supportedManifest,
+      supportedFrame,
+      basePresentation,
+    );
+    expect(model).not.toBeNull();
+    expect(hasRenderablePolyhedra(model!)).toBe(true);
+    expect(available.polyhedra).toBe(true);
+
+    const hydrogenShell = manifest(
+      [14, 8, 1, 1, 1],
+      [[0, 1], [0, 2], [0, 3], [0, 4]],
+    );
+    expect(sceneCapabilities(
+      hydrogenShell,
+      supportedFrame,
+      { ...basePresentation, hydrogens: false },
+    ).polyhedra).toBe(false);
+  });
+
+  it("checks polyhedra against the trajectory's stable topology", () => {
+    const topology = manifest([14, 8, 8, 8, 8]);
+    topology.topology.bond_source = "inferred";
+    const bonded = frame([
+      0, 0, 0,
+      1, 1, 1,
+      -1, -1, 1,
+      -1, 1, -1,
+      1, -1, -1,
+    ]);
+    const separated = frame([
+      0, 0, 0,
+      5, 5, 5,
+      -5, -5, 5,
+      -5, 5, -5,
+      5, -5, -5,
+    ]);
+    const bondedTopology = prepareTopology(topology, bonded);
+    const separatedTopology = prepareTopology(topology, separated);
+    expect(bondedTopology?.bonds).toHaveLength(4);
+    expect(separatedTopology?.bonds).toHaveLength(0);
+
+    expect(sceneCapabilities(
+      topology,
+      separated,
+      basePresentation,
+      bondedTopology,
+    ).polyhedra).toBe(true);
+    expect(sceneCapabilities(
+      topology,
+      bonded,
+      basePresentation,
+      separatedTopology,
+    ).polyhedra).toBe(false);
   });
 
   it("keeps PDB chains and unresolved sequence gaps separate", () => {

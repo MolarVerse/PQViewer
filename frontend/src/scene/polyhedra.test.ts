@@ -6,7 +6,9 @@ import { createCellBasis, prepareScene } from "./model";
 import type { FrameData, Manifest, ScenePresentation } from "../types";
 import {
   buildCoordinationPolyhedraGeometry,
+  hasCoordinationPolyhedra,
   inferCoordinationPolyhedra,
+  prepareCoordinationPolyhedraTopology,
   type CoordinationPolyhedraInput,
 } from "./polyhedra";
 
@@ -108,10 +110,20 @@ describe("coordination polyhedra", () => {
     const model = prepareScene(manifest, frame, presentation);
     expect(model).not.toBeNull();
     expect(model!.bonds).toHaveLength(384);
+    const topology = prepareCoordinationPolyhedraTopology(model!);
+    expect(topology.candidates).toHaveLength(32);
+    expect(topology.adjacency.size).toBe(32);
+    expect(hasCoordinationPolyhedra(model!, {}, topology)).toBe(true);
     const polyhedra = inferCoordinationPolyhedra(model!);
     expect(polyhedra).toHaveLength(32);
     expect(polyhedra.every(({ coordinationNumber }) => coordinationNumber === 6)).toBe(true);
-    expect(buildCoordinationPolyhedraGeometry(model!)).not.toBeNull();
+    expect(
+      inferCoordinationPolyhedra(model!, {}, topology)
+        .map(({ centerAtom, coordinationNumber }) => [centerAtom, coordinationNumber]),
+    ).toEqual(
+      polyhedra.map(({ centerAtom, coordinationNumber }) => [centerAtom, coordinationNumber]),
+    );
+    expect(buildCoordinationPolyhedraGeometry(model!, {}, topology)).not.toBeNull();
   });
 
   it("builds a closed tetrahedron with center picking and color attributes", () => {
@@ -142,6 +154,40 @@ describe("coordination polyhedra", () => {
     const color = geometry!.getAttribute("color");
     expect(color.getX(0)).toBeCloseTo(new THREE.Color("#287f9b").r);
     expectClosedTriangles(geometry!);
+  });
+
+  it("reuses a prepared topology without changing inference or geometry", () => {
+    const model = input(
+      [
+        [0, 0, 0],
+        [1, 1, 1],
+        [-1, -1, 1],
+        [-1, 1, -1],
+        [1, -1, -1],
+      ],
+      [14, 8, 8, 8, 8],
+      starBonds(4),
+    );
+    const options = {
+      centerAtomicNumbers: [14],
+      colorForCenter: () => "#c46c3b",
+    };
+    const topology = prepareCoordinationPolyhedraTopology(model, options);
+    const direct = inferCoordinationPolyhedra(model, options);
+    const prepared = inferCoordinationPolyhedra(model, options, topology);
+    expect(prepared).toEqual(direct);
+
+    const directGeometry = buildCoordinationPolyhedraGeometry(model, options);
+    const preparedGeometry = buildCoordinationPolyhedraGeometry(model, options, topology);
+    expect(preparedGeometry).not.toBeNull();
+    expect(
+      (preparedGeometry!.getAttribute("position") as THREE.BufferAttribute).array,
+    ).toEqual(
+      (directGeometry!.getAttribute("position") as THREE.BufferAttribute).array,
+    );
+    expect(preparedGeometry!.userData).toEqual(directGeometry!.userData);
+    directGeometry!.dispose();
+    preparedGeometry!.dispose();
   });
 
   it("unwraps an octahedron across a periodic boundary", () => {
@@ -192,13 +238,15 @@ describe("coordination polyhedra", () => {
     ]));
     model.pbc = [true, true, true];
 
-    const polyhedra = inferCoordinationPolyhedra(model);
+    const topology = prepareCoordinationPolyhedraTopology(model);
+    expect(hasCoordinationPolyhedra(model, {}, topology)).toBe(true);
+    const polyhedra = inferCoordinationPolyhedra(model, {}, topology);
     expect(polyhedra).toHaveLength(1);
     expect(polyhedra[0].centerAtom).toBe(0);
     expect(polyhedra[0].coordinationNumber).toBe(6);
     expect(new Set(polyhedra[0].ligandAtoms)).toEqual(new Set([1]));
     expect(polyhedra[0].triangles).toHaveLength(8);
-    expectClosedTriangles(buildCoordinationPolyhedraGeometry(model)!);
+    expectClosedTriangles(buildCoordinationPolyhedraGeometry(model, {}, topology)!);
   });
 
   it("triangulates square faces once for cubic coordination", () => {
@@ -250,6 +298,7 @@ describe("coordination polyhedra", () => {
       starBonds(4),
     );
     expect(inferCoordinationPolyhedra(squarePlanar)[0].triangles).toHaveLength(2);
+    expect(hasCoordinationPolyhedra(squarePlanar)).toBe(true);
 
     const coincident = input(
       [
@@ -263,6 +312,7 @@ describe("coordination polyhedra", () => {
       starBonds(4),
     );
     expect(inferCoordinationPolyhedra(coincident)).toEqual([]);
+    expect(hasCoordinationPolyhedra(coincident)).toBe(false);
 
     const methane = input(
       [
@@ -276,7 +326,48 @@ describe("coordination polyhedra", () => {
       starBonds(4),
     );
     expect(inferCoordinationPolyhedra(methane)).toEqual([]);
-    expect(inferCoordinationPolyhedra(methane, { centerAtoms: [0] })).toHaveLength(1);
+    const automaticTopology = prepareCoordinationPolyhedraTopology(methane);
+    expect(automaticTopology.candidates).toEqual([]);
+    expect(automaticTopology.adjacency.size).toBe(0);
+    expect(hasCoordinationPolyhedra(methane, {}, automaticTopology)).toBe(false);
+    const explicitOptions = { centerAtoms: [0] };
+    const explicitTopology = prepareCoordinationPolyhedraTopology(
+      methane,
+      explicitOptions,
+    );
+    expect(
+      inferCoordinationPolyhedra(methane, explicitOptions, explicitTopology),
+    ).toHaveLength(1);
+    expect(
+      hasCoordinationPolyhedra(methane, explicitOptions, explicitTopology),
+    ).toBe(true);
+  });
+
+  it("does not reuse a topology for filtered bonds or center filters", () => {
+    const model = input(
+      [
+        [0, 0, 0],
+        [1, 1, 1],
+        [-1, -1, 1],
+        [-1, 1, -1],
+        [1, -1, -1],
+      ],
+      [14, 8, 8, 8, 8],
+      starBonds(4),
+    );
+    const topology = prepareCoordinationPolyhedraTopology(model);
+    expect(hasCoordinationPolyhedra(model, {}, topology)).toBe(true);
+
+    const filtered = {
+      ...model,
+      bonds: model.bonds.slice(0, 2),
+    };
+    expect(hasCoordinationPolyhedra(filtered)).toBe(false);
+    expect(hasCoordinationPolyhedra(filtered, {}, topology)).toBe(false);
+    expect(inferCoordinationPolyhedra(filtered, {}, topology)).toEqual([]);
+    expect(
+      hasCoordinationPolyhedra(model, { centerAtomicNumbers: [26] }, topology),
+    ).toBe(false);
   });
 
   it("caps complete polyhedra and periodic copies", () => {
@@ -308,5 +399,76 @@ describe("coordination polyhedra", () => {
     expect(geometry!.userData.triangleCount).toBe(12);
     expect(geometry!.userData.polyhedronCount).toBe(3);
     expect(geometry!.getAttribute("position").count).toBe(36);
+  });
+
+  it("uses the same candidate sampling for exact availability checks", () => {
+    const positions = Array.from({ length: 9 }, (_, atom) => [atom * 10, 0, 0]);
+    positions.push(
+      [81, 1, 1],
+      [79, -1, 1],
+      [79, 1, -1],
+      [81, -1, -1],
+    );
+    const model = input(
+      positions,
+      [...Array(9).fill(14), ...Array(4).fill(8)],
+      Array.from({ length: 4 }, (_, ligand) => [8, ligand + 9]),
+    );
+    const options = {
+      centerAtoms: Array.from({ length: 9 }, (_, atom) => atom),
+      maxCenters: 2,
+    };
+    const topology = prepareCoordinationPolyhedraTopology(model, options);
+    expect(topology.candidates).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect([...topology.adjacency.keys()]).toEqual([8]);
+    expect(inferCoordinationPolyhedra(model, options, topology)).toHaveLength(1);
+    expect(hasCoordinationPolyhedra(model, options, topology)).toBe(true);
+    expect(
+      inferCoordinationPolyhedra(
+        model,
+        { ...options, maxCenters: 1 },
+        topology,
+      ),
+    ).toEqual([]);
+    expect(
+      hasCoordinationPolyhedra(
+        model,
+        { ...options, maxCenters: 1 },
+        topology,
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps prepared adjacency sparse for a large mostly ineligible structure", () => {
+    const atomCount = 50_000;
+    const positions = new Float32Array(atomCount * 3);
+    positions.set([
+      0, 0, 0,
+      1, 1, 1,
+      -1, -1, 1,
+      -1, 1, -1,
+      1, -1, -1,
+    ]);
+    const atomicNumbers = Array(atomCount).fill(6);
+    atomicNumbers[0] = 14;
+    atomicNumbers.fill(8, 1, 5);
+    const bonds: Array<[number, number]> = starBonds(4);
+    for (let atom = 5; atom + 1 < atomCount; atom += 1) {
+      bonds.push([atom, atom + 1]);
+    }
+    const model: CoordinationPolyhedraInput = {
+      positions,
+      atomicNumbers,
+      bonds,
+      basis: null,
+      pbc: [false, false, false],
+    };
+
+    const topology = prepareCoordinationPolyhedraTopology(model);
+    expect(topology.candidates).toEqual([0]);
+    expect(topology.adjacency.size).toBe(1);
+    expect(topology.adjacency.get(0)).toEqual([1, 2, 3, 4]);
+    expect(hasCoordinationPolyhedra(model, {}, topology)).toBe(true);
+    expect(inferCoordinationPolyhedra(model, {}, topology)).toHaveLength(1);
   });
 });
