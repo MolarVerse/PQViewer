@@ -36,7 +36,7 @@
   },
   "scene": {
     "presentation": {
-      "mode": "spacefill",
+      "mode": "polyhedra",
       "water": "show",
       "hydrogens": true,
       "wrap": "atom",
@@ -65,8 +65,8 @@
       "cell": true,
       "forces": false,
       "velocities": false,
-      "atomScale": 0.82,
-      "bondScale": 1.0,
+      "atomScale": 0.86,
+      "bondScale": 0.82,
       "color": "element",
       "quality": "high"
     },
@@ -113,7 +113,7 @@
     "projection": "orthographic",
     "fit": true,
     "padding": 0.1,
-    "periodicContext": true
+    "periodicContext": false
   },
   "annotations": []
 }

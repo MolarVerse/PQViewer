@@ -1,10 +1,9 @@
-"""Static documentation site checks."""
+"""Documentation and gallery checks."""
 
 from __future__ import annotations
 
-from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+import re
 
 import pytest
 
@@ -12,57 +11,34 @@ from pqviewer.recipe import open_figure_recipe_dataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
-INDEX = ROOT / "docs" / "index.html"
-
-
-class _DocumentParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.references: list[tuple[str, str]] = []
-        self.images_without_alt: list[str] = []
-        self.heading_levels: list[int] = []
-
-    def handle_starttag(
-        self,
-        tag: str,
-        attrs: list[tuple[str, str | None]],
-    ) -> None:
-        values = dict(attrs)
-        if tag in {"a", "link"} and values.get("href"):
-            self.references.append((tag, values["href"] or ""))
-        if tag in {"img", "script"} and values.get("src"):
-            self.references.append((tag, values["src"] or ""))
-        if tag == "img" and "alt" not in values:
-            self.images_without_alt.append(values.get("src") or "<unknown>")
-        if tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
-            self.heading_levels.append(int(tag[1]))
-
-
-def _parser() -> _DocumentParser:
-    parser = _DocumentParser()
-    parser.feed(INDEX.read_text(encoding="utf-8"))
-    return parser
+DOCS = ROOT / "docs"
+INDEX = DOCS / "index.md"
 
 
 def test_docs_page_local_references_exist() -> None:
-    parser = _parser()
-    missing: list[str] = []
-    for _, reference in parser.references:
-        parsed = urlsplit(reference)
-        if parsed.scheme or parsed.netloc or not parsed.path:
-            continue
-        target = (INDEX.parent / unquote(parsed.path)).resolve()
-        if not target.exists():
-            missing.append(reference)
+    source = INDEX.read_text(encoding="utf-8")
+    references = re.findall(r"\]\((?!https?://)([^)#?]+)\)", source)
+    references += re.findall(
+        r"assets/[A-Za-z0-9_./-]+\.(?:extxyz|json|pdb|png|xyz)",
+        source,
+    )
+    missing = sorted({
+        reference
+        for reference in references
+        if not (DOCS / reference).exists()
+    })
     assert missing == []
 
 
 def test_docs_page_images_have_alt_text() -> None:
-    assert _parser().images_without_alt == []
+    source = INDEX.read_text(encoding="utf-8")
+    assert source.count(":alt:") == 1
+    assert source.count(":img-alt:") == 6
 
 
 def test_docs_page_heading_order_is_consistent() -> None:
-    levels = _parser().heading_levels
+    source = INDEX.read_text(encoding="utf-8")
+    levels = [len(markers) for markers in re.findall(r"^(#{1,6})\s", source, re.MULTILINE)]
     assert levels[0] == 1
     assert all(next_level <= level + 1 for level, next_level in zip(levels, levels[1:]))
 
@@ -85,5 +61,5 @@ def test_gallery_recipes_reopen_their_sources(name: str) -> None:
         "projection": "orthographic",
         "fit": True,
         "padding": 0.1 if name != "crambin" else 0.11,
-        "periodicContext": name != "crambin",
+        "periodicContext": name not in {"crambin", "nacl"},
     }

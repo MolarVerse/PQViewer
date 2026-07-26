@@ -73,6 +73,10 @@ class ASEFrameSource:
             int(value) for value in np.asarray(first.numbers)
         )
         self._topology = _topology_manifest(first)
+        if self._path is not None and self._format == "proteindatabank":
+            pdb_topology = _pdb_residue_topology(self._path, len(first))
+            if pdb_topology is not None:
+                self._topology.update(pdb_topology)
         self._properties = _property_manifest(first)
 
     @property
@@ -568,6 +572,133 @@ def _topology_manifest(atoms: Any) -> dict[str, Any]:
         "bonds": [],
         "bond_source": "inferred",
     }
+
+
+def _pdb_residue_topology(
+    path: Path,
+    atom_count: int,
+) -> dict[str, Any] | None:
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    atom_lines: list[tuple[str, int]] = []
+    inside_model = not any(line.startswith("MODEL ") for line in lines)
+    segment = 0
+    for line in lines:
+        if line.startswith("MODEL "):
+            if atom_lines:
+                break
+            inside_model = True
+            continue
+        if line.startswith("ENDMDL") and inside_model:
+            break
+        if inside_model and line.startswith("TER"):
+            segment += 1
+            continue
+        if inside_model and line.startswith(("ATOM  ", "HETATM")):
+            atom_lines.append((line, segment))
+    if len(atom_lines) != atom_count:
+        return None
+
+    ranges = [
+        (*_pdb_helix_range(line), "helix")
+        for line in lines
+        if line.startswith("HELIX ")
+    ]
+    ranges.extend(
+        (*_pdb_sheet_range(line), "sheet")
+        for line in lines
+        if line.startswith("SHEET ")
+    )
+    ranges = [entry for entry in ranges if entry[0] is not None and entry[1] is not None]
+
+    residues: list[dict[str, Any]] = []
+    atom_residue_index: list[int] = []
+    residue_ids: list[str] = []
+    lookup: dict[tuple[int, str, int, str, str], int] = {}
+    for line, segment in atom_lines:
+        residue_number = _pdb_integer(line[22:26])
+        if residue_number is None:
+            return None
+        chain = line[21:22].strip()
+        insertion = line[26:27].strip()
+        name = line[17:20].strip()
+        key = segment, chain, residue_number, insertion, name
+        if key not in lookup:
+            structure = "coil"
+            residue_key = chain, residue_number, insertion
+            for start, end, candidate in ranges:
+                if _pdb_residue_in_range(residue_key, start, end):
+                    structure = candidate
+                    break
+            lookup[key] = len(residues)
+            residue = {
+                "index": len(residues),
+                "type_id": residue_number,
+                "name": name,
+                "category": _residue_category(name),
+                "chain_id": chain or None,
+                "segment_id": segment,
+                "sequence_number": residue_number,
+                "insertion_code": insertion or None,
+            }
+            if ranges:
+                residue["secondary_structure"] = structure
+            residues.append(residue)
+        atom_residue_index.append(lookup[key])
+        prefix = chain or f"_s{segment}"
+        residue_ids.append(f"{prefix}:{residue_number}{insertion}")
+    return {
+        "residue_ids": residue_ids,
+        "atom_residue_index": atom_residue_index,
+        "residues": residues,
+    }
+
+
+def _pdb_helix_range(
+    line: str,
+) -> tuple[tuple[str, int, str] | None, tuple[str, int, str] | None]:
+    return (
+        _pdb_residue_key(line[19:20], line[21:25], line[25:26]),
+        _pdb_residue_key(line[31:32], line[33:37], line[37:38]),
+    )
+
+
+def _pdb_sheet_range(
+    line: str,
+) -> tuple[tuple[str, int, str] | None, tuple[str, int, str] | None]:
+    return (
+        _pdb_residue_key(line[21:22], line[22:26], line[26:27]),
+        _pdb_residue_key(line[32:33], line[33:37], line[37:38]),
+    )
+
+
+def _pdb_residue_key(
+    chain: str,
+    number: str,
+    insertion: str,
+) -> tuple[str, int, str] | None:
+    parsed = _pdb_integer(number)
+    return None if parsed is None else (chain.strip(), parsed, insertion.strip())
+
+
+def _pdb_integer(value: str) -> int | None:
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
+def _pdb_residue_in_range(
+    residue: tuple[str, int, str],
+    start: tuple[str, int, str] | None,
+    end: tuple[str, int, str] | None,
+) -> bool:
+    if start is None or end is None:
+        return False
+    chain, number, insertion = residue
+    if chain != start[0] or chain != end[0]:
+        return False
+    position = number, insertion or " "
+    return (start[1], start[2] or " ") <= position <= (end[1], end[2] or " ")
 
 
 def _property_manifest(atoms: Any) -> dict[str, dict[str, Any]]:

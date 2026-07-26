@@ -38,6 +38,11 @@ export interface PublicationBondGeometry {
 
 export interface BackboneResidue {
   residueIndex: number;
+  runIndex?: number;
+  chainId?: string | null;
+  segmentId?: number | null;
+  sequenceNumber?: number | null;
+  insertionCode?: string | null;
   n: number;
   ca: number;
   c: number;
@@ -657,9 +662,19 @@ export function backboneResidues(manifest: Manifest): BackboneResidue[] {
     const inferred = manifest.topology.bond_source === "topology"
       ? inferredBackbone(residue.index, atoms, atomicNumbers, adjacency)
       : null;
-    if (named ?? inferred) result.push((named ?? inferred)!);
+    if (named ?? inferred) {
+      result.push({
+        ...(named ?? inferred)!,
+        chainId: residue.chain_id ?? null,
+        segmentId: residue.segment_id ?? null,
+        sequenceNumber: residue.sequence_number ?? null,
+        insertionCode: residue.insertion_code ?? null,
+      });
+    }
   }
-  return longestBackboneRun(result, bonds);
+  return validBackboneRuns(result, bonds).flatMap((run, runIndex) => (
+    run.map((entry) => ({ ...entry, runIndex }))
+  ));
 }
 
 export function representationRadius(
@@ -672,6 +687,9 @@ export function representationRadius(
   if (mode === "licorice") return 0.22 * safeScale;
   if (mode === "lines") return 0.075 * safeScale;
   if (mode === "ribbon") return 0;
+  if (mode === "polyhedra") {
+    return Math.max(0.18, (covalentRadii[atomicNumber] ?? 0.78) * 0.3) * safeScale;
+  }
   return Math.max(0.22, (covalentRadii[atomicNumber] ?? 0.78) * 0.43) * safeScale;
 }
 
@@ -1177,7 +1195,7 @@ function inferCovalentBonds(
   const largest = atomicNumbers.reduce((value, number) => Math.max(value, covalentRadii[number] ?? 0.78), 0.78);
   const cellSize = Math.max(1.4, largest * 2.5);
   const cells = new Map<string, Array<[number, number, number, number]>>();
-  const shifts = periodicShifts(basis, pbc, largest * 2 * 1.22);
+  const shifts = periodicShifts(basis, pbc, Math.max(largest * 2 * 1.22, H2_BOND_CUTOFF));
   if (!shifts || count * shifts.length * 27 > MAX_INFERRED_BOND_CELL_PROBES) return [];
   const result: Array<[number, number]> = [];
   let candidateChecks = 0;
@@ -1210,8 +1228,13 @@ function inferCovalentBonds(
       }
     }
     for (const [peer, distance] of nearest) {
-      const cutoff = ((covalentRadii[atomicNumbers[atom]] ?? 0.78)
-        + (covalentRadii[atomicNumbers[peer]] ?? 0.78)) * 1.22;
+      const atomNumber = atomicNumbers[atom];
+      const peerNumber = atomicNumbers[peer];
+      const radiusCutoff = ((covalentRadii[atomNumber] ?? 0.78)
+        + (covalentRadii[peerNumber] ?? 0.78)) * 1.22;
+      const cutoff = atomNumber === 1 && peerNumber === 1
+        ? Math.max(radiusCutoff, H2_BOND_CUTOFF)
+        : radiusCutoff;
       if (distance > 0.2 && distance <= cutoff) {
         result.push([peer, atom]);
         if (result.length > MAX_INFERRED_BONDS) return [];
@@ -1490,22 +1513,55 @@ function bondAdjacency(count: number, bonds: Array<[number, number]>): number[][
   return adjacency;
 }
 
-function longestBackboneRun(
+function validBackboneRuns(
   entries: BackboneResidue[],
   bonds: Array<[number, number]>,
-): BackboneResidue[] {
+): BackboneResidue[][] {
   const bonded = new Set(bonds.flatMap(([a, b]) => [`${a}:${b}`, `${b}:${a}`]));
-  let best: BackboneResidue[] = [];
+  const runs: BackboneResidue[][] = [];
   let current: BackboneResidue[] = [];
+  const finishRun = () => {
+    if (current.length >= 3) runs.push(current);
+    current = [];
+  };
   for (const entry of entries) {
     const previous = current[current.length - 1];
-    const sequential = !previous || entry.residueIndex === previous.residueIndex + 1;
+    const indexedAfterPrevious = !previous || entry.residueIndex > previous.residueIndex;
+    const sameChain = !previous || entry.chainId === previous.chainId;
+    const sameSegment = !previous || entry.segmentId === previous.segmentId;
+    const sequenceContinues = !previous || pdbSequenceContinues(previous, entry);
     const connected = !previous || bonds.length === 0 || bonded.has(`${previous.c}:${entry.n}`);
-    if (!sequential || !connected) current = [];
+    const metadataContinues = !previous
+      || previous.sequenceNumber != null && entry.sequenceNumber != null
+      || entry.residueIndex === previous.residueIndex + 1;
+    if (
+      !indexedAfterPrevious
+      || !sameChain
+      || !sameSegment
+      || !sequenceContinues
+      || !connected
+      || !metadataContinues
+    ) finishRun();
     current.push(entry);
-    if (current.length > best.length) best = [...current];
   }
-  return best.length >= 3 ? best : [];
+  finishRun();
+  return runs;
+}
+
+function pdbSequenceContinues(
+  previous: BackboneResidue,
+  next: BackboneResidue,
+): boolean {
+  if (previous.sequenceNumber == null || next.sequenceNumber == null) return true;
+  if (next.sequenceNumber === previous.sequenceNumber + 1) return true;
+  if (next.sequenceNumber !== previous.sequenceNumber) return false;
+  const left = (previous.insertionCode ?? "").trim();
+  const right = (next.insertionCode ?? "").trim();
+  if (!right) return false;
+  if (!left) return right === "A";
+  return right.length === 1
+    && left.length === 1
+    && right.charCodeAt(0) === left.charCodeAt(0) + 1;
 }
 
 function normalizeAtomName(value: string | undefined): string {
@@ -1557,6 +1613,8 @@ const covalentRadii: Record<number, number> = {
   104: 1.57, 105: 1.49, 106: 1.43, 107: 1.41, 108: 1.34, 109: 1.29, 110: 1.28,
   111: 1.21, 112: 1.22, 113: 1.36, 114: 1.43, 115: 1.62, 116: 1.75, 117: 1.65, 118: 1.57,
 };
+
+const H2_BOND_CUTOFF = 0.85;
 
 const vanDerWaalsRadii: Record<number, number> = {
   1: 1.20, 2: 1.40, 3: 1.82, 4: 1.53, 5: 1.92, 6: 1.70, 7: 1.55, 8: 1.52,

@@ -435,7 +435,7 @@ function parsePresentation(value: unknown): ScenePresentation {
   return {
     mode: enumeration(
       presentation.mode,
-      ["ball-stick", "spacefill", "licorice", "lines", "ribbon"],
+      ["ball-stick", "spacefill", "licorice", "lines", "ribbon", "polyhedra"],
       "Figure presentation mode",
     ),
     water: enumeration(presentation.water, ["show", "hide", "only"], "Figure presentation water"),

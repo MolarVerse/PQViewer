@@ -15,7 +15,7 @@ still change before 1.0.
 ![A 100-frame UMCM-9 trajectory in PQViewer](docs/assets/screenshots/trajectory-workspace.png)
 
 <p align="center">
-  <a href="docs/index.html"><strong>Explore the visual documentation</strong></a>
+  <a href="docs/index.md"><strong>Explore the documentation</strong></a>
 </p>
 
 | Protein | Molecule | Framework |
@@ -60,8 +60,8 @@ pqviewer optimization.traj
 - Opens structures, trajectories, PQ inputs, and joined restart runs.
 - Uses indexed access for PQ sources, ASE `.traj`, and indexed ASE sequences
   without retaining every coordinate frame in memory.
-- Displays forces, velocities, charges, periodic images, water, and ribbons
-  when the source provides them.
+- Displays forces, velocities, charges, periodic images, water, protein
+  cartoons, and crystal coordination polygons or polyhedra when supported.
 - Uses PQ's centered fractional cell convention, `[-0.5, 0.5)`, including
   triclinic cells.
 - Selects atoms by pointer, box, element, molecule, residue, connectivity, or
@@ -84,7 +84,7 @@ pqviewer examples/acof-triclinic.xyz
 
 ## Documentation
 
-- [Visual overview](docs/index.html)
+- [Documentation overview](docs/index.md)
 - [Getting started](docs/getting-started.md)
 - [Viewer guide](docs/viewer-guide.md)
 - [Data sources and periodic conventions](docs/data-and-conventions.md)

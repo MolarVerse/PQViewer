@@ -17,6 +17,11 @@ export interface ResidueSpec {
   type_id: number | null;
   name: string | null;
   category: "water" | "amino-acid" | "nucleotide" | "other";
+  chain_id?: string | null;
+  segment_id?: number | null;
+  sequence_number?: number | null;
+  insertion_code?: string | null;
+  secondary_structure?: "coil" | "helix" | "sheet";
 }
 
 export interface SeriesSpec {
@@ -119,7 +124,13 @@ export interface AtomSelection {
   image: CellOffset;
 }
 
-export type RepresentationMode = "ball-stick" | "spacefill" | "licorice" | "lines" | "ribbon";
+export type RepresentationMode =
+  | "ball-stick"
+  | "spacefill"
+  | "licorice"
+  | "lines"
+  | "ribbon"
+  | "polyhedra";
 
 export interface ScenePresentation {
   mode: RepresentationMode;

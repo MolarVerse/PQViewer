@@ -24,7 +24,7 @@
   },
   "frame": {
     "index": 0,
-    "fingerprint": "frame-v1:e74b12fe5e7ff346",
+    "fingerprint": "frame-v1:983e09cadd33ac85",
     "key": {
       "source_id": "../sources/1CRN.pdb",
       "source_index": 0,
@@ -36,9 +36,9 @@
   },
   "scene": {
     "presentation": {
-      "mode": "licorice",
+      "mode": "ribbon",
       "water": "show",
-      "hydrogens": true,
+      "hydrogens": false,
       "wrap": "none",
       "cellOrigin": [
         0,
@@ -65,9 +65,9 @@
       "cell": false,
       "forces": false,
       "velocities": false,
-      "atomScale": 0.95,
+      "atomScale": 1,
       "bondScale": 0.78,
-      "color": "element",
+      "color": "residue",
       "quality": "high"
     },
     "selection": {
@@ -82,19 +82,19 @@
   },
   "camera": {
     "position": [
-      28,
-      18,
-      34
+      43.435768,
+      21.445565,
+      41.259381
     ],
     "target": [
-      0,
-      0,
-      0
+      9.260899,
+      10.038277,
+      6.590199
     ],
     "up": [
-      0,
-      1,
-      0
+      -0.608892,
+      0.7021,
+      0.369196
     ],
     "fov": 34,
     "zoom": 1,

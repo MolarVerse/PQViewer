@@ -10,9 +10,12 @@ import {
   nextKeyboardAtomCursor,
   nextKeyboardAtomSelection,
   periodicBondSegments,
+  ribbonSelectionForFace,
   sceneCapabilities,
+  selectionsInRectangle,
   selectionMarkerState,
   selectedDisplayedPosition,
+  unwrappedBackboneTrace,
   updateSelectionMarkers,
 } from "./MoleculeScene";
 import type { SelectionRenderState } from "./MoleculeScene";
@@ -245,6 +248,49 @@ describe("selection marker scaling", () => {
     selectionGeometry.dispose();
     selectionMaterial.dispose();
   }, 5_000);
+
+  it("places ribbon selection markers on the displayed cartoon", () => {
+    const model: PreparedScene = {
+      count: 1,
+      atomicNumbers: [6],
+      positions: new Float32Array([0, 0, 0]),
+      baseImages: new Int32Array(3),
+      basis: null,
+      cellCenter: new THREE.Vector3(),
+      displayTransform: new THREE.Matrix3(),
+      pbc: [false, false, false],
+      bonds: [],
+      waterAtoms: new Set(),
+      visibleAtoms: [0],
+      images: [[0, 0, 0]],
+      instanceToAtom: new Uint32Array(),
+      instanceImages: new Int8Array(),
+      radii: [0],
+      backbone: [],
+    };
+    const selection = { atom: 0, image: [1, 0, 0] as CellOffset };
+    const state: SelectionRenderState = {
+      selection: new THREE.Group(),
+      selectionGeometry: new THREE.RingGeometry(1, 1.2, 12),
+      selectionMaterial: new THREE.MeshBasicMaterial(),
+      selectionPoints: new THREE.Points(
+        new THREE.BufferGeometry(),
+        new THREE.PointsMaterial(),
+      ),
+      instanceToAtom: model.instanceToAtom,
+      instanceImages: model.instanceImages,
+      baseImages: model.baseImages,
+      model,
+      ribbonSelections: new Map([[
+        "0:1:0:0",
+        { selection, position: new THREE.Vector3(5, 2, -1) },
+      ]]),
+    };
+
+    expect([...(updateSelectionMarkers(state, [selection]) ?? [])]).toEqual([
+      5, 2, -1,
+    ]);
+  });
 });
 
 describe("keyboard atom navigation", () => {
@@ -1015,6 +1061,29 @@ describe("scientific representations", () => {
     expect([...detectWaterAtoms(topology, source)].sort((left, right) => left - right)).toEqual([0, 1, 2]);
   });
 
+  it("infers a stretched H2 bond without adding H-H bonds to water or amine groups", () => {
+    const topology = manifest([1, 1, 8, 1, 1, 7, 1, 1]);
+    topology.topology.bond_source = "inferred";
+    const source = frame([
+      0, 0, 0,
+      0.8, 0, 0,
+      4, 0, 0,
+      4.96, 0, 0,
+      3.76, 0.93, 0,
+      8, 0, 0,
+      8.94, 0.34, 0,
+      7.06, 0.34, 0,
+    ]);
+
+    expect(prepareScene(topology, source, basePresentation)?.bonds).toEqual([
+      [0, 1],
+      [2, 3],
+      [2, 4],
+      [5, 6],
+      [5, 7],
+    ]);
+  });
+
   it("abandons malformed dense bond inference without returning partial bonds", () => {
     const denseCount = Math.ceil((1 + Math.sqrt(1 + 8 * MAX_INFERRED_BOND_CANDIDATES)) / 2) + 1;
     const atomicNumbers = Array(denseCount + 2).fill(6);
@@ -1130,6 +1199,7 @@ describe("scientific representations", () => {
     expect(representationRadius(8, "licorice")).toBe(representationRadius(6, "licorice"));
     expect(representationRadius(8, "lines")).toBeLessThan(ball);
     expect(representationRadius(8, "ribbon")).toBe(0);
+    expect(representationRadius(8, "polyhedra")).toBeLessThan(ball);
     expect(representationRadius(22, "ball-stick")).toBeGreaterThan(representationRadius(6, "ball-stick"));
     expect(representationRadius(78, "spacefill")).toBeGreaterThan(2);
     expect(representationRadius(92, "spacefill")).toBeGreaterThan(2.5);
@@ -1293,6 +1363,168 @@ describe("scientific representations", () => {
     const unavailable = sceneCapabilities(topology, null);
     expect(unavailable.ribbon).toBe(false);
     expect(unavailable.ribbonReason.length).toBeGreaterThan(0);
+  });
+
+  it("keeps PDB chains and unresolved sequence gaps separate", () => {
+    const residueCount = 7;
+    const topology = manifest(Array(residueCount * 4).fill(6));
+    topology.topology.atomic_numbers = Array.from({ length: residueCount }, () => [7, 6, 6, 8]).flat();
+    topology.topology.atom_names = Array.from({ length: residueCount }, () => ["N", "CA", "C", "O"]).flat();
+    topology.topology.atom_residue_index = Array.from(
+      { length: residueCount },
+      (_, residue) => Array(4).fill(residue),
+    ).flat();
+    topology.topology.residues = [
+      ...[1, 2, 3].map((sequence, index) => ({
+        index,
+        type_id: sequence,
+        name: "ALA",
+        category: "amino-acid" as const,
+        chain_id: "A",
+        segment_id: 0,
+        sequence_number: sequence,
+      })),
+      ...[1, 2, 4, 5].map((sequence, offset) => ({
+        index: offset + 3,
+        type_id: sequence,
+        name: "ALA",
+        category: "amino-acid" as const,
+        chain_id: "B",
+        segment_id: 1,
+        sequence_number: sequence,
+      })),
+    ];
+
+    expect(backboneResidues(topology).map(({ residueIndex }) => residueIndex)).toEqual([0, 1, 2]);
+  });
+
+  it("keeps every complete PDB chain as a separate ribbon run", () => {
+    const residueCount = 6;
+    const topology = manifest(Array(residueCount * 4).fill(6));
+    topology.topology.atomic_numbers = Array.from({ length: residueCount }, () => [7, 6, 6, 8]).flat();
+    topology.topology.atom_names = Array.from({ length: residueCount }, () => ["N", "CA", "C", "O"]).flat();
+    topology.topology.atom_residue_index = Array.from(
+      { length: residueCount },
+      (_, residue) => Array(4).fill(residue),
+    ).flat();
+    topology.topology.residues = Array.from({ length: residueCount }, (_, index) => ({
+      index,
+      type_id: index % 3 + 1,
+      name: "ALA",
+      category: "amino-acid" as const,
+      chain_id: index < 3 ? "A" : "B",
+      segment_id: index < 3 ? 0 : 1,
+      sequence_number: index % 3 + 1,
+    }));
+
+    expect(backboneResidues(topology).map(({ residueIndex, runIndex }) => (
+      [residueIndex, runIndex]
+    ))).toEqual([
+      [0, 0], [1, 0], [2, 0],
+      [3, 1], [4, 1], [5, 1],
+    ]);
+  });
+
+  it("frames a periodic protein from the same unwrapped trace as its ribbon", () => {
+    const model: PreparedScene = {
+      count: 3,
+      atomicNumbers: [6, 6, 6],
+      positions: new Float32Array([4.5, 0, 0, -4.8, 0, 0, -4.1, 0, 0]),
+      baseImages: new Int32Array(9),
+      basis: createCellBasis(new Float32Array([10, 0, 0, 0, 10, 0, 0, 0, 10])),
+      cellCenter: new THREE.Vector3(),
+      displayTransform: new THREE.Matrix3(),
+      pbc: [true, false, false],
+      bonds: [],
+      waterAtoms: new Set(),
+      visibleAtoms: [0, 1, 2],
+      images: [[0, 0, 0]],
+      instanceToAtom: new Uint32Array([0, 1, 2]),
+      instanceImages: new Int8Array(9),
+      radii: [0, 0, 0],
+      backbone: [0, 1, 2].map((ca, residueIndex) => ({
+        residueIndex,
+        n: ca,
+        ca,
+        c: ca,
+        o: ca,
+      })),
+    };
+
+    const trace = unwrappedBackboneTrace(model);
+    expect(trace[0]).toBeCloseTo(4.5);
+    expect(trace[3]).toBeCloseTo(5.2);
+    expect(trace[6]).toBeCloseTo(5.9);
+  });
+
+  it("keeps ribbon picking and rectangle selection on displayed images", () => {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([0, 0, 0, 5, 0, 0, 0, 5, 0], 3),
+    );
+    geometry.setAttribute(
+      "atomIndex",
+      new THREE.Float32BufferAttribute([4, 5, 6], 1),
+    );
+    geometry.setAttribute(
+      "imageOffset",
+      new THREE.Float32BufferAttribute([0, 0, 0, 1, -1, 0, 0, 0, 0], 3),
+    );
+    expect(ribbonSelectionForFace(
+      geometry,
+      { a: 0, b: 1, c: 2 },
+      new THREE.Vector3(4.9, 0, 0),
+    )).toEqual({ atom: 5, image: [1, -1, 0] });
+
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    const selection = { atom: 1, image: [1, 0, 0] as CellOffset };
+    const model: PreparedScene = {
+      count: 2,
+      atomicNumbers: [6, 6],
+      positions: new Float32Array(6),
+      baseImages: new Int32Array(6),
+      basis: null,
+      cellCenter: new THREE.Vector3(),
+      displayTransform: new THREE.Matrix3(),
+      pbc: [false, false, false],
+      bonds: [],
+      waterAtoms: new Set(),
+      visibleAtoms: [0, 1],
+      images: [[0, 0, 0]],
+      instanceToAtom: new Uint32Array(),
+      instanceImages: new Int8Array(),
+      radii: [0, 0],
+      backbone: [],
+    };
+    const state = {
+      model,
+      camera,
+      ribbonSelections: new Map([[
+        "1:1:0:0",
+        { selection, position: new THREE.Vector3() },
+      ]]),
+      instanceToAtom: model.instanceToAtom,
+      instanceImages: model.instanceImages,
+      baseImages: model.baseImages,
+    };
+    expect(selectionsInRectangle(
+      state as never,
+      {
+        left: 0,
+        top: 0,
+        right: 100,
+        bottom: 100,
+        width: 100,
+        height: 100,
+      } as DOMRect,
+      { x: 40, y: 40 },
+      { x: 60, y: 60 },
+    )).toEqual([selection]);
   });
 
   it("infers a protein backbone from residue and bonded topology", () => {

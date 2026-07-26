@@ -30,6 +30,12 @@ ase = [
 render = [
     "playwright>=1.52,<2",
 ]
+docs = [
+    "myst-parser>=4,<5",
+    "pydata-sphinx-theme>=0.16,<1",
+    "sphinx>=8,<9",
+    "sphinx-design>=0.6,<1",
+]
 dev = [
     "ase>=3.23,<4",
     "httpx2>=2,<3",

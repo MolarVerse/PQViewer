@@ -154,6 +154,52 @@ def test_vasp_names_use_explicit_format(
     assert formats == ["vasp", "vasp"]
 
 
+def test_pdb_secondary_structure_records_are_preserved() -> None:
+    path = Path(__file__).resolve().parents[1] / "docs" / "assets" / "sources" / "1CRN.pdb"
+    residues = ASEFrameSource(path).manifest()["topology"]["residues"]
+    structures = [residue["secondary_structure"] for residue in residues]
+
+    assert len(residues) == 46
+    assert structures.count("helix") == 21
+    assert structures.count("sheet") == 8
+    assert structures.count("coil") == 17
+
+
+def test_pdb_blank_chain_ter_segments_stay_separate(tmp_path: Path) -> None:
+    lines: list[str] = []
+    serial = 1
+    for segment in range(2):
+        for residue in range(1, 4):
+            for atom_name, element, offset in [
+                ("N", "N", 0.0),
+                ("CA", "C", 1.2),
+                ("C", "C", 2.4),
+                ("O", "O", 3.2),
+            ]:
+                x = segment * 30 + residue * 4 + offset
+                lines.append(
+                    f"ATOM  {serial:5d} {atom_name:^4s} ALA  {residue:4d}    "
+                    f"{x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00 20.00          {element:>2s}"
+                )
+                serial += 1
+        if segment == 0:
+            lines.append(f"TER   {serial:5d}      ALA     3")
+            serial += 1
+    lines.append("END")
+    path = tmp_path / "segments.pdb"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    topology = ASEFrameSource(path).manifest()["topology"]
+    residues = topology["residues"]
+
+    assert len(residues) == 6
+    assert [residue["chain_id"] for residue in residues] == [None] * 6
+    assert [residue["segment_id"] for residue in residues] == [0, 0, 0, 1, 1, 1]
+    assert [residue["sequence_number"] for residue in residues] == [1, 2, 3, 1, 2, 3]
+    assert topology["residue_ids"][0].startswith("_s0:")
+    assert topology["residue_ids"][-1].startswith("_s1:")
+
+
 def test_step_and_time_series_preserve_declared_units() -> None:
     source = ASEFrameSource([
         Atoms("H", info={"step": 4, "time": 0.5, "time_unit": "fs"}),
