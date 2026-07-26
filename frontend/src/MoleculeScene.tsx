@@ -24,7 +24,11 @@ import { proteinCameraComposition } from "./scene/proteinCamera";
 import {
   buildProteinCartoonGeometry,
   inferProteinSecondaryStructure,
+  proteinCartoonCameraTrace,
+  proteinCartoonResidueCenters,
+  type ProteinCartoonCameraPoint,
   type ProteinCartoonResidue,
+  type ProteinSecondaryStructure,
 } from "./scene/ribbon";
 import {
   buildCoordinationPolyhedraGeometry,
@@ -118,6 +122,11 @@ export interface SelectionRenderState {
 export interface RibbonSelectionPoint {
   selection: AtomSelection;
   position: THREE.Vector3;
+}
+
+interface CenteredRibbonRun {
+  residues: readonly ProteinCartoonResidue[];
+  centers: readonly THREE.Vector3[];
 }
 
 export function selectionMarkerState(
@@ -266,6 +275,7 @@ export function isAdditivePick(
 
 interface FitContext {
   model: PreparedScene;
+  manifest: Manifest;
   presentation: ScenePresentation;
   preset: ViewPreset;
 }
@@ -1092,7 +1102,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     state.frameLayout = frameLayout;
     selectionContextRef.current?.(sceneSelectionContext(manifest, model));
 
-    const fitContext = { model, presentation, preset: viewPreset };
+    const fitContext = { model, manifest, presentation, preset: viewPreset };
     state.fitContext = fitContext;
     const fitKey = layoutKey(model, presentation);
     if (
@@ -1460,6 +1470,7 @@ async function applyFigureAnnotations(
     if (annotation.kind === "atom-label") {
       const position = annotationAtomPosition(
         snapshot.model,
+        snapshot.manifest,
         annotation.atom,
         snapshot.presentation.mode,
       );
@@ -1538,11 +1549,19 @@ function figureAnnotationFontSample(
 
 function annotationAtomPosition(
   model: PreparedScene,
+  manifest: Manifest,
   selection: AtomSelection,
   mode: RepresentationMode,
 ): THREE.Vector3 | null {
   if (mode === "ribbon") {
-    const runs = preparedBackboneRuns(model).map((run) => unwrappedCartoonRun(model, run));
+    const runs = preparedBackboneRuns(model).map((run) => {
+      const residues = unwrappedCartoonRun(model, run);
+      const structures = annotatedProteinStructures(residues, manifest);
+      return {
+        residues,
+        centers: proteinCartoonResidueCenters(residues, structures),
+      };
+    });
     const target = ribbonSelectionPoints(runs, model)
       .get(selectionKey(selection.atom, selection.image));
     if (target) return target.position.clone();
@@ -2383,19 +2402,23 @@ function updateRibbonColors(
   const colors = geometry.getAttribute("color");
   const atoms = geometry.getAttribute("atomIndex");
   const secondaryStructure = geometry.getAttribute("secondaryStructure");
+  const secondaryStructureWeights = geometry.getAttribute(
+    "secondaryStructureWeights",
+  );
   if (!(colors instanceof THREE.BufferAttribute) || !(atoms instanceof THREE.BufferAttribute)) return;
   const chainColor = new THREE.Color(palette.ribbon);
   const structureColors = appearance === "light"
     ? [
-        new THREE.Color("#3f817e"),
-        new THREE.Color("#c94f5b"),
-        new THREE.Color("#d99a2b"),
+        new THREE.Color("#3f7f82"),
+        new THREE.Color("#bc6070"),
+        new THREE.Color("#c4903d"),
       ]
     : [
-        new THREE.Color("#6bb7b2"),
-        new THREE.Color("#ed7d86"),
-        new THREE.Color("#f1c15a"),
+        new THREE.Color("#77b8b8"),
+        new THREE.Color("#e28b98"),
+        new THREE.Color("#e1bd70"),
       ];
+  const blendedColor = new THREE.Color();
   for (let vertex = 0; vertex < atoms.count; vertex += 1) {
     const atom = Math.round(atoms.getX(vertex));
     let color: THREE.Color;
@@ -2406,6 +2429,26 @@ function updateRibbonColors(
       || !(secondaryStructure instanceof THREE.BufferAttribute)
     ) {
       color = chainColor;
+    } else if (
+      secondaryStructureWeights instanceof THREE.BufferAttribute
+      && secondaryStructureWeights.itemSize === 3
+    ) {
+      const coil = Math.max(0, secondaryStructureWeights.getX(vertex));
+      const helix = Math.max(0, secondaryStructureWeights.getY(vertex));
+      const sheet = Math.max(0, secondaryStructureWeights.getZ(vertex));
+      const total = Math.max(coil + helix + sheet, Number.EPSILON);
+      blendedColor.setRGB(
+        (structureColors[0].r * coil
+          + structureColors[1].r * helix
+          + structureColors[2].r * sheet) / total,
+        (structureColors[0].g * coil
+          + structureColors[1].g * helix
+          + structureColors[2].g * sheet) / total,
+        (structureColors[0].b * coil
+          + structureColors[1].b * helix
+          + structureColors[2].b * sheet) / total,
+      );
+      color = blendedColor;
     } else {
       color = structureColors[THREE.MathUtils.clamp(
         Math.round(secondaryStructure.getX(vertex)),
@@ -3295,20 +3338,16 @@ function buildRibbon(
   palette: ScenePalette,
 ): THREE.Mesh | null {
   if (model.backbone.length < 3) return null;
-  const annotations = new Map(
-    (manifest.topology.residues ?? [])
-      .filter((residue) => residue.secondary_structure)
-      .map((residue) => [residue.index, residue.secondary_structure!]),
-  );
   const translations = model.images.map((image) => imageTranslation(image, model.basis));
   const residueRuns = preparedBackboneRuns(model).map((run) => unwrappedCartoonRun(model, run));
+  const centeredRuns: CenteredRibbonRun[] = [];
   const geometries: THREE.BufferGeometry[] = [];
   for (const residues of residueRuns) {
-    const structures = inferProteinSecondaryStructure(residues);
-    for (let index = 0; index < residues.length; index += 1) {
-      const annotation = annotations.get(residues[index].residueIndex);
-      if (annotation) structures[index] = annotation;
-    }
+    const structures = annotatedProteinStructures(residues, manifest);
+    centeredRuns.push({
+      residues,
+      centers: proteinCartoonResidueCenters(residues, structures),
+    });
     const runGeometry = buildProteinCartoonGeometry(residues, {
       scale: presentation.atomScale,
       quality: presentation.quality,
@@ -3328,14 +3367,31 @@ function buildRibbon(
     geometry,
     new THREE.MeshStandardMaterial({
       vertexColors: true,
-      roughness: 0.5,
+      roughness: 0.62,
       metalness: 0,
       dithering: true,
-      side: THREE.DoubleSide,
+      side: THREE.FrontSide,
     }),
   );
-  mesh.userData.ribbonSelections = ribbonSelectionPoints(residueRuns, model);
+  mesh.userData.ribbonSelections = ribbonSelectionPoints(centeredRuns, model);
   return mesh;
+}
+
+function annotatedProteinStructures(
+  residues: readonly ProteinCartoonResidue[],
+  manifest: Manifest,
+): ProteinSecondaryStructure[] {
+  const structures = inferProteinSecondaryStructure(residues);
+  const annotations = new Map(
+    (manifest.topology.residues ?? [])
+      .filter((residue) => residue.secondary_structure)
+      .map((residue) => [residue.index, residue.secondary_structure!]),
+  );
+  for (let index = 0; index < residues.length; index += 1) {
+    const annotation = annotations.get(residues[index].residueIndex);
+    if (annotation) structures[index] = annotation;
+  }
+  return structures;
 }
 
 function ribbonContextModel(
@@ -3453,12 +3509,14 @@ function latticeImageOffset(
 }
 
 function ribbonSelectionPoints(
-  runs: readonly ProteinCartoonResidue[][],
+  runs: readonly CenteredRibbonRun[],
   model: PreparedScene,
 ): Map<string, RibbonSelectionPoint> {
   const result = new Map<string, RibbonSelectionPoint>();
-  for (const run of runs) {
-    for (const residue of run) {
+  for (const { residues, centers } of runs) {
+    for (let index = 0; index < residues.length; index += 1) {
+      const residue = residues[index];
+      const center = centers[index] ?? residue.ca;
       for (const image of model.images) {
         const selectionImage: CellOffset = [
           (residue.image?.[0] ?? 0) + image[0],
@@ -3468,7 +3526,7 @@ function ribbonSelectionPoints(
         const selection = { atom: residue.atomIndex, image: selectionImage };
         result.set(selectionKey(selection.atom, selection.image), {
           selection,
-          position: residue.ca.clone().add(imageTranslation(image, model.basis)),
+          position: center.clone().add(imageTranslation(image, model.basis)),
         });
       }
     }
@@ -4034,14 +4092,15 @@ function fitCamera(state: SceneState, context: FitContext): void {
     && context.preset === "perspective"
     && context.model.images.length === 1
   )
-    ? unwrappedBackboneTrace(context.model)
+    ? proteinCartoonFitTrace(context.model, context.manifest)
     : null;
   const proteinComposition = proteinTrace
     ? proteinCameraComposition(
-        proteinTrace,
-        context.model.backbone.map((_, index) => index),
+        proteinTrace.positions,
+        proteinTrace.points.map((_, index) => index),
         context.presentation.atomScale,
         state.camera.aspect,
+        proteinTrace.points.map((point) => point.faceNormal),
       )
     : null;
   const center = proteinComposition?.center ?? bounds.getCenter(new THREE.Vector3());
@@ -4052,17 +4111,34 @@ function fitCamera(state: SceneState, context: FitContext): void {
   const right = new THREE.Vector3().crossVectors(up, direction).normalize();
   const cameraUp = new THREE.Vector3().crossVectors(direction, right).normalize();
   const fill = 0.78;
-  const fitPoints = proteinComposition?.points ?? boxCorners(bounds);
-  const fitRadius = proteinComposition?.radius ?? 0;
   let distance = 1.6 / Math.tan(limitingHalfFov) * 1.08;
-  for (const point of fitPoints) {
-    const relative = point.clone().sub(center);
+  const ribbonPositions = proteinComposition && state.ribbon
+    ? state.ribbon.geometry.getAttribute("position")
+    : null;
+  const fitPoint = new THREE.Vector3();
+  const relative = new THREE.Vector3();
+  const expandDistance = (point: THREE.Vector3, radius: number): void => {
+    relative.copy(point).sub(center);
     const depth = relative.dot(direction);
     distance = Math.max(
       distance,
-      depth + (Math.abs(relative.dot(right)) + fitRadius) / (Math.tan(horizontalHalfFov) * fill),
-      depth + (Math.abs(relative.dot(cameraUp)) + fitRadius) / (Math.tan(verticalHalfFov) * fill),
+      depth + (Math.abs(relative.dot(right)) + radius) / (Math.tan(horizontalHalfFov) * fill),
+      depth + (Math.abs(relative.dot(cameraUp)) + radius) / (Math.tan(verticalHalfFov) * fill),
     );
+  };
+  if (ribbonPositions) {
+    for (let index = 0; index < ribbonPositions.count; index += 1) {
+      fitPoint.set(
+        ribbonPositions.getX(index),
+        ribbonPositions.getY(index),
+        ribbonPositions.getZ(index),
+      );
+      expandDistance(fitPoint, 0);
+    }
+  } else {
+    const fitPoints = proteinComposition?.points ?? boxCorners(bounds);
+    const fitRadius = proteinComposition?.radius ?? 0;
+    for (const point of fitPoints) expandDistance(point, fitRadius);
   }
   state.camera.up.copy(up);
   state.camera.position.copy(center).addScaledVector(direction, distance);
@@ -4073,6 +4149,26 @@ function fitCamera(state: SceneState, context: FitContext): void {
   state.controls.update();
   state.lastFittedAspect = state.camera.aspect;
   state.cameraMode = "fit";
+}
+
+function proteinCartoonFitTrace(
+  model: PreparedScene,
+  manifest: Manifest,
+): {
+  positions: Float32Array;
+  points: ProteinCartoonCameraPoint[];
+} | null {
+  const points = preparedBackboneRuns(model).flatMap((run) => {
+    const residues = unwrappedCartoonRun(model, run);
+    return proteinCartoonCameraTrace(
+      residues,
+      annotatedProteinStructures(residues, manifest),
+    );
+  });
+  if (points.length < 3) return null;
+  const positions = new Float32Array(points.length * 3);
+  points.forEach((point, index) => point.center.toArray(positions, index * 3));
+  return { positions, points };
 }
 
 export function unwrappedBackboneTrace(model: PreparedScene): Float32Array {

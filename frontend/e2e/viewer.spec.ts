@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,10 @@ const waterFixture = path.join(repositoryRoot, "examples/water.xyz");
 const naclFixture = path.join(
   repositoryRoot,
   "docs/assets/sources/nacl.extxyz",
+);
+const proteinFixture = path.join(
+  repositoryRoot,
+  "docs/assets/sources/1CRN.pdb",
 );
 const polyhedraRequirement =
   "Requires a supported center with 3+ bonded ligands";
@@ -70,6 +74,21 @@ function collectBrowserErrors(page: Page): string[] {
   return errors;
 }
 
+async function cleanCanvasScreenshot(
+  page: Page,
+  canvas: Locator,
+): Promise<Buffer> {
+  const style = await page.addStyleTag({
+    content: ".canvas-controls, .notice { visibility: hidden !important; }",
+  });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  try {
+    return await canvas.screenshot();
+  } finally {
+    await style.evaluate((element) => element.remove());
+  }
+}
+
 function changedPixelCount(bytes: Buffer): number {
   const image = PNG.sync.read(bytes);
   const [red, green, blue, alpha] = image.data;
@@ -82,6 +101,47 @@ function changedPixelCount(bytes: Buffer): number {
     if (difference > 24) changed += 1;
   }
   return changed;
+}
+
+function contentMetrics(bytes: Buffer): {
+  changed: number;
+  bounds: {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+  } | null;
+  width: number;
+  height: number;
+} {
+  const image = PNG.sync.read(bytes);
+  const [red, green, blue, alpha] = image.data;
+  let changed = 0;
+  let left = image.width;
+  let top = image.height;
+  let right = -1;
+  let bottom = -1;
+  for (let index = 0; index < image.data.length; index += 4) {
+    const difference = Math.abs(image.data[index] - red)
+      + Math.abs(image.data[index + 1] - green)
+      + Math.abs(image.data[index + 2] - blue)
+      + Math.abs(image.data[index + 3] - alpha);
+    if (difference <= 24) continue;
+    const pixel = index / 4;
+    const x = pixel % image.width;
+    const y = Math.floor(pixel / image.width);
+    changed += 1;
+    left = Math.min(left, x);
+    top = Math.min(top, y);
+    right = Math.max(right, x);
+    bottom = Math.max(bottom, y);
+  }
+  return {
+    changed,
+    bounds: changed > 0 ? { left, top, right, bottom } : null,
+    width: image.width,
+    height: image.height,
+  };
 }
 
 function differentPixelCount(leftBytes: Buffer, rightBytes: Buffer): number {
@@ -759,6 +819,103 @@ test("opens display controls and exports a publication PNG", async ({ page }) =>
   expect(png.readUInt32BE(16)).toBe(2400);
   expect(png.readUInt32BE(20)).toBe(1800);
   expect(changedPixelCount(png)).toBeGreaterThan(10_000);
+  expect(errors).toEqual([]);
+});
+
+test("fits and exports a publication Ribbon for 1CRN", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+  await openFixture(page, proteinFixture, "1CRN.pdb");
+
+  const canvas = page.locator("canvas");
+  await page.getByRole("button", { name: "Show display controls" }).click();
+  await expect(page.getByRole("button", {
+    name: "Ribbon",
+    exact: true,
+  })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+
+  await expect.poll(
+    async () => contentMetrics(await cleanCanvasScreenshot(page, canvas)).changed,
+  ).toBeGreaterThan(20_000);
+  await page.getByRole("toolbar", {
+    name: "Camera controls",
+  }).getByRole("button", {
+    name: "Fit",
+    exact: true,
+  }).click();
+  const fitted = contentMetrics(await cleanCanvasScreenshot(page, canvas));
+
+  await canvas.hover();
+  await page.mouse.wheel(0, 1800);
+  await expect.poll(
+    async () => contentMetrics(await cleanCanvasScreenshot(page, canvas)).changed,
+  ).toBeLessThan(fitted.changed * 0.75);
+  const zoomedOut = contentMetrics(await cleanCanvasScreenshot(page, canvas));
+  await page.getByRole("toolbar", {
+    name: "Camera controls",
+  }).getByRole("button", {
+    name: "Fit",
+    exact: true,
+  }).click();
+  await expect.poll(
+    async () => contentMetrics(await cleanCanvasScreenshot(page, canvas)).changed,
+  ).toBeGreaterThan(zoomedOut.changed * 1.5);
+
+  const restored = contentMetrics(await cleanCanvasScreenshot(page, canvas));
+  expect(restored.changed).toBeGreaterThan(fitted.changed * 0.8);
+
+  const canvasBounds = await canvas.boundingBox();
+  expect(canvasBounds).not.toBeNull();
+  await page.mouse.click(
+    canvasBounds!.x + 730,
+    canvasBounds!.y + 535,
+  );
+  const selectionReadout = page.locator(".selection-readout strong");
+  await expect(selectionReadout).toContainText("C86");
+  await page.mouse.click(
+    canvasBounds!.x + 980,
+    canvasBounds!.y + 438,
+  );
+  await expect(selectionReadout).toContainText("C118");
+
+  await page.getByRole("button", {
+    name: "Figure options",
+    exact: true,
+  }).click();
+  const figureSheet = page.locator("#figure-sheet");
+  await figureSheet.getByRole("spinbutton", { name: "Width" }).fill("800");
+  await figureSheet.getByRole("spinbutton", { name: "Height" }).fill("600");
+  await expect(figureSheet).toContainText("800 × 600 px");
+
+  const downloadPromise = page.waitForEvent("download");
+  await figureSheet.getByRole("button", {
+    name: "Export PNG",
+    exact: true,
+  }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe("1CRN-800x600.png");
+  const file = await download.path();
+  expect(file).not.toBeNull();
+  const png = await readFile(file!);
+  const publication = contentMetrics(png);
+  expect([publication.width, publication.height]).toEqual([800, 600]);
+  expect(publication.bounds).not.toBeNull();
+  const margins = [
+    publication.bounds!.left,
+    publication.bounds!.top,
+    publication.width - publication.bounds!.right - 1,
+    publication.height - publication.bounds!.bottom - 1,
+  ];
+  for (const margin of margins) expect(margin).toBeGreaterThanOrEqual(24);
+  const contentWidth = publication.bounds!.right - publication.bounds!.left + 1;
+  const contentHeight = publication.bounds!.bottom - publication.bounds!.top + 1;
+  const occupancy = contentWidth * contentHeight
+    / (publication.width * publication.height);
+  expect(occupancy).toBeGreaterThan(0.3);
+  expect(occupancy).toBeLessThan(0.8);
+  expect(publication.changed / (publication.width * publication.height))
+    .toBeGreaterThan(0.025);
   expect(errors).toEqual([]);
 });
 
