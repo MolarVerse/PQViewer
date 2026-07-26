@@ -4436,6 +4436,8 @@ button.measurement-plot__legend-item:hover {
   --viewport-toolbar-height: 0px;
   --workbench-width: 320px;
   --export-width: 380px;
+  --figure-panel-reserve: var(--export-width);
+  --figure-panel-gap: 12px;
 }
 
 .app-shell,
@@ -4625,11 +4627,8 @@ button.measurement-plot__legend-item:hover {
   animation: workbench-in 180ms ease both;
 }
 
-.figure-sheet-backdrop {
-  position: fixed;
-  z-index: 31;
-  inset: 0;
-  background: color-mix(in srgb, var(--text) 6%, transparent);
+.figure-sheet {
+  bottom: var(--timeline-height);
 }
 
 .export-sheet[hidden] {
@@ -4856,15 +4855,12 @@ button.measurement-plot__legend-item:hover {
 
 .figure-sheet-open .molecule-canvas,
 .figure-sheet-open .canvas-field {
-  width: calc(100% - var(--export-width));
+  width: calc(100% - var(--figure-panel-reserve));
 }
 
 .figure-sheet-open .canvas-controls {
-  right: calc(var(--export-width) + 12px);
-}
-
-.figure-sheet-open .timeline {
-  width: calc(100% - var(--export-width));
+  right: calc(var(--figure-panel-reserve) + var(--figure-panel-gap));
+  transition: none;
 }
 
 .export-options {
@@ -4921,6 +4917,10 @@ button.measurement-plot__legend-item:hover {
   white-space: nowrap;
 }
 
+.figure-sheet-open .timeline {
+  z-index: 33;
+}
+
 .workbench-open .timeline {
   width: calc(100% - var(--workbench-width));
 }
@@ -4934,6 +4934,11 @@ button.measurement-plot__legend-item:hover {
 }
 
 @media (max-width: 719px) {
+  .workspace {
+    --figure-panel-reserve: 0px;
+    --figure-panel-gap: 8px;
+  }
+
   .inspect-button {
     display: none;
   }
@@ -4941,9 +4946,7 @@ button.measurement-plot__legend-item:hover {
   .workbench-open .molecule-canvas,
   .workbench-open .canvas-field,
   .export-open .molecule-canvas,
-  .export-open .canvas-field,
-  .figure-sheet-open .molecule-canvas,
-  .figure-sheet-open .canvas-field {
+  .export-open .canvas-field {
     width: 100%;
   }
 
@@ -5035,6 +5038,12 @@ button.measurement-plot__legend-item:hover {
     border-top: 1px solid var(--line);
     box-shadow: 0 -10px 28px color-mix(in srgb, var(--text) 8%, transparent);
     animation-name: mobile-sheet-in;
+  }
+
+  .figure-sheet.export-sheet {
+    max-height: calc(
+      100svh - var(--header-height) - var(--timeline-height) - 64px
+    );
   }
 
   .export-open .render-guide-region {
@@ -5159,6 +5168,8 @@ button.measurement-plot__legend-item:hover {
   .workspace,
   .workspace.timeline-compact {
     --timeline-height: 58px;
+    --figure-panel-reserve: min(320px, 48vw);
+    --figure-panel-gap: 8px;
   }
 
   .timeline .plot-row {
@@ -5179,6 +5190,10 @@ button.measurement-plot__legend-item:hover {
     border-left: 1px solid var(--line);
     border-radius: 0;
     box-shadow: -10px 0 28px color-mix(in srgb, var(--text) 8%, transparent);
+  }
+
+  .figure-sheet.export-sheet {
+    max-height: none;
   }
 
   .workbench-heading {
