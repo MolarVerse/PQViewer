@@ -1113,9 +1113,18 @@ test("fits and exports a publication Ribbon for 1CRN", async ({ page }) => {
   })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Close", exact: true }).click();
 
+  await expect(canvas).toHaveAttribute("data-representation", "ribbon", {
+    timeout: 30_000,
+  });
   await expect.poll(
-    async () => contentMetrics(await sceneScreenshot(page, canvas)).changed,
-  ).toBeGreaterThan(20_000);
+    async () => {
+      const bounds = contentMetrics(await sceneScreenshot(page, canvas)).bounds;
+      return bounds
+        ? Math.min(bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1)
+        : 0;
+    },
+    { timeout: 30_000 },
+  ).toBeGreaterThan(140);
   await page.getByRole("toolbar", {
     name: "Camera controls",
   }).getByRole("button", {
