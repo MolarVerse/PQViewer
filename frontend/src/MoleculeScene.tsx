@@ -33,6 +33,7 @@ import {
 import {
   buildCoordinationPolyhedraGeometry,
   hasCoordinationPolyhedra,
+  preferredCoordinationCenterAtomicNumbers,
   prepareCoordinationPolyhedraTopology,
   type CoordinationPolyhedraInput,
   type PreparedCoordinationPolyhedraTopology,
@@ -167,6 +168,7 @@ interface SelectionRectangle {
 interface PreparedPolyhedraRequest {
   input: CoordinationPolyhedraInput;
   maxCenters: number;
+  centerAtomicNumbers: readonly number[];
   topology?: PreparedCoordinationPolyhedraTopology;
 }
 
@@ -177,11 +179,12 @@ interface PolyhedraCapabilityCache {
   hydrogens: boolean;
   bonds: CoordinationPolyhedraInput["bonds"];
   maxCenters: number;
+  centerAtomicNumbers: readonly number[];
   available: boolean;
   topology: PreparedCoordinationPolyhedraTopology;
 }
 
-interface MoleculeSceneProps {
+export interface MoleculeSceneProps {
   manifest: Manifest;
   frame: FrameData | null;
   preparedTopology: PreparedTopology | null;
@@ -1007,10 +1010,14 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
         hydrogens: presentation.hydrogens,
         bonds: request.input.bonds,
         maxCenters: request.maxCenters,
+        centerAtomicNumbers: request.centerAtomicNumbers,
         available: false,
         topology: prepareCoordinationPolyhedraTopology(
           request.input,
-          { maxCenters: request.maxCenters },
+          {
+            maxCenters: request.maxCenters,
+            centerAtomicNumbers: request.centerAtomicNumbers,
+          },
         ),
       };
       polyhedraCapabilityRef.current = cachedPolyhedra;
@@ -1018,6 +1025,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     const activePolyhedraRequest: PreparedPolyhedraRequest = {
       input: polyhedraInput(model, cachedPolyhedra.bonds),
       maxCenters: cachedPolyhedra.maxCenters,
+      centerAtomicNumbers: cachedPolyhedra.centerAtomicNumbers,
       topology: cachedPolyhedra.topology,
     };
     if (
@@ -1026,7 +1034,10 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     ) {
       cachedPolyhedra.available = hasCoordinationPolyhedra(
         activePolyhedraRequest.input,
-        { maxCenters: activePolyhedraRequest.maxCenters },
+        {
+          maxCenters: activePolyhedraRequest.maxCenters,
+          centerAtomicNumbers: activePolyhedraRequest.centerAtomicNumbers,
+        },
         activePolyhedraRequest.topology,
       );
       cachedPolyhedra.frame = frame;
@@ -1817,7 +1828,7 @@ interface PublicationLineConstructors {
 
 const publicationPalette: ScenePalette = {
   background: "#ffffff",
-  bond: "#48575a",
+  bond: "#657476",
   bondOpacity: 1,
   cell: "#4f7882",
   cellOpacity: 0.46,
@@ -1912,6 +1923,12 @@ function buildPublicationScene(
           "light",
           publicationPalette,
           true,
+          undefined,
+          {
+            constructors: lineConstructors,
+            width: options.width,
+            height: options.height,
+          },
         )
       : null;
     if (presentation.mode === "polyhedra" && !polyhedra) {
@@ -2945,6 +2962,7 @@ function renderConfigKey(presentation: ScenePresentation): string {
     presentation.images.min,
     presentation.images.max,
     presentation.cell,
+    presentation.bonds,
     presentation.forces,
     presentation.velocities,
     presentation.atomScale,
@@ -3218,6 +3236,11 @@ function buildPolyhedra(
   palette: ScenePalette,
   publication = false,
   preparedRequest?: PreparedPolyhedraRequest,
+  publicationLines?: {
+    constructors: PublicationLineConstructors;
+    width: number;
+    height: number;
+  },
 ): THREE.Group | null {
   const request = preparedRequest ?? polyhedraRequest(model);
   const geometry = buildCoordinationPolyhedraGeometry(
@@ -3225,6 +3248,9 @@ function buildPolyhedra(
     {
       images: model.images,
       maxCenters: request.maxCenters,
+      centerAtomicNumbers: request.centerAtomicNumbers,
+      containedInCell: presentation.cell,
+      cellCenter: model.cellCenter,
       colorForCenter: (atom, atomicNumber) => atomColor(
         manifest,
         atom,
@@ -3243,9 +3269,9 @@ function buildPolyhedra(
     new THREE.MeshStandardMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: publication ? 0.34 : appearance === "light" ? 0.28 : 0.34,
-      depthWrite: true,
-      roughness: 0.58,
+      opacity: publication ? 0.2 : appearance === "light" ? 0.28 : 0.34,
+      depthWrite: !publication,
+      roughness: publication ? 0.7 : 0.58,
       metalness: 0,
       flatShading: true,
       side: THREE.DoubleSide,
@@ -3258,26 +3284,55 @@ function buildPolyhedra(
   faces.renderOrder = 1;
   group.add(faces);
 
-  const edgeGeometry = new THREE.BufferGeometry();
-  edgeGeometry.setAttribute(
-    "position",
-    new THREE.BufferAttribute(
-      geometry.userData.edgePositions instanceof Float32Array
-        ? geometry.userData.edgePositions
-        : new Float32Array(),
-      3,
-    ),
-  );
-  edgeGeometry.computeBoundingSphere();
-  const edges = new THREE.LineSegments(
-    edgeGeometry,
-    new THREE.LineBasicMaterial({
+  const edgePositions = geometry.userData.edgePositions instanceof Float32Array
+    ? geometry.userData.edgePositions
+    : new Float32Array();
+  let edges: THREE.Object3D;
+  if (publication && publicationLines) {
+    const {
+      LineMaterial,
+      LineSegments2,
+      LineSegmentsGeometry,
+    } = publicationLines.constructors;
+    const edgeGeometry = new LineSegmentsGeometry();
+    edgeGeometry.setPositions(Array.from(edgePositions));
+    const edgeMaterial = new LineMaterial({
       color: palette.bond,
+      linewidth: THREE.MathUtils.clamp(
+        1.18 * Math.min(
+          publicationLines.width / 2400,
+          publicationLines.height / 1800,
+        ),
+        1,
+        2.8,
+      ),
       transparent: true,
-      opacity: publication ? 0.42 : 0.36,
+      opacity: 0.66,
       depthWrite: false,
-    }),
-  );
+      alphaToCoverage: true,
+    });
+    const publicationEdges = new LineSegments2(edgeGeometry, edgeMaterial);
+    (publicationEdges as unknown as { isLine2: boolean }).isLine2 = true;
+    publicationEdges.userData.publicationFitPositions = edgePositions;
+    publicationEdges.frustumCulled = false;
+    edges = publicationEdges;
+  } else {
+    const edgeGeometry = new THREE.BufferGeometry();
+    edgeGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(edgePositions, 3),
+    );
+    edgeGeometry.computeBoundingSphere();
+    edges = new THREE.LineSegments(
+      edgeGeometry,
+      new THREE.LineBasicMaterial({
+        color: palette.bond,
+        transparent: true,
+        opacity: 0.36,
+        depthWrite: false,
+      }),
+    );
+  }
   edges.userData.polyhedronEdges = true;
   edges.userData.publicationExcludeFromAo = true;
   edges.renderOrder = 2;
@@ -3289,11 +3344,17 @@ export function hasRenderablePolyhedra(model: PreparedScene): boolean {
   const request = polyhedraRequest(model);
   const topology = prepareCoordinationPolyhedraTopology(
     request.input,
-    { maxCenters: request.maxCenters },
+    {
+      maxCenters: request.maxCenters,
+      centerAtomicNumbers: request.centerAtomicNumbers,
+    },
   );
   return hasCoordinationPolyhedra(
     request.input,
-    { maxCenters: request.maxCenters },
+    {
+      maxCenters: request.maxCenters,
+      centerAtomicNumbers: request.centerAtomicNumbers,
+    },
     topology,
   );
 }
@@ -3302,9 +3363,11 @@ function polyhedraRequest(model: PreparedScene): PreparedPolyhedraRequest {
   const bonds = model.visibleAtoms.length === model.count
     ? model.bonds
     : visibleBonds(model);
+  const input = polyhedraInput(model, bonds);
   return {
-    input: polyhedraInput(model, bonds),
+    input,
     maxCenters: model.visibleAtoms.length > 24 ? 8 : 64,
+    centerAtomicNumbers: preferredCoordinationCenterAtomicNumbers(input),
   };
 }
 
@@ -4315,17 +4378,20 @@ const darkElementColors: Record<number, string> = {
   1: "#f0eee7", 2: "#d8f2f2", 3: "#b889df", 4: "#bed17f", 5: "#d4956d", 6: "#94a3a7",
   7: "#5680dd", 8: "#df6259", 9: "#6cba79", 10: "#7bcdd0", 11: "#9874ce", 12: "#89a86d",
   13: "#c7b8ae", 14: "#d5aa82", 15: "#ed9e54", 16: "#ead462", 17: "#74ca88", 18: "#8bdce2",
-  19: "#aa7bdd", 20: "#99ba7b", 26: "#cf8964", 29: "#d19a71", 30: "#adb3b7", 35: "#b65a4c", 53: "#8d61b5",
+  19: "#aa7bdd", 20: "#99ba7b", 22: "#8294aa", 26: "#cf8964", 29: "#d19a71", 30: "#adb3b7",
+  35: "#b65a4c", 38: "#8ead82", 53: "#8d61b5",
 };
 
 const lightElementColors: Record<number, string> = {
   ...darkElementColors,
   1: "#aab5b3",
-  6: "#273a3f",
+  6: "#59656f",
   7: "#315bb8",
   8: "#c94138",
   9: "#318448",
   15: "#d87924",
   16: "#c5a51c",
   17: "#348b4c",
+  22: "#637f9e",
+  38: "#77986d",
 };

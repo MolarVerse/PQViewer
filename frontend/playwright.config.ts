@@ -2,12 +2,13 @@ import { defineConfig, devices } from "@playwright/test";
 
 const port = Number(process.env.PQVIEWER_E2E_PORT ?? 8781);
 const baseURL = `http://127.0.0.1:${port}`;
+const browserExecutable = process.env.PQVIEWER_CHROMIUM_EXECUTABLE;
 
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: false,
   workers: 1,
-  timeout: 30_000,
+  timeout: 60_000,
   expect: {
     timeout: 10_000,
     toHaveScreenshot: {
@@ -38,6 +39,7 @@ export default defineConfig({
         viewport: { width: 1280, height: 800 },
         launchOptions: {
           args: ["--enable-webgl", "--use-angle=swiftshader"],
+          ...(browserExecutable ? { executablePath: browserExecutable } : {}),
         },
       },
     },

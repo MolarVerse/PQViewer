@@ -8,6 +8,7 @@ import {
   buildCoordinationPolyhedraGeometry,
   hasCoordinationPolyhedra,
   inferCoordinationPolyhedra,
+  preferredCoordinationCenterAtomicNumbers,
   prepareCoordinationPolyhedraTopology,
   type CoordinationPolyhedraInput,
 } from "./polyhedra";
@@ -61,6 +62,72 @@ function expectClosedTriangles(geometry: THREE.BufferGeometry): void {
 }
 
 describe("coordination polyhedra", () => {
+  it("builds contained TiO6 octahedra for the SrTiO3 perovskite fixture", () => {
+    const lines = readFileSync(
+      resolve(process.cwd(), "../examples/strontium-titanate.extxyz"),
+      "utf8",
+    ).trim().split(/\r?\n/);
+    const atomCount = Number.parseInt(lines[0], 10);
+    const coordinates = lines.slice(2, atomCount + 2).map((line) => {
+      const [symbol, x, y, z] = line.trim().split(/\s+/);
+      return { symbol, position: [Number(x), Number(y), Number(z)] };
+    });
+    const atomicNumbers: Record<string, number> = { O: 8, Ti: 22, Sr: 38 };
+    const manifest = {
+      schema_version: 2,
+      name: "strontium-titanate.extxyz",
+      frame_count: 1,
+      topology: {
+        atom_count: atomCount,
+        atomic_numbers: coordinates.map(({ symbol }) => atomicNumbers[symbol]),
+        symbols: coordinates.map(({ symbol }) => symbol),
+        bonds: [],
+        bond_source: "inferred",
+      },
+      series: [],
+    } as Manifest;
+    const frame = {
+      header: { arrays: [], pbc: [true, true, true] },
+      arrays: new Map([
+        ["positions", new Float32Array(coordinates.flatMap(({ position }) => position))],
+        ["cell", new Float32Array([7.81, 0, 0, 0, 7.81, 0, 0, 0, 7.81])],
+      ]),
+    } as FrameData;
+    const presentation: ScenePresentation = {
+      mode: "polyhedra",
+      water: "show",
+      hydrogens: true,
+      wrap: "atom",
+      cellOrigin: [0, 0, 0],
+      mirror: [false, false, false],
+      images: { min: [0, 0, 0], max: [0, 0, 0] },
+      cell: true,
+      bonds: true,
+      forces: false,
+      velocities: false,
+      atomScale: 1,
+      bondScale: 1,
+      color: "element",
+      quality: "high",
+    };
+    const model = prepareScene(manifest, frame, presentation)!;
+    const centerAtomicNumbers = preferredCoordinationCenterAtomicNumbers(model);
+    expect(centerAtomicNumbers).toEqual([22]);
+    const options = {
+      centerAtomicNumbers,
+      containedInCell: true,
+      cellCenter: model.cellCenter,
+    };
+    const topology = prepareCoordinationPolyhedraTopology(model, options);
+    const polyhedra = inferCoordinationPolyhedra(model, options, topology);
+    expect(polyhedra).toHaveLength(8);
+    expect(polyhedra.every(({ coordinationNumber }) => coordinationNumber === 6)).toBe(true);
+    const geometry = buildCoordinationPolyhedraGeometry(model, options, topology)!;
+    expect(geometry.userData.polyhedronCount).toBe(8);
+    expect(geometry.userData.triangleCount).toBe(64);
+    expectClosedTriangles(geometry);
+  });
+
   it("builds octahedra for the NaCl showcase through the viewer model", () => {
     const lines = readFileSync(
       resolve(process.cwd(), "../docs/assets/sources/nacl.extxyz"),
@@ -100,6 +167,7 @@ describe("coordination polyhedra", () => {
       mirror: [false, false, false],
       images: { min: [0, 0, 0], max: [0, 0, 0] },
       cell: true,
+      bonds: true,
       forces: false,
       velocities: false,
       atomScale: 1,
@@ -219,6 +287,34 @@ describe("coordination polyhedra", () => {
     const geometry = buildCoordinationPolyhedraGeometry(model);
     expect(geometry!.getAttribute("position").count).toBe(24);
     expectClosedTriangles(geometry!);
+  });
+
+  it("omits a polyhedron protruding beyond a visible centered cell", () => {
+    const model = input(
+      [
+        [4.8, 0, 0],
+        [-4.2, 0, 0],
+        [3.8, 0, 0],
+        [4.8, 1, 0],
+        [4.8, -1, 0],
+        [4.8, 0, 1],
+        [4.8, 0, -1],
+      ],
+      [26, 8, 8, 8, 8, 8, 8],
+      starBonds(6),
+    );
+    model.basis = createCellBasis(new Float32Array([
+      10, 0, 0,
+      0, 10, 0,
+      0, 0, 10,
+    ]));
+    model.pbc = [true, true, true];
+
+    expect(buildCoordinationPolyhedraGeometry(model)).not.toBeNull();
+    expect(buildCoordinationPolyhedraGeometry(model, {
+      containedInCell: true,
+      cellCenter: new THREE.Vector3(),
+    })).toBeNull();
   });
 
   it("reconstructs repeated ligand images in a primitive NaCl cell", () => {

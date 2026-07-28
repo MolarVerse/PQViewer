@@ -130,7 +130,8 @@ export type RepresentationMode =
   | "licorice"
   | "lines"
   | "ribbon"
-  | "polyhedra";
+  | "polyhedra"
+  | "surface";
 
 export interface ScenePresentation {
   mode: RepresentationMode;
@@ -144,6 +145,7 @@ export interface ScenePresentation {
     max: CellOffset;
   };
   cell: boolean;
+  bonds: boolean;
   forces: boolean;
   velocities: boolean;
   atomScale: number;

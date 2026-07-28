@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="frontend/public/pq-logo.png" alt="PQViewer logo" width="72">
-</p>
+<img src="frontend/public/pq-logo.png" alt="PQViewer logo" width="200">
 
 # PQViewer
 
@@ -15,7 +13,11 @@ still change before 1.0.
 ![A 100-frame UMCM-9 trajectory in PQViewer](docs/assets/screenshots/trajectory-workspace.png)
 
 <p align="center">
-  <a href="docs/index.md"><strong>Explore the documentation</strong></a>
+  <a href="docs/web-demo.md"><strong>Interactive web demo</strong></a>
+  ·
+  <a href="https://molarverse.github.io/PQViewer/"><strong>Read the documentation</strong></a>
+  ·
+  <a href="examples/pqviewer-notebook.ipynb"><strong>Open the Jupyter example</strong></a>
 </p>
 
 | Protein | Molecule | Framework |
@@ -38,6 +40,26 @@ pqviewer examples/water.xyz
 The interface is bundled with the Python package. Node.js is not required to
 install or run the viewer.
 
+The application stays on one page: **View** controls the scene, **Edit** owns
+atom and cell changes, **Analyze** explains selections and measurements, and
+**Export** opens the publication figure path. The central finder searches
+atoms, settings, and commands using `Cmd/Ctrl+K` or `/`; on small screens,
+**Tools** opens the same inspector as an expandable sheet.
+
+## Playable web demo
+
+The Pages-ready demo runs the same bundled 3Dmol.js interface against a
+read-only SrTiO3 perovskite dataset. It supports rotation, selection,
+structure and cell edits, representation controls, command search, and
+client-side structure and figure export without a Python server. Opening local
+files, streaming growing trajectories, and PQAnalysis calculations remain in
+the installed local application.
+
+Its target URL is
+[`molarverse.github.io/PQViewer/viewer/`](https://molarverse.github.io/PQViewer/viewer/).
+Publishing from the current private repository requires a GitHub plan that
+supports Pages for private repositories, or making the repository public.
+
 Open a trajectory, PQ input, run directory, or frame slice:
 
 ```bash
@@ -55,6 +77,26 @@ pqviewer structure.cif
 pqviewer optimization.traj
 ```
 
+## Jupyter
+
+Install the notebook helper, then return `view(...)` from a cell:
+
+```bash
+python -m pip install '.[jupyter,ase]'
+```
+
+```python
+from pqviewer import view
+
+viewer = view("trajectory.xyz", height=620)
+viewer
+```
+
+The iframe is the real local application, not a static screenshot. Close its
+server with `viewer.close()` when it is no longer needed. See the
+[executable notebook](examples/pqviewer-notebook.ipynb) and
+[Jupyter guide](docs/jupyter.md).
+
 ## What it does
 
 - Opens structures, trajectories, PQ inputs, and joined restart runs.
@@ -62,6 +104,8 @@ pqviewer optimization.traj
   without retaining every coordinate frame in memory.
 - Displays forces, velocities, charges, periodic images, water, protein
   cartoons, and crystal coordination polygons or polyhedra when supported.
+- Edits atom identity, Cartesian coordinates, lattice parameters, vectors, and
+  periodic axes locally, then downloads the current frame as EXTXYZ.
 - Uses PQ's centered fractional cell convention, `[-0.5, 0.5)`, including
   triclinic cells.
 - Selects atoms by pointer, box, element, molecule, residue, connectivity, or
@@ -80,12 +124,15 @@ Try the included periodic fixtures:
 pqviewer examples/periodic-boundary.extxyz
 pqviewer examples/periodic-crossing.extxyz
 pqviewer examples/acof-triclinic.xyz
+pqviewer examples/strontium-titanate.extxyz
 ```
 
 ## Documentation
 
 - [Documentation overview](docs/index.md)
 - [Getting started](docs/getting-started.md)
+- [Interactive web demo](docs/web-demo.md)
+- [Jupyter](docs/jupyter.md)
 - [Viewer guide](docs/viewer-guide.md)
 - [Data sources and periodic conventions](docs/data-and-conventions.md)
 - [Trajectory analysis](docs/trajectory-analysis.md)

@@ -2,16 +2,17 @@
 
 ## Quick figure
 
-Choose **Figure** or press `Cmd/Ctrl+Shift+S` to export the current view as a
-2400 × 1800 px, 300 DPI, white-background PNG.
+Press `Cmd/Ctrl+Shift+S` to export the current view immediately as a 2400 ×
+1800 px, 300 DPI, white-background PNG.
 
 The export uses the current orientation, a fitted camera, publication lighting,
-explicit sRGB output, and complete visible periodic bonds. Detail and
-supersampling adapt to output size and graphics support.
+explicit sRGB output, and cell-clipped periodic geometry. Repeated-cell views
+retain continuity between displayed neighbors. Detail and supersampling adapt
+to output size and graphics support.
 
-## Figure options
+## Export inspector
 
-The adjacent options button opens one sheet with:
+Choose **Export** to open one sheet with:
 
 - landscape, square, and wide presets
 - exact width and height from 1–8,192 px per dimension, subject to a
@@ -79,6 +80,10 @@ pqviewer render view.pqfigure.json \
 The output suffix must be `.png`, `.tif`, or `.tiff`. If `--format` is supplied,
 it must agree with the suffix.
 
-Interactive and headless export share the same browser renderer. The recipe
-makes the view reproducible and validates its source, but graphics drivers,
-Chromium versions, and operating systems can produce small pixel differences.
+Interactive viewing and publication export use separate rendering paths. The
+interactive renderer prioritizes responsive inspection, while figure and
+headless export use the publication renderer at the requested output size.
+Saved recipes keep the view reproducible and validate their source, but graphics
+drivers, Chromium versions, and operating systems can produce small pixel
+differences. Interactive molecular surfaces are not currently available through
+the publication renderer; choose another preset before exporting a figure.

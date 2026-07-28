@@ -104,6 +104,7 @@ const basePresentation: ScenePresentation = {
   mirror: [false, false, false],
   images: { min: [0, 0, 0], max: [0, 0, 0] },
   cell: true,
+  bonds: true,
   forces: false,
   velocities: false,
   atomScale: 1,
@@ -608,12 +609,12 @@ describe("periodic geometry", () => {
 
     expect(minimumImageBondShift(scene.positions, 0, 1, scene.basis, scene.pbc)).toEqual([1, 0, 0]);
 
-    const interactive = publicationBondGeometry(scene, basePresentation, false);
-    expect(interactive.segments).toHaveLength(2);
-    expect(interactive.segments.every((segment) => !segment.context)).toBe(true);
+    const withoutCell = { ...basePresentation, cell: false };
+    const interactive = publicationBondGeometry(scene, withoutCell, false);
+    expect(interactive.segments).toHaveLength(0);
     expect(interactive.contextAtoms).toEqual([]);
 
-    const publication = publicationBondGeometry(scene, basePresentation, true);
+    const publication = publicationBondGeometry(scene, withoutCell, true);
     expect(publication.segments).toHaveLength(2);
     expect(publication.segments.every((segment) => segment.context)).toBe(true);
     publication.segments.forEach((segment) => {
@@ -696,7 +697,11 @@ describe("periodic geometry", () => {
     topology.topology.bond_source = "inferred";
     const scene = prepareScene(topology, frame([...positions], [...cell], [true, true, false]), basePresentation);
     expect(scene?.bonds).toEqual([[0, 1]]);
-    const publication = publicationBondGeometry(scene!, basePresentation, true);
+    const publication = publicationBondGeometry(
+      scene!,
+      { ...basePresentation, cell: false },
+      true,
+    );
     expect(publication.segments).toHaveLength(2);
     publication.segments.forEach((segment) => {
       expect(segment.from.distanceTo(segment.to)).toBeCloseTo(Math.hypot(0.1, 0.49), 6);
@@ -894,7 +899,7 @@ describe("periodic geometry", () => {
     )).toEqual({ atom: 0, image: [1, 0, 0] });
   });
 
-  it("keeps bonds short in unwrapped viewport and publication geometry", () => {
+  it("hides bonds crossing a visible single cell boundary", () => {
     const source = frame(
       [4.9, 0, 0, -4.9, 0, 0],
       [10, 0, 0, 0, 10, 0, 0, 0, 10],
@@ -909,23 +914,14 @@ describe("periodic geometry", () => {
     const scene = prepareScene(manifest([6, 6], [[0, 1]]), source, presentation)!;
 
     const viewport = prepareFrameGeometry(scene, presentation, null);
-    expect(viewport.bondSegments).toHaveLength(2);
-    expectVectorClose(
-      viewport.bondSegments[0].from,
-      new THREE.Vector3().fromArray(scene.positions, 0),
-    );
-    expectVectorClose(
-      viewport.bondSegments[1].from,
-      new THREE.Vector3().fromArray(scene.positions, 3),
-    );
-    viewport.bondSegments.forEach((segment) => {
-      expect(segment.from.distanceTo(segment.to)).toBeCloseTo(0.1, 5);
-    });
+    expect(viewport.bondSegments).toHaveLength(0);
     const publication = publicationBondGeometry(scene, presentation, true);
-    expect(publication.segments).toHaveLength(2);
-    expect(publication.segments.every(
-      (segment) => Math.abs(segment.from.distanceTo(segment.to) - 0.2) < 1e-5,
-    )).toBe(true);
+    expect(publication.segments).toHaveLength(0);
+    expect(publication.contextAtoms).toHaveLength(0);
+
+    const withoutCell = { ...presentation, cell: false };
+    const hiddenWithoutCell = prepareFrameGeometry(scene, withoutCell, null);
+    expect(hiddenWithoutCell.bondSegments).toHaveLength(0);
   });
 
   it("centers an unwrapped structure on its displayed image", () => {
@@ -1700,7 +1696,7 @@ describe("trajectory geometry reuse", () => {
     const changedForces = prepareFrameGeometry(inside, presentation, oneForce, bothVelocities);
     const changedVelocities = prepareFrameGeometry(inside, presentation, bothForces, oneVelocity);
     expect(stable.bondSegments).toHaveLength(1);
-    expect(changedBonds.bondSegments).toHaveLength(2);
+    expect(changedBonds.bondSegments).toHaveLength(0);
     expect(stable.forceInstances).toHaveLength(2);
     expect(changedForces.forceInstances).toHaveLength(1);
     expect(stable.velocityInstances).toHaveLength(2);

@@ -1,7 +1,9 @@
 # Viewer guide
 
-The interface keeps the structure on the canvas and shows controls only when
-the loaded data can use them.
+The interface is one continuous scientific workspace. The structure stays on
+the canvas while **View**, **Edit**, **Analyze**, and **Export** expose one task
+at a time. On narrow screens, **Tools** opens the same View/Edit/Analyze
+inspector as a bottom sheet; its arrow expands the sheet to full height.
 
 ## Canvas
 
@@ -16,11 +18,33 @@ the loaded data can use them.
 The small canvas controls fit the structure and select perspective, XY, XZ, or
 YZ views. Camera orientation and selection stay stable while frames change.
 
-## Selection
+## Edit
 
-One selected atom shows its position in the selection bar. Choose **Details**
-to inspect available charge, force, and velocity values. Ordered selections of
-two, three, or four atoms show a distance, angle, or dihedral.
+Choose **Edit** or press `E` for source-data changes. **Cell + structure**
+shows the formula, atom and frame counts, and boundary conditions. The cell
+editor accepts either lengths and angles or the full 3 × 3 lattice vectors.
+Each periodic axis can be enabled separately. By default, changing the cell
+keeps Cartesian atom positions fixed; enable **Keep fractional positions**
+when atoms should scale with the lattice.
+
+Molecules without a source cell receive a centered orthorhombic suggestion
+based on their coordinate extent. Applying it creates a cell; nothing is added
+automatically.
+
+Clicking an atom opens its read-only scientific details in **Analyze**. Choose
+**Edit atom** there, or choose **Selected atom** while Edit is open, to change
+element identity and Cartesian coordinates. Element changes apply to the whole
+structure, while coordinates apply to the displayed frame. Edits are local,
+reversible, and used by figure export. **Download current frame** writes the
+edited structure as EXTXYZ, including lattice and periodic-axis information.
+
+## Analyze
+
+Analyze is always available. With no selection it explains the selection
+gestures. One selected atom shows its identity, position, charge, force, and
+velocity values without exposing accidental edits. Ordered selections of two,
+three, or four atoms show a distance, angle, or dihedral. Larger selections
+show their formula, centroid, extent, and unique-atom count.
 
 The selection bar exposes actions that apply to the current selection:
 
@@ -40,24 +64,29 @@ displayed images when measuring a chosen replica.
 Saved selections and pinned measurements last for the current workspace and
 dataset. Reloading the browser clears them.
 
-## View controls
+## View
 
-Choose **View** once to open the display controls supported by the current
+Choose **View** or press `V` to open the controls supported by the current
 source.
 
-**Representation**
-
-- Ball + stick
-- Spacefill
-- Lines
-- Ribbon when residue and backbone topology are present
-- Coordination polygons and polyhedra in periodic structures
+Representations are explicit: ball-and-stick, spacefill, licorice, lines,
+ribbon, coordination polyhedra, and surface. Atom and bond size, coloring,
+hydrogen visibility, and interactive quality are adjustable in the same
+inspector. Light and dark appearance are explicit View settings. PQViewer
+chooses a sensible initial display for the loaded data, but every representation
+and layer remains directly controllable; the inspector does not require a
+scientific-system preset.
 
 Coordination geometry follows the visible bonding topology. Planar ligand
 shells are shown as polygons; non-planar shells are shown as polyhedra. When
 bonds are inferred, PQViewer uses the nearest distance shell so longer contacts
-do not inflate coordination. Dense structures show a deterministic subset to
-keep the view legible.
+do not inflate coordination. If several metal sites are available, transition
+metal coordination is preferred; this keeps perovskites focused on their
+octahedral network. Polyhedra that protrude outside a displayed single cell are
+omitted, and dense structures show a deterministic subset.
+
+A single visible unit cell does not draw minimum-image bonds through its
+boundary. Repeated-cell views retain bonds between neighboring displayed cells.
 
 **Overlays**
 
@@ -77,6 +106,18 @@ keep the view legible.
 These controls change the display only. They do not rewrite source coordinates.
 Use command search for **Source coordinates** when the stored coordinates need
 to be shown without display wrapping.
+
+The interactive view uses the locally bundled 3Dmol renderer. If it cannot
+initialize, PQViewer keeps the established Three renderer available as a
+fallback.
+
+## Export
+
+**Export** opens one figure inspector for size, DPI, PNG or TIFF, white or
+transparent background, projection, labels, legend, scale bar, and reproducible
+figure recipes. The interactive 3Dmol canvas is not treated as publication
+output: figures use the independent high-quality renderer. Press
+`Cmd/Ctrl+Shift+S` for a quick 2400 × 1800 PNG with publication defaults.
 
 ## Trajectory
 
@@ -104,9 +145,17 @@ and sixteen atom-image selections can be tracked at once.
 
 ## Search and keyboard
 
-Press `Cmd/Ctrl+K` or `/` to search the available commands. Search omits actions
-that the current source cannot perform. It also accepts commands such as
-`select within 3 Å of selection`.
+The central **Search** control finds atoms, settings, and commands. Press `⌘K`
+on macOS, `Ctrl+K` on Linux and Windows, or `/` on any platform. Type to filter,
+use `↑` and `↓` to move through results, and press `Enter` to open the selected
+setting or run the selected command. Setting results show their path, such as
+**View › Layers › Bonds** or **Edit › Cell › Vectors**, then open collapsed
+sections, scroll the setting into view, and highlight it briefly.
+
+Natural scientific terms are indexed. Queries such as `bond across cell`,
+`atom color`, `edit lattice vectors`, `distance`, `dark mode`, and
+`transparent image` lead to the relevant control. Search also accepts commands
+such as `select within 3 Å of selection`.
 
 | Keys | Action |
 | --- | --- |
@@ -118,7 +167,8 @@ that the current source cannot perform. It also accepts commands such as
 | `R` | Fit the structure |
 | `1` / `2` / `3` / `4` | Perspective / XY / XZ / YZ |
 | `↑` / `↓`, `Enter` | Browse atoms and toggle selection |
-| `V` | View controls |
+| `E` / `V` | Edit / View tools |
+| `D` | Light or dark appearance |
 | `B` | Toggle lines and ball-and-stick |
 | `C` / `F` / `W` | Toggle cell / forces / water |
 | `Cmd/Ctrl+O` | Open files |
@@ -133,7 +183,7 @@ Optional Vim navigation is enabled in the shortcut sheet:
 | `h` / `l` | Previous / next frame |
 | `H` / `L` | Back / forward ten frames |
 | `gg` / `G` | First / last frame |
-| `:` | Search commands |
+| `:` | Search atoms, settings, and commands |
 | `Ctrl+[` | Close the active surface |
 
 Pointer controls remain available when Vim navigation is enabled.

@@ -65,16 +65,44 @@ app = create_app(dataset=dataset)
 Run the module containing `app` with Uvicorn when embedding the viewer in a
 local Python workflow.
 
+## Display in Jupyter
+
+`view` starts the same local FastAPI application on an available loopback port
+and returns an object with an iframe representation:
+
+```python
+from pqviewer import view
+
+viewer = view(
+    "trajectory.xyz",
+    forces_path="trajectory.force",
+    height=620,
+)
+viewer
+```
+
+The server stays alive while `viewer` is in use. Stop it explicitly when a
+notebook no longer needs it:
+
+```python
+viewer.close()
+```
+
+See the [Jupyter guide](jupyter.md) and
+[executable example](../examples/pqviewer-notebook.ipynb).
+
 The public package currently exports:
 
 - `FrameData`
 - `FrameKey`
 - `IndexedFrameSource`
+- `NotebookViewer`
 - `PQTrajectoryDataset`
 - `RunDataset`
 - `create_app`
 - `encode_frame`
 - `open_run_dataset`
+- `view`
 
 The project is pre-1.0. Treat the HTTP transport and frontend state as internal;
 the documented Python names may still evolve with release notes.

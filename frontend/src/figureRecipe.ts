@@ -417,6 +417,7 @@ function parsePresentation(value: unknown): ScenePresentation {
     "mirror",
     "images",
     "cell",
+    "bonds",
     "forces",
     "velocities",
     "atomScale",
@@ -435,7 +436,7 @@ function parsePresentation(value: unknown): ScenePresentation {
   return {
     mode: enumeration(
       presentation.mode,
-      ["ball-stick", "spacefill", "licorice", "lines", "ribbon", "polyhedra"],
+      ["ball-stick", "spacefill", "licorice", "lines", "ribbon", "polyhedra", "surface"],
       "Figure presentation mode",
     ),
     water: enumeration(presentation.water, ["show", "hide", "only"], "Figure presentation water"),
@@ -452,6 +453,9 @@ function parsePresentation(value: unknown): ScenePresentation {
       max: maximumImages,
     },
     cell: boolean(presentation.cell, "Figure presentation cell"),
+    bonds: presentation.bonds === undefined
+      ? true
+      : boolean(presentation.bonds, "Figure presentation bonds"),
     forces: boolean(presentation.forces, "Figure presentation forces"),
     velocities: boolean(presentation.velocities, "Figure presentation velocities"),
     atomScale: positiveNumber(presentation.atomScale, "Figure presentation atomScale"),

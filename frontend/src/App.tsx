@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
+import type { FormEvent } from "react";
 import {
   DatasetChangedError,
   frameArray,
@@ -7,6 +15,7 @@ import {
   getInitialRecipe,
   getManifest,
   getSelectedPositions,
+  isStaticDemoMode,
   normalizeSeries,
   openFiles,
   runRdfAnalysis,
@@ -51,14 +60,14 @@ import {
   MoleculeScene,
   POLYHEDRA_REQUIREMENT,
   sceneCapabilities,
-} from "./MoleculeScene";
+} from "./RendererScene";
 import type {
   TrajectoryOverlays,
   FigureExportOptions,
   MoleculeSceneHandle,
   RenderedSceneInfo,
   ViewPreset,
-} from "./MoleculeScene";
+} from "./RendererScene";
 import { RdfSetup } from "./RdfSetup";
 import type {
   AnalysisSelectionOption,
@@ -71,6 +80,7 @@ import {
   shortcutLabelsForPlatform,
 } from "./keyboard";
 import type { ViewerShortcutLabels, VimNavigationAction, VimPrefix } from "./keyboard";
+import { Icon } from "./Icon";
 import {
   measureAtomSelection,
   updateSceneSelection,
@@ -93,6 +103,18 @@ import {
   replaceSelections,
   SelectionIndex,
 } from "./scientificSelection";
+import {
+  cellFromParameters,
+  cellMatrix,
+  cellParameters,
+  frameToExtxyz,
+  suggestedCell,
+  updateAtomElement,
+  updateAtomPosition,
+  updateCell,
+  validateCell,
+} from "./structureEditing";
+import type { CellParameters } from "./structureEditing";
 import type {
   NamedSelection,
   SceneSelectionContext,
@@ -127,6 +149,7 @@ import {
 } from "./trajectoryTracking";
 import type {
   AtomSelection,
+  Appearance,
   CellOffset,
   DisplaySeries,
   FrameData,
@@ -137,10 +160,18 @@ import type {
 } from "./types";
 
 type LoadState = "loading" | "ready" | "error";
-type SceneProfile = "auto" | "molecule" | "protein" | "crystal" | "trajectory" | "custom";
-type WorkbenchTab = "view" | "inspect" | "summary";
+type SceneProfile =
+  | "auto"
+  | "molecule"
+  | "protein"
+  | "liquid"
+  | "crystal"
+  | "mof"
+  | "trajectory"
+  | "custom";
+type WorkbenchTab = "view" | "edit" | "analyze";
+type EditTarget = "cell" | "atom";
 type SelectionIntent = "measurement" | "set";
-type IconName = "back" | "close" | "first" | "folder" | "image" | "last" | "more" | "next" | "pause" | "play" | "retry" | "search" | "sliders";
 type NoticeState = { message: string; tone: "status" | "error" };
 type RdfPlotContext = {
   requestId: number;
@@ -195,6 +226,7 @@ const defaultPresentation: ScenePresentation = {
   cellOrigin: [0, 0, 0],
   mirror: [false, false, false],
   cell: true,
+  bonds: true,
   forces: true,
   velocities: false,
   atomScale: 1,
@@ -204,6 +236,7 @@ const defaultPresentation: ScenePresentation = {
 };
 
 export default function App() {
+  const staticDemo = isStaticDemoMode();
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
@@ -220,6 +253,7 @@ export default function App() {
   const [playbackPulse, setPlaybackPulse] = useState(0);
   const [playbackOptionsOpen, setPlaybackOptionsOpen] = useState(false);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
+  const [appearance, setAppearance] = useState<Appearance>(initialAppearance);
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
   const [selectionIntent, setSelectionIntent] = useState<SelectionIntent>("measurement");
@@ -245,12 +279,17 @@ export default function App() {
   const [rdfRunning, setRdfRunning] = useState(false);
   const [rdfContext, setRdfContext] = useState<RdfPlotContext | null>(null);
   const [workbenchTab, setWorkbenchTab] = useState<WorkbenchTab | null>(null);
+  const [editTarget, setEditTarget] = useState<EditTarget>("cell");
+  const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
+  const [settingTarget, setSettingTarget] = useState<string | null>(null);
+  const [canvasHintDismissed, setCanvasHintDismissed] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [vimMode, setVimMode] = useState(initialVimMode);
   const [resetSignal, setResetSignal] = useState(0);
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
   const [viewSignal, setViewSignal] = useState(0);
+  const [sceneRevision, setSceneRevision] = useState(0);
   const [rendering, setRendering] = useState(false);
   const [figureSheetOpen, setFigureSheetOpen] = useState(false);
   const [figureOutput, setFigureOutput] = useState<FigureOutput>(defaultFigureOutput);
@@ -268,13 +307,16 @@ export default function App() {
     manifest: Manifest;
     value: PreparedTopology;
   } | null>(null);
+  const [editedFrames, setEditedFrames] = useState<Set<number>>(() => new Set());
+  const [topologyEdited, setTopologyEdited] = useState(false);
   const cache = useRef(new FrameCache());
   const moleculeSceneRef = useRef<MoleculeSceneHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recipeInputRef = useRef<HTMLInputElement>(null);
-  const panelButtonRef = useRef<HTMLButtonElement>(null);
-  const renderButtonRef = useRef<HTMLButtonElement>(null);
-  const figureOptionsButtonRef = useRef<HTMLButtonElement>(null);
+  const viewButtonRef = useRef<HTMLButtonElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const analyzeButtonRef = useRef<HTMLButtonElement>(null);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
   const workbenchRef = useRef<HTMLElement>(null);
   const vimSequenceRef = useRef<{ prefix: VimPrefix; at: number }>({ prefix: null, at: 0 });
   const dragDepth = useRef(0);
@@ -297,6 +339,8 @@ export default function App() {
   const datasetCheckPending = useRef(false);
   const manifestGeneration = useRef("");
   const activeManifest = useRef<Manifest | null>(null);
+  const originalManifest = useRef<Manifest | null>(null);
+  const frameDrafts = useRef(new Map<string, FrameData>());
   const sceneTopologyRef = useRef<{
     manifest: Manifest;
     value: PreparedTopology;
@@ -340,8 +384,13 @@ export default function App() {
     datasetReloadPending.current = false;
     manifestGeneration.current = value.dataset_generation ?? "";
     activeManifest.current = value;
+    originalManifest.current = value;
+    frameDrafts.current.clear();
     sceneTopologyRef.current = null;
     setSceneTopology(null);
+    setSceneRevision(0);
+    setEditedFrames(new Set());
+    setTopologyEdited(false);
     setManifest(value);
     setFrameIndex(0);
     setLoadedFrame(null);
@@ -631,14 +680,24 @@ export default function App() {
   }, [revalidateDataset]);
 
   useEffect(() => {
-    document.documentElement.dataset.appearance = "light";
-    document.documentElement.style.colorScheme = "light";
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", "#f6f8f8");
+    document.documentElement.dataset.appearance = appearance;
+    document.documentElement.style.colorScheme = appearance;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute(
+      "content",
+      appearance === "dark" ? "#1e2e33" : "#f6f8f8",
+    );
+    try {
+      window.localStorage.setItem("pqviewer-appearance", appearance);
+    } catch {}
+  }, [appearance]);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem("pqviewer-presentation", JSON.stringify({
         mode: presentation.mode,
         water: presentation.water,
         cell: presentation.cell,
+        bonds: presentation.bonds,
         forces: presentation.forces,
         velocities: presentation.velocities,
       }));
@@ -704,7 +763,8 @@ export default function App() {
       .get(frameIndex)
       .then((data) => {
         if (!active) return;
-        setLoadedFrame({ index: frameIndex, data });
+        const draft = frameDrafts.current.get(frameDraftKey(frameCoordinateMode, frameIndex));
+        setLoadedFrame({ index: frameIndex, data: draft ?? data });
         setFrameLoading(false);
         const playback = playbackState.current;
         const prefetch = playback.playing
@@ -782,36 +842,23 @@ export default function App() {
       });
       return;
     }
-    let cancelled = false;
-    let firstFrame = 0;
-    let secondFrame = 0;
-    firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        if (cancelled || pendingFigureRecipe.current !== recipe) return;
-        try {
-          const scene = moleculeSceneRef.current;
-          if (!scene) throw new Error("The molecular scene is not ready");
-          scene.restoreCamera(recipe.camera);
-          pendingFigureRecipe.current = null;
-          setRecipeApplying(false);
-          setFigureBridgeError("");
-          if (!isHeadlessFigureMode()) {
-            setNotice({ message: "Figure recipe restored", tone: "status" });
-          }
-        } catch (error) {
-          pendingFigureRecipe.current = null;
-          setRecipeApplying(false);
-          const detail = message(error);
-          setFigureBridgeError(detail);
-          setNotice({ message: `Figure recipe unavailable · ${detail}`, tone: "error" });
-        }
-      });
-    });
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(firstFrame);
-      cancelAnimationFrame(secondFrame);
-    };
+    try {
+      const scene = moleculeSceneRef.current;
+      if (!scene) throw new Error("The molecular scene is not ready");
+      scene.restoreCamera(recipe.camera);
+      pendingFigureRecipe.current = null;
+      setRecipeApplying(false);
+      setFigureBridgeError("");
+      if (!isHeadlessFigureMode()) {
+        setNotice({ message: "Figure recipe restored", tone: "status" });
+      }
+    } catch (error) {
+      pendingFigureRecipe.current = null;
+      setRecipeApplying(false);
+      const detail = message(error);
+      setFigureBridgeError(detail);
+      setNotice({ message: `Figure recipe unavailable · ${detail}`, tone: "error" });
+    }
   }, [
     frameLoading,
     loadedFrame,
@@ -848,6 +895,8 @@ export default function App() {
     setFigureSheetOpen(false);
     setMeasurementPlotOpen(false);
     setMeasurementSeries(null);
+    setWorkbenchExpanded(false);
+    setCanvasHintDismissed(true);
     setWorkbenchTab(tab);
     if (focus) focusWorkbench();
   }, [focusWorkbench]);
@@ -855,10 +904,12 @@ export default function App() {
   const closeWorkbench = useCallback((restoreFocus = false) => {
     const closingTab = workbenchTab;
     setWorkbenchTab(null);
+    setWorkbenchExpanded(false);
+    setSettingTarget(null);
     if (restoreFocus) requestAnimationFrame(() => {
-      if (closingTab === "inspect") document.querySelector<HTMLCanvasElement>(".molecule-canvas")?.focus();
-      else if (closingTab === "summary") document.querySelector<HTMLButtonElement>(".selection-summary-button")?.focus();
-      else panelButtonRef.current?.focus();
+      if (closingTab === "edit") editButtonRef.current?.focus();
+      else if (closingTab === "analyze") analyzeButtonRef.current?.focus();
+      else viewButtonRef.current?.focus();
     });
   }, [workbenchTab]);
 
@@ -870,16 +921,29 @@ export default function App() {
       setSelectionAnchor(null);
       setMeasurementPlotOpen(false);
       setMeasurementSeries(null);
-      setWorkbenchTab((current) => current === "inspect" || current === "summary" ? null : current);
+      setEditTarget("cell");
       return;
     }
     setSelectionAnchor({ atom: selection.atom, image: [...selection.image] });
-    setSelectedAtoms((current) => updateSceneSelection(
-      current,
+    const nextSelection = updateSceneSelection(
+      selectedAtoms,
       selection,
       additive ? "toggle" : "replace",
-    ));
-  }, []);
+    );
+    setSelectedAtoms(nextSelection);
+    if (!additive) {
+      if (workbenchTab === "edit") {
+        setEditTarget("atom");
+      } else {
+        setWorkbenchTab("analyze");
+      }
+    } else if (workbenchTab === null && nextSelection.length === 1) {
+      setWorkbenchTab("analyze");
+    } else if (workbenchTab === "edit" && editTarget === "atom" && nextSelection.length !== 1) {
+      setWorkbenchTab("analyze");
+    }
+    setCanvasHintDismissed(true);
+  }, [editTarget, selectedAtoms, workbenchTab]);
 
   const selectManyAtoms = useCallback((
     selections: AtomSelection[],
@@ -897,12 +961,14 @@ export default function App() {
     ));
     const anchor = selections.at(-1);
     if (anchor) setSelectionAnchor({ atom: anchor.atom, image: [...anchor.image] });
-  }, []);
+    if (workbenchTab === "edit" && editTarget === "atom") setWorkbenchTab("analyze");
+    setCanvasHintDismissed(true);
+  }, [editTarget, workbenchTab]);
 
   useEffect(() => {
     if (selectedAtoms.length === 0) {
       setSelectionAnchor(null);
-      setWorkbenchTab((current) => current === "inspect" || current === "summary" ? null : current);
+      setEditTarget("cell");
     } else if (
       !selectionAnchor
       || !selectedAtoms.some((selection) => sameAtomSelectionValue(selection, selectionAnchor))
@@ -914,10 +980,10 @@ export default function App() {
       setMeasurementPlotOpen(false);
       setMeasurementSeries(null);
     }
-    if (selectedAtoms.length <= 4) {
-      setWorkbenchTab((current) => current === "summary" ? null : current);
+    if (selectedAtoms.length !== 1 && workbenchTab === "edit" && editTarget === "atom") {
+      setWorkbenchTab("analyze");
     }
-  }, [selectedAtoms, selectionAnchor]);
+  }, [editTarget, selectedAtoms, selectionAnchor, workbenchTab]);
 
   const selectView = useCallback((preset: ViewPreset) => {
     setViewPreset(preset);
@@ -989,7 +1055,7 @@ export default function App() {
     } finally {
       setRendering(false);
       requestAnimationFrame(() => restoreFocusWhenAvailable(
-        focusOrigin?.isConnected ? focusOrigin : renderButtonRef.current,
+        focusOrigin?.isConnected ? focusOrigin : exportButtonRef.current,
       ));
     }
   }, [frameLoading, manifest?.name, rendering]);
@@ -1079,7 +1145,7 @@ export default function App() {
     [selectedAtoms, selectionContext?.atomicNumbers],
   );
   const selectionSummary = useMemo(
-    () => workbenchTab === "summary"
+    () => workbenchTab === "analyze" && selectedAtoms.length > 4
       ? selectionIndex?.summarize(selectedAtoms) ?? null
       : null,
     [selectedAtoms, selectionIndex, workbenchTab],
@@ -1237,7 +1303,8 @@ export default function App() {
     selectionFormula,
   ]);
   const analysisAvailable = Boolean(
-    canPlay
+    !staticDemo
+    && canPlay
     && manifest?.source?.path
     && pbc.every(Boolean)
     && analysisSelectionOptions.length > 0,
@@ -1253,6 +1320,7 @@ export default function App() {
     () => largestCompatibleMeasurementGroup(pinnedMeasurements),
     [pinnedMeasurements],
   );
+  const hasStructureEdits = editedFrames.size > 0 || topologyEdited;
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
   const plotFrameAxis = useMemo(
     () => measurementPlotOpen && manifest
@@ -1821,6 +1889,54 @@ export default function App() {
     setFigureSheetOpen(true);
   }, [canRender, pbc, presentation, rendering]);
 
+  const openSetting = useCallback((tab: WorkbenchTab, target: string) => {
+    setCommandOpen(false);
+    setSettingTarget(target);
+    openWorkbench(tab, true);
+  }, [openWorkbench]);
+
+  const openFigureSetting = useCallback((target: string) => {
+    setSettingTarget(target);
+    showFigureSheet();
+  }, [showFigureSheet]);
+
+  useEffect(() => {
+    if (!settingTarget) return;
+    let frameRequest = 0;
+    let clearTimer = 0;
+    let attempts = 0;
+    const reveal = () => {
+      const target = document.querySelector<HTMLElement>(
+        `[data-setting-id="${settingTarget}"]`,
+      );
+      if (!target) {
+        attempts += 1;
+        if (attempts < 6) frameRequest = requestAnimationFrame(reveal);
+        else setSettingTarget((current) => current === settingTarget ? null : current);
+        return;
+      }
+      if (target instanceof HTMLDetailsElement) target.open = true;
+      target.closest<HTMLDetailsElement>("details")?.setAttribute("open", "");
+      target.classList.add("is-search-target");
+      target.scrollIntoView?.({ block: "center", behavior: "smooth" });
+      const focusTarget = target.matches("button:not(:disabled), input:not(:disabled), select:not(:disabled), summary")
+        ? target
+        : target.querySelector<HTMLElement>(
+          "button:not(:disabled), input:not(:disabled), select:not(:disabled), summary",
+        );
+      requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+      clearTimer = window.setTimeout(() => {
+        target.classList.remove("is-search-target");
+        setSettingTarget((current) => current === settingTarget ? null : current);
+      }, 1800);
+    };
+    frameRequest = requestAnimationFrame(reveal);
+    return () => {
+      cancelAnimationFrame(frameRequest);
+      window.clearTimeout(clearTimer);
+    };
+  }, [figureSheetOpen, settingTarget, workbenchTab]);
+
   const exportConfiguredFigure = useCallback(() => {
     if (!canRender || rendering) return;
     setFigureSheetOpen(false);
@@ -1898,6 +2014,13 @@ export default function App() {
   ]);
 
   const saveFigureRecipe = useCallback(() => {
+    if (hasStructureEdits) {
+      setNotice({
+        message: "Download and reopen the edited structure before saving a reproducible recipe",
+        tone: "status",
+      });
+      return;
+    }
     try {
       const recipe = currentFigureRecipe();
       downloadBlob(
@@ -1910,7 +2033,7 @@ export default function App() {
     } catch (error) {
       setNotice({ message: `Recipe unavailable · ${message(error)}`, tone: "error" });
     }
-  }, [currentFigureRecipe, manifest?.name]);
+  }, [currentFigureRecipe, hasStructureEdits, manifest?.name]);
 
   const showRecipeOpen = useCallback(() => {
     if (!manifest || rendering) return;
@@ -2077,12 +2200,122 @@ export default function App() {
       return;
     }
     setPresentation((current) => ({ ...current, ...change }));
-    setProfile("custom");
+    if (change.mode !== undefined) setProfile("custom");
   }, [capabilities]);
+
+  const applySceneProfile = useCallback((
+    selected: Exclude<SceneProfile, "auto" | "custom">,
+  ) => {
+    if (!capabilities) return;
+    setPresentation((current) => selectedProfilePresentation(
+      selected,
+      current,
+      cellAvailable,
+      forceAvailable,
+      canPlay,
+      capabilities,
+    ));
+    setProfile(selected);
+  }, [canPlay, capabilities, cellAvailable, forceAvailable]);
+
+  const applyFrameDraft = useCallback((nextFrame: FrameData) => {
+    const index = loadedFrame?.index ?? frameIndex;
+    frameDrafts.current.set(frameDraftKey(frameCoordinateMode, index), nextFrame);
+    setLoadedFrame({ index, data: nextFrame });
+    setEditedFrames((current) => {
+      const next = new Set(current);
+      next.add(index);
+      return next;
+    });
+  }, [frameCoordinateMode, frameIndex, loadedFrame?.index]);
+
+  const editSelectedAtom = useCallback((
+    atom: number,
+    element: string,
+    position: readonly number[],
+  ) => {
+    if (!manifest || !frame) return;
+    try {
+      const nextFrame = updateAtomPosition(frame, atom, position);
+      const nextManifest = updateAtomElement(manifest, atom, element);
+      applyFrameDraft(nextFrame);
+      if (atomSymbol(manifest, atom) !== atomSymbol(nextManifest, atom)) {
+        activeManifest.current = nextManifest;
+        sceneTopologyRef.current = null;
+        setSceneTopology(null);
+        setManifest(nextManifest);
+        setTopologyEdited(true);
+        setSceneRevision((current) => current + 1);
+      }
+      setNotice({
+        message: `${atomSymbol(nextManifest, atom)}${atom + 1} updated · local draft`,
+        tone: "status",
+      });
+    } catch (error) {
+      setNotice({ message: `Atom not updated · ${message(error)}`, tone: "error" });
+      throw error;
+    }
+  }, [applyFrameDraft, frame, manifest]);
+
+  const editCell = useCallback((
+    values: readonly number[],
+    axes: readonly boolean[],
+    scaleAtoms: boolean,
+  ) => {
+    if (!frame) return;
+    try {
+      const nextFrame = updateCell(frame, values, axes, scaleAtoms);
+      applyFrameDraft(nextFrame);
+      setPresentation((current) => ({ ...current, cell: true }));
+      setNotice({
+        message: `Cell updated · ${scaleAtoms ? "fractional positions kept" : "Cartesian positions kept"}`,
+        tone: "status",
+      });
+    } catch (error) {
+      setNotice({ message: `Cell not updated · ${message(error)}`, tone: "error" });
+      throw error;
+    }
+  }, [applyFrameDraft, frame]);
+
+  const resetStructureEdits = useCallback(() => {
+    const sourceManifest = originalManifest.current;
+    if (!sourceManifest) return;
+    frameDrafts.current.clear();
+    setEditedFrames(new Set());
+    setTopologyEdited(false);
+    activeManifest.current = sourceManifest;
+    sceneTopologyRef.current = null;
+    setSceneTopology(null);
+    setManifest(sourceManifest);
+    setSceneRevision((current) => current + 1);
+    void cache.current.get(frameIndex).then((data) => {
+      setLoadedFrame({ index: frameIndex, data });
+      setNotice({ message: "Local structure edits reset", tone: "status" });
+    }).catch((error: unknown) => {
+      setNotice({ message: `Could not reset edits · ${message(error)}`, tone: "error" });
+    });
+  }, [frameIndex]);
+
+  const downloadStructure = useCallback(() => {
+    if (!manifest || !frame) return;
+    try {
+      downloadBlob(
+        new Blob([frameToExtxyz(manifest, frame)], { type: "chemical/x-xyz;charset=utf-8" }),
+        structureFileName(manifest.name, displayedFrameIndex),
+      );
+      setNotice({ message: "Downloaded current structure", tone: "status" });
+    } catch (error) {
+      setNotice({ message: `Download unavailable · ${message(error)}`, tone: "error" });
+    }
+  }, [displayedFrameIndex, frame, manifest]);
 
   useEffect(() => {
     if (!manifest || !frame || !capabilities || profile !== "auto") return;
-    const key = `${manifest.name}:${manifest.topology.atom_count}`;
+    const key = [
+      manifest.name,
+      manifest.topology.atom_count,
+      capabilities.polyhedra ? "polyhedra" : "atoms",
+    ].join(":");
     if (autoProfileKey.current === key) return;
     autoProfileKey.current = key;
     setPresentation((current) => selectedProfilePresentation(
@@ -2279,7 +2512,7 @@ export default function App() {
       }
       if (primaryModifier && !event.shiftKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        showOpen();
+        if (!staticDemo) showOpen();
         return;
       }
       if (primaryModifier && !event.shiftKey && event.key.toLowerCase() === "k") {
@@ -2335,6 +2568,14 @@ export default function App() {
       if (event.key.toLowerCase() === "v" && capabilities && !event.repeat) {
         if (workbenchVisible && workbenchTab === "view") closeWorkbench(true);
         else openWorkbench("view", true);
+      } else if (event.key.toLowerCase() === "e" && capabilities && !event.repeat) {
+        if (workbenchVisible && workbenchTab === "edit") closeWorkbench(true);
+        else {
+          setEditTarget("cell");
+          openWorkbench("edit", true);
+        }
+      } else if (event.key.toLowerCase() === "d" && !event.repeat) {
+        setAppearance((current) => current === "dark" ? "light" : "dark");
       } else if (event.key.toLowerCase() === "w" && capabilities?.water && !event.repeat) {
         updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" });
       } else if (event.key.toLowerCase() === "b" && !event.repeat) {
@@ -2377,6 +2618,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     capabilities?.water,
+    appearance,
     canPlay,
     cellAvailable,
     closeWorkbench,
@@ -2425,7 +2667,14 @@ export default function App() {
       setCommandOpen(false);
     };
     const actions: CommandAction[] = [
-      { id: "open", label: "Open files", keywords: "structure trajectory PQ ASE load", detail: shortcutLabels.open, run: run(showOpen) },
+      {
+        id: "open",
+        label: staticDemo ? "Open files in local PQViewer" : "Open files",
+        keywords: "structure trajectory PQ ASE load",
+        detail: staticDemo ? "Install locally" : shortcutLabels.open,
+        disabled: staticDemo,
+        run: run(showOpen),
+      },
       { id: "play", label: playing ? "Pause trajectory" : "Play trajectory", keywords: "movie animation", detail: "Space", disabled: !canPlay, run: run(() => setPlaying((value) => !value)) },
       { id: "previous", label: "Previous frame", keywords: "back step", detail: "←", disabled: !canPlay || frameIndex === 0, run: run(() => { setPlaying(false); stepFrame(-1); }) },
       { id: "next", label: "Next frame", keywords: "forward step", detail: "→", disabled: !canPlay || frameIndex >= (manifest?.frame_count ?? 1) - 1, run: run(() => { setPlaying(false); stepFrame(1); }) },
@@ -2494,7 +2743,9 @@ export default function App() {
         id: "analysis-rdf",
         label: "Pair distribution",
         keywords: "trajectory rdf radial distribution structure analysis",
-        detail: analysisAvailable ? "PQAnalysis" : "Full periodic cell required",
+        detail: analysisAvailable
+          ? "PQAnalysis"
+          : staticDemo ? "Available locally" : "Full periodic cell required",
         disabled: !analysisAvailable,
         run: run(() => showRdfSetup("rdf")),
       },
@@ -2502,7 +2753,9 @@ export default function App() {
         id: "analysis-coordination",
         label: "Coordination",
         keywords: "trajectory coordination number rdf structure analysis",
-        detail: analysisAvailable ? "PQAnalysis" : "Full periodic cell required",
+        detail: analysisAvailable
+          ? "PQAnalysis"
+          : staticDemo ? "Available locally" : "Full periodic cell required",
         disabled: !analysisAvailable,
         run: run(() => showRdfSetup("coordination")),
       },
@@ -2514,12 +2767,68 @@ export default function App() {
         detail: view === viewPreset ? "Current" : String(index + 1),
         run: run(() => selectView(view)),
       })),
-      { id: "display", label: workbenchVisible && workbenchTab === "view" ? "Hide display controls" : "Show display controls", keywords: "view representation settings", detail: "V", disabled: !capabilities, run: run(() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view")) },
-      { id: "export", label: "Export figure", keywords: "render image png publication", detail: shortcutLabels.export, disabled: !canRender, run: run(showRender) },
-      { id: "figure-options", label: "Figure options", keywords: "render image tiff dpi transparent labels legend scale", disabled: !canRender, run: run(showFigureSheet) },
-      { id: "figure-save-recipe", label: "Save figure recipe", keywords: "reproducible view camera scene json", disabled: !canRender, run: run(saveFigureRecipe) },
+      { id: "view-tools", label: workbenchVisible && workbenchTab === "view" ? "Close View tools" : "Open View tools", keywords: "display representation appearance settings", breadcrumb: "Viewer tools", detail: "V", disabled: !capabilities, run: run(() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view")) },
+      { id: "edit-tools", label: workbenchVisible && workbenchTab === "edit" ? "Close Edit tools" : "Open Edit tools", keywords: "structure atom element coordinates lattice vectors pbc cell", breadcrumb: "Viewer tools", detail: "E", disabled: !manifest || !frame, run: run(() => {
+        if (workbenchVisible && workbenchTab === "edit") closeWorkbench(false);
+        else {
+          setEditTarget("cell");
+          openWorkbench("edit");
+        }
+      }) },
+      { id: "analyze-tools", label: workbenchVisible && workbenchTab === "analyze" ? "Close Analyze tools" : "Open Analyze tools", keywords: "selection inspect measure distance angle dihedral rdf coordination", breadcrumb: "Viewer tools", disabled: !manifest || !frame, run: run(() => workbenchVisible && workbenchTab === "analyze" ? closeWorkbench(false) : openWorkbench("analyze")) },
+      { id: "setting-representation", label: "Representation", keywords: "view display style ball stick spacefill licorice lines ribbon protein polyhedra surface", breadcrumb: "View › Representation", disabled: !capabilities, run: run(() => openSetting("view", "view-representation")) },
+      { id: "setting-atom-appearance", label: "Atom color and size", keywords: "atom atoms color colour element residue chain radius size bond thickness quality hydrogen", breadcrumb: "View › Atoms", disabled: !capabilities, run: run(() => openSetting("view", "view-atoms")) },
+      { id: "setting-bonds", label: "Bond display", keywords: "bond bonds connectivity crossing across through boundary periodic unit cell clip clutter connection", breadcrumb: "View › Layers › Bonds", disabled: !capabilities, run: run(() => openSetting("view", "view-bonds")) },
+      { id: "setting-periodic", label: "Periodic images and wrapping", keywords: "unit cell box periodic pbc wrap unwrap reconstruct molecule repeat replicate supercell mirror centered crossing boundary", breadcrumb: "View › Periodic cell", disabled: !cellAvailable, discoverableWhenDisabled: true, run: run(() => openSetting("view", "view-periodic")) },
+      { id: "setting-theme", label: "Light or dark appearance", keywords: "dark mode light theme appearance contrast colors", breadcrumb: "View › Appearance", run: run(() => openSetting("view", "view-appearance")) },
+      { id: "setting-cell", label: "Cell lengths and angles", keywords: "edit unit cell lattice parameters lengths angles alpha beta gamma pbc periodic axes", breadcrumb: "Edit › Cell", disabled: !manifest || !frame, run: run(() => {
+        setEditTarget("cell");
+        openSetting("edit", "edit-cell");
+      }) },
+      { id: "setting-cell-vectors", label: "Cell lattice vectors", keywords: "edit cell lattice vectors matrix ax ay az bx by bz cx cy cz", breadcrumb: "Edit › Cell › Vectors", disabled: !manifest || !frame, run: run(() => {
+        setEditTarget("cell");
+        openSetting("edit", "edit-cell-vectors");
+      }) },
+      { id: "setting-atom-edit", label: "Edit selected atom", keywords: "edit atom element identity coordinates position x y z", breadcrumb: "Edit › Atom", disabled: selectedAtoms.length !== 1, discoverableWhenDisabled: true, detail: selectedAtoms.length === 1 ? undefined : "Select one atom first", run: run(() => {
+        setEditTarget("atom");
+        openSetting("edit", "edit-atom");
+      }) },
+      { id: "setting-measurement", label: "Distance, angle, and dihedral", keywords: "analyze measure measurement distance bond length angle dihedral select two three four atoms", breadcrumb: "Analyze › Measurements", disabled: !manifest || !frame, run: run(() => openSetting("analyze", "analyze-measurement")) },
+      { id: "setting-export-background", label: "Transparent figure background", keywords: "export transparent transparency alpha background image png publication", breadcrumb: "Export › File", disabled: !canRender, run: run(() => openFigureSetting("export-background")) },
+      { id: "download-structure", label: "Download current structure", keywords: "save export extxyz atoms cell", detail: "EXTXYZ", disabled: !manifest || !frame, run: run(downloadStructure) },
+      ...(hasStructureEdits ? [{
+        id: "reset-structure-edits",
+        label: "Reset local structure edits",
+        keywords: "undo restore atom cell",
+        run: run(resetStructureEdits),
+      }] : []),
+      { id: "appearance", label: appearance === "dark" ? "Use light appearance" : "Use dark appearance", keywords: "theme colors light dark", detail: "D", run: run(() => setAppearance((current) => current === "dark" ? "light" : "dark")) },
+      ...([
+        ["molecule", "Molecule"],
+        ["protein", "Protein"],
+        ["liquid", "Liquid"],
+        ["crystal", "Crystal"],
+        ["mof", "MOF"],
+        ["trajectory", "Trajectory"],
+      ] as const).map(([selected, label]) => ({
+        id: `profile-${selected}`,
+        label: `Preset · ${label}`,
+        keywords: "representation scientific view style",
+        detail: profile === selected ? "Current" : undefined,
+        disabled: selected === "protein"
+          ? !capabilities?.ribbon
+          : selected === "liquid"
+            ? !cellAvailable || !capabilities?.water
+            : selected === "crystal" || selected === "mof"
+              ? !cellAvailable
+            : selected === "trajectory" ? !canPlay : false,
+        run: run(() => applySceneProfile(selected)),
+      })),
+      { id: "export", label: "Quick export PNG", keywords: "render image png publication save", breadcrumb: "Export", detail: shortcutLabels.export, disabled: !canRender, run: run(showRender) },
+      { id: "figure-options", label: "Export figure", keywords: "render image tiff dpi transparent labels legend scale publication", breadcrumb: "Export", disabled: !canRender, run: run(showFigureSheet) },
+      { id: "figure-save-recipe", label: "Save figure recipe", keywords: "reproducible view camera scene json", detail: hasStructureEdits ? "Download edited structure first" : undefined, disabled: !canRender || hasStructureEdits, run: run(saveFigureRecipe) },
       { id: "figure-open-recipe", label: "Open figure recipe", keywords: "restore reproducible view camera scene json", disabled: !manifest, run: run(showRecipeOpen) },
-      ...(["ball-stick", "spacefill", "lines"] as RepresentationMode[]).map((mode) => ({
+      ...(["ball-stick", "spacefill", "licorice", "lines"] as RepresentationMode[]).map((mode) => ({
         id: `mode-${mode}`,
         label: `Representation · ${representationLabel(mode)}`,
         keywords: "style atoms bonds",
@@ -2544,7 +2853,23 @@ export default function App() {
         discoverableWhenDisabled: true,
         run: run(() => updatePresentation({ mode: "polyhedra" })),
       },
+      {
+        id: "mode-surface",
+        label: "Representation · Surface",
+        keywords: "style molecular surface solvent vdw density",
+        detail: presentation.mode === "surface" ? "Current · interactive" : "Interactive",
+        run: run(() => updatePresentation({ mode: "surface" })),
+      },
       ...(capabilities?.water ? [{ id: "water", label: presentation.water === "hide" ? "Show water" : "Hide water", keywords: "solvent", detail: "W", run: run(() => updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" })) }] : []),
+      {
+        id: "bonds",
+        label: presentation.bonds ? "Hide bonds" : "Show bonds",
+        keywords: "connections topology periodic clutter",
+        disabled: presentation.mode === "spacefill"
+          || presentation.mode === "ribbon"
+          || presentation.mode === "polyhedra",
+        run: run(() => updatePresentation({ bonds: !presentation.bonds })),
+      },
       ...(cellAvailable ? [{ id: "cell", label: presentation.cell ? "Hide cell" : "Show cell", keywords: "box periodic pbc", detail: "C", run: run(() => updatePresentation({ cell: !presentation.cell })) }] : []),
       ...(forceAvailable ? [{ id: "forces", label: presentation.forces ? "Hide forces" : "Show forces", keywords: "vectors arrows", detail: "F", run: run(() => updatePresentation({ forces: !presentation.forces })) }] : []),
       ...(velocityAvailable ? [{ id: "velocities", label: presentation.velocities ? "Hide velocities" : "Show velocities", keywords: "vectors arrows motion speed", run: run(() => updatePresentation({ velocities: !presentation.velocities })) }] : []),
@@ -2683,7 +3008,8 @@ export default function App() {
         id: "inspect-selection",
         label: "Inspect selected atom",
         keywords: "selection properties coordinates",
-        run: run(() => openWorkbench("inspect")),
+        breadcrumb: "Analyze › Atom",
+        run: run(() => openWorkbench("analyze")),
       }] : []),
       ...(selectedAtoms.length > 0 ? [{
         id: "clear-selection",
@@ -2703,6 +3029,8 @@ export default function App() {
       },
     }));
   }, [
+    appearance,
+    applySceneProfile,
     canPlay,
     canPlotMeasurement,
     canRender,
@@ -2715,22 +3043,28 @@ export default function App() {
     comparePinnedMeasurements,
     currentBookmarked,
     displayedFrameMark,
+    downloadStructure,
+    frame,
     forceAvailable,
     frameIndex,
-    manifest?.frame_count,
-    manifest?.topology.atom_count,
+    hasStructureEdits,
+    manifest,
     measurementPlotOpen,
     minimumImage,
     namedSelections,
+    openFigureSetting,
+    openSetting,
     openWorkbench,
     pinSelectedMeasurement,
     playing,
     pinnedMeasurements,
     pbc,
+    profile,
     presentation,
     propertySeries,
     recallNamedSelection,
     restorePinnedMeasurement,
+    resetStructureEdits,
     selectView,
     selectElement,
     selectScope,
@@ -2783,8 +3117,9 @@ export default function App() {
     ...(analysisAvailable ? ["analysis-rdf"] : []),
     ...(canPlay ? ["play", "previous", "next"] : []),
     "fit",
-    "display",
-    "export",
+    "view-tools",
+    "edit-tools",
+    "analyze-tools",
     "figure-options",
   ], [
     canPlay,
@@ -2802,6 +3137,7 @@ export default function App() {
   const workspaceClass = [
     "workspace",
     workbenchVisible ? "workbench-open" : "workbench-closed",
+    workbenchExpanded ? "workbench-expanded" : "",
     rendering ? "is-rendering" : "",
     canPlay ? "timeline-present" : "timeline-absent",
     selectedAtoms.length > 0 ? "selection-present" : "",
@@ -2809,13 +3145,12 @@ export default function App() {
     measurementPlotOpen || study.plot ? "measurement-plot-open" : "",
     playbackOptionsOpen ? "playback-options-open" : "",
   ].filter(Boolean).join(" ");
-
   return (
     <main
       className="app-shell"
       onDragEnter={(event) => {
         event.preventDefault();
-        if (rendering) return;
+        if (rendering || staticDemo) return;
         dragDepth.current += 1;
         setDropActive(true);
       }}
@@ -2829,7 +3164,7 @@ export default function App() {
         event.preventDefault();
         dragDepth.current = 0;
         setDropActive(false);
-        if (rendering) return;
+        if (rendering || staticDemo) return;
         void openSelectedFiles([...event.dataTransfer.files]);
       }}
     >
@@ -2861,11 +3196,8 @@ export default function App() {
       />
       <div className={workspaceClass} aria-busy={loadState === "loading" || frameLoading || opening || rendering}>
         <header className="topbar">
-          <div
-            className="identity"
-            title={manifest?.name || "Molecular trajectory"}
-          >
-            <img className="identity-mark" src="/pq-logo.png" alt="" />
+          <div className="identity" aria-label="Current structure">
+            <img className="identity-mark" src={`${import.meta.env.BASE_URL}pq-logo.png`} alt="" />
             <div>
               <strong>PQViewer</strong>
               <span title={manifest?.name || "Molecular trajectory"}>
@@ -2874,49 +3206,93 @@ export default function App() {
             </div>
           </div>
           <div className="topbar-tools">
-            {manifest && (
-              <div className="scene-status">
-                <span><strong>{manifest.topology.atom_count.toLocaleString()}</strong> {manifest.topology.atom_count === 1 ? "atom" : "atoms"}</span>
-                <span><strong>{manifest.frame_count.toLocaleString()}</strong> {manifest.frame_count === 1 ? "frame" : "frames"}</span>
-                {cellAvailable && <span>PBC <strong>{pbc.map((value, index) => value ? "abc"[index] : "").join("") || "off"}</strong></span>}
-              </div>
-            )}
-            <button className="open-button" type="button" disabled={rendering} aria-keyshortcuts="Meta+O Control+O" onClick={showOpen}><Icon name="folder" />Open</button>
+            <button
+              className="open-button"
+              type="button"
+              disabled={rendering || staticDemo}
+              aria-keyshortcuts="Meta+O Control+O"
+              title={staticDemo ? "Open local files with the installed Python viewer" : undefined}
+              onClick={showOpen}
+            ><Icon name="folder" />Open</button>
             <button
               className="command-button"
               type="button"
-              aria-label="Search commands"
+              aria-label="Search atoms, settings, and commands"
               aria-keyshortcuts="Meta+K Control+K"
               aria-haspopup="dialog"
               aria-expanded={commandOpen}
               disabled={rendering}
-              title={`Search commands · ${shortcutLabels.commands}`}
+              title={`Search atoms, settings, and commands · ${shortcutLabels.commands}`}
               onClick={showCommands}
             ><Icon name="search" /><span>Search</span><kbd>{shortcutLabels.commands}</kbd></button>
-            <button
-              ref={panelButtonRef}
-              className="panel-button"
-              type="button"
-              aria-label={workbenchVisible && workbenchTab === "view" ? "Hide display controls" : "Show display controls"}
-              aria-controls="workbench"
-              aria-expanded={workbenchVisible && workbenchTab === "view"}
-              disabled={rendering || !capabilities}
-              onClick={() => workbenchVisible && workbenchTab === "view" ? closeWorkbench(false) : openWorkbench("view", true)}
-            ><Icon name="sliders" /><span>View</span></button>
-            <div className="figure-control">
-              <button ref={renderButtonRef} className="render-button" type="button" disabled={!canRender || rendering} aria-keyshortcuts="Meta+Shift+S Control+Shift+S" onClick={showRender}><Icon name="image" />{rendering ? "Exporting…" : "Figure"}</button>
+            <nav className="task-navigation" aria-label="Viewer tools">
               <button
-                ref={figureOptionsButtonRef}
-                className="figure-options-button"
+                ref={viewButtonRef}
+                className="task-button"
                 type="button"
-                aria-label="Figure options"
-                aria-controls="figure-sheet"
-                aria-expanded={figureSheetOpen}
-                aria-haspopup="dialog"
-                disabled={!canRender || rendering}
-                onClick={() => figureSheetOpen ? setFigureSheetOpen(false) : showFigureSheet()}
-              ><Icon name="more" /></button>
-            </div>
+                aria-controls="workbench"
+                aria-expanded={workbenchVisible && workbenchTab === "view"}
+                disabled={rendering || !capabilities}
+                onClick={() => workbenchVisible && workbenchTab === "view"
+                  ? closeWorkbench(false)
+                  : openWorkbench("view", true)}
+              >View</button>
+              <button
+                ref={editButtonRef}
+                className="task-button"
+                type="button"
+                aria-controls="workbench"
+                aria-expanded={workbenchVisible && workbenchTab === "edit"}
+                disabled={rendering || !capabilities}
+                onClick={() => {
+                  if (workbenchVisible && workbenchTab === "edit") closeWorkbench(false);
+                  else {
+                    setEditTarget("cell");
+                    openWorkbench("edit", true);
+                  }
+                }}
+              >Edit</button>
+              <button
+                ref={analyzeButtonRef}
+                className="task-button"
+                type="button"
+                aria-controls="workbench"
+                aria-expanded={workbenchVisible && workbenchTab === "analyze"}
+                disabled={rendering || !capabilities}
+                onClick={() => workbenchVisible && workbenchTab === "analyze"
+                  ? closeWorkbench(false)
+                  : openWorkbench("analyze", true)}
+              >Analyze</button>
+            </nav>
+            <button
+              className="tools-button"
+              type="button"
+              aria-label="Open viewer tools"
+              aria-controls="workbench"
+              aria-expanded={workbenchVisible}
+              disabled={rendering || !capabilities}
+              onClick={() => workbenchVisible ? closeWorkbench(false) : openWorkbench("view", true)}
+            ><Icon name="sliders" /><span>Tools</span></button>
+            <button
+              ref={exportButtonRef}
+              className="render-button export-button"
+              type="button"
+              aria-label="Export figure"
+              aria-controls="figure-sheet"
+              aria-expanded={figureSheetOpen}
+              aria-haspopup="dialog"
+              disabled={!canRender || rendering}
+              aria-keyshortcuts="Meta+Shift+S Control+Shift+S"
+              onClick={() => figureSheetOpen ? setFigureSheetOpen(false) : showFigureSheet()}
+            ><Icon name="image" />{rendering ? "Exporting…" : "Export"}</button>
+            <button
+              className="help-button"
+              type="button"
+              aria-label="Help and keyboard shortcuts"
+              aria-keyshortcuts="?"
+              disabled={rendering}
+              onClick={showShortcuts}
+            ><span>Help</span><strong aria-hidden="true">?</strong></button>
           </div>
         </header>
 
@@ -2931,6 +3307,7 @@ export default function App() {
 
         {manifest && manifest.frame_count > 0 ? (
           <MoleculeScene
+            key={sceneRevision}
             ref={moleculeSceneRef}
             manifest={manifest}
             frame={frame}
@@ -2947,7 +3324,7 @@ export default function App() {
             forceScale={forceScale}
             velocityScale={velocityScale}
             trajectoryOverlays={trajectoryOverlays}
-            appearance="light"
+            appearance={appearance}
             onSelect={selectAtom}
             onSelectMany={selectManyAtoms}
             onSceneInfo={setSceneInfo}
@@ -2957,25 +3334,99 @@ export default function App() {
           <div className="canvas-field" />
         )}
 
-        {manifest && capabilities && <aside ref={workbenchRef} className={workbenchTab === "inspect" ? "workbench atom-card" : "workbench"} id="workbench" aria-labelledby="workbench-title" hidden={!workbenchVisible} tabIndex={-1}>
+        {manifest
+          && manifest.frame_count > 0
+          && !canvasHintDismissed
+          && selectedAtoms.length === 0
+          && !workbenchVisible
+          && !commandOpen
+          && !figureSheetOpen
+          && (
+          <div className="canvas-hint" role="status" aria-label="Viewer controls">
+            <span><strong>Drag</strong> to rotate</span>
+            <span><strong>Click</strong> an atom to inspect</span>
+            <span><strong>Shift-click</strong> to measure</span>
+            <button type="button" aria-label="Dismiss viewer hint" onClick={() => setCanvasHintDismissed(true)}>
+              <Icon name="close" />
+            </button>
+          </div>
+        )}
+
+        {manifest && capabilities && <aside
+          ref={workbenchRef}
+          className={`workbench${workbenchExpanded ? " is-expanded" : ""}`}
+          id="workbench"
+          aria-labelledby="workbench-title"
+          hidden={!workbenchVisible}
+          tabIndex={-1}
+        >
           <div className="workbench-heading">
-            <strong id="workbench-title">{
-              workbenchTab === "view"
-                ? "View"
-                : workbenchTab === "summary"
-                  ? "Selection"
-                  : selectedAtom === null
-                    ? "Atom"
-                    : `${atomSymbol(manifest, selectedAtom)} · ${selectedAtom + 1}`
-            }</strong>
-            <button className="icon-button" type="button" disabled={rendering} onClick={() => {
-              closeWorkbench(true);
-            }} aria-label="Close"><Icon name="close" /></button>
+            <div className="workbench-heading-copy">
+              <strong id="workbench-title">{
+                workbenchTab === "view"
+                  ? "View"
+                  : workbenchTab === "edit"
+                    ? editTarget === "atom" && selectedAtoms.length === 1 && selectedAtom !== null
+                      ? `Edit ${atomSymbol(manifest, selectedAtom)} · ${selectedAtom + 1}`
+                      : "Edit structure"
+                    : "Analyze"
+              }</strong>
+              {workbenchTab === "edit" && (
+                <span>{hasStructureEdits ? "Local draft · included in export" : `${manifest.topology.atom_count.toLocaleString()} atoms · frame ${displayedFrameIndex + 1}`}</span>
+              )}
+              {workbenchTab === "view" && (
+                <span>{representationLabel(presentation.mode)} · interactive scene</span>
+              )}
+              {workbenchTab === "analyze" && (
+                <span>{selectedAtoms.length === 0
+                  ? "Selection and trajectory tools"
+                  : `${selectedAtoms.length.toLocaleString()} selected · ${selectionFormula || "selection"}`}</span>
+              )}
+            </div>
+            <div className="workbench-heading-actions">
+              <button
+                className="workbench-expand-button"
+                type="button"
+                aria-label={workbenchExpanded ? "Collapse tools" : "Expand tools"}
+                aria-expanded={workbenchExpanded}
+                onClick={() => setWorkbenchExpanded((current) => !current)}
+              ><Icon name="next" /></button>
+              <button className="icon-button" type="button" disabled={rendering} onClick={() => {
+                closeWorkbench(true);
+              }} aria-label="Close"><Icon name="close" /></button>
+            </div>
+          </div>
+          <div className="workbench-tabs" role="tablist" aria-label="Viewer inspector">
+            <button
+              type="button"
+              role="tab"
+              className={workbenchTab === "view" ? "is-active" : ""}
+              aria-selected={workbenchTab === "view"}
+              onClick={() => setWorkbenchTab("view")}
+            >View</button>
+            <button
+              type="button"
+              role="tab"
+              className={workbenchTab === "edit" ? "is-active" : ""}
+              aria-selected={workbenchTab === "edit"}
+              onClick={() => {
+                if (selectedAtoms.length !== 1) setEditTarget("cell");
+                setWorkbenchTab("edit");
+              }}
+            >Edit</button>
+            <button
+              type="button"
+              role="tab"
+              className={workbenchTab === "analyze" ? "is-active" : ""}
+              aria-selected={workbenchTab === "analyze"}
+              onClick={() => setWorkbenchTab("analyze")}
+            >Analyze</button>
           </div>
           <div className="workbench-body">
             {workbenchTab === "view" && <ScenePanel
               presentation={presentation}
               capabilities={capabilities}
+              appearance={appearance}
               cellAvailable={cellAvailable}
               forceAvailable={forceAvailable}
               velocityAvailable={velocityAvailable}
@@ -2986,19 +3437,83 @@ export default function App() {
               forceScale={forceScale}
               velocityScale={velocityScale}
               onPresentation={updatePresentation}
+              onAppearance={setAppearance}
               onForceScale={setForceScale}
               onVelocityScale={setVelocityScale}
             />}
-            {workbenchTab === "inspect" && <Inspector
+            {workbenchTab === "edit" && <div className="edit-panel">
+              <div className="edit-target-options" role="group" aria-label="Edit target">
+                <button
+                  type="button"
+                  className={editTarget === "cell" ? "is-active" : ""}
+                  aria-pressed={editTarget === "cell"}
+                  onClick={() => setEditTarget("cell")}
+                >Cell + structure</button>
+                <button
+                  type="button"
+                  className={editTarget === "atom" ? "is-active" : ""}
+                  aria-pressed={editTarget === "atom"}
+                  disabled={selectedAtoms.length !== 1}
+                  title={selectedAtoms.length === 1 ? "Edit the selected atom" : "Select one atom first"}
+                  onClick={() => setEditTarget("atom")}
+                >Selected atom</button>
+              </div>
+              {editTarget === "cell" && <StructurePanel
+                manifest={manifest}
+                frame={frame}
+                frameIndex={displayedFrameIndex}
+                pbc={pbc}
+                editedFrame={editedFrames.has(displayedFrameIndex)}
+                topologyEdited={topologyEdited}
+                revealCellMode={settingTarget === "edit-cell-vectors" ? "vectors" : undefined}
+                onCellEdit={editCell}
+                onDownload={downloadStructure}
+                onReset={resetStructureEdits}
+              />}
+              {editTarget === "atom" && selectedAtoms.length === 1 && <div data-setting-id="edit-atom">
+                <Inspector
+                  manifest={manifest}
+                  frame={frame}
+                  selectedAtom={selectedAtom}
+                  selectedPosition={selectedPosition(activeSelectionPositions, 0)}
+                  cellAvailable={cellAvailable}
+                  editedFrame={editedFrames.has(displayedFrameIndex)}
+                  topologyEdited={topologyEdited}
+                  editable
+                  onEdit={editSelectedAtom}
+                />
+              </div>}
+            </div>}
+            {workbenchTab === "analyze" && selectedAtoms.length === 1 && <Inspector
               manifest={manifest}
               frame={frame}
               selectedAtom={selectedAtom}
-              selectedPosition={selectedPosition(activeSelectionPositions, selectedAtoms.length - 1)}
+              selectedPosition={selectedPosition(activeSelectionPositions, 0)}
               cellAvailable={cellAvailable}
+              editedFrame={editedFrames.has(displayedFrameIndex)}
+              topologyEdited={topologyEdited}
+              editable={false}
+              onEdit={editSelectedAtom}
+              onRequestEdit={() => {
+                setEditTarget("atom");
+                setWorkbenchTab("edit");
+              }}
             />}
-            {workbenchTab === "summary" && <SelectionSummaryPanel
+            {workbenchTab === "analyze" && selectedAtoms.length !== 1 && <AnalyzePanel
+              selectedCount={selectedAtoms.length}
+              selectionFormula={selectionFormula}
               summary={selectionSummary}
               uniqueAtoms={new Set(selectedAtoms.map(({ atom }) => atom)).size}
+              canPlot={canPlotMeasurement}
+              plotOpen={measurementPlotOpen}
+              canPin={selectionIntent === "measurement" && selectedAtoms.length >= 2 && selectedAtoms.length <= 4}
+              analysisAvailable={analysisAvailable}
+              staticDemo={staticDemo}
+              onPlot={() => measurementPlotOpen ? closeMeasurementPlot(false) : showMeasurementPlot()}
+              onPin={pinSelectedMeasurement}
+              onRdf={() => showRdfSetup("rdf")}
+              onCoordination={() => showRdfSetup("coordination")}
+              onClear={() => setSelectedAtoms([])}
             />}
           </div>
         </aside>}
@@ -3059,12 +3574,12 @@ export default function App() {
             onPin={pinSelectedMeasurement}
             onTracking={setTrackingMode}
             onAnalyze={() => showRdfSetup("rdf")}
-            onDetails={() => workbenchVisible && workbenchTab === "inspect"
+            onDetails={() => workbenchVisible && workbenchTab === "analyze"
               ? closeWorkbench(false)
-              : openWorkbench("inspect", true)}
-            onSummary={() => workbenchVisible && workbenchTab === "summary"
+              : openWorkbench("analyze", true)}
+            onSummary={() => workbenchVisible && workbenchTab === "analyze"
               ? closeWorkbench(false)
-              : openWorkbench("summary", true)}
+              : openWorkbench("analyze", true)}
           />
         )}
 
@@ -3277,9 +3792,10 @@ export default function App() {
             onScaleBarLength={setScaleBarLength}
             onExport={exportConfiguredFigure}
             onSaveRecipe={saveFigureRecipe}
+            recipeSaveDisabled={hasStructureEdits}
             onOpenRecipe={showRecipeOpen}
             onClose={() => setFigureSheetOpen(false)}
-            returnFocusRef={figureOptionsButtonRef}
+            returnFocusRef={exportButtonRef}
           />
         )}
         {manifest && (
@@ -3316,6 +3832,7 @@ interface CommandAction {
   id: string;
   label: string;
   keywords?: string;
+  breadcrumb?: string;
   detail?: string;
   disabled?: boolean;
   discoverableWhenDisabled?: boolean;
@@ -3330,7 +3847,7 @@ export function shouldNormalizePolyhedra(
   return mode === "polyhedra" && available === false && !recipeApplying;
 }
 
-export function filterCommandActions<T extends { label: string; keywords?: string; detail?: string; disabled?: boolean }>(
+export function filterCommandActions<T extends { label: string; keywords?: string; breadcrumb?: string; detail?: string; disabled?: boolean }>(
   actions: readonly T[],
   query: string,
 ): T[] {
@@ -3339,6 +3856,7 @@ export function filterCommandActions<T extends { label: string; keywords?: strin
     action,
     label: action.label,
     keywords: action.keywords,
+    breadcrumb: action.breadcrumb,
     detail: action.detail,
     disabled: action.disabled,
   }));
@@ -3455,6 +3973,7 @@ function FigureSheet({
   onScaleBarLength,
   onExport,
   onSaveRecipe,
+  recipeSaveDisabled,
   onOpenRecipe,
   onClose,
   returnFocusRef,
@@ -3472,6 +3991,7 @@ function FigureSheet({
   onScaleBarLength: (length: number) => void;
   onExport: () => void;
   onSaveRecipe: () => void;
+  recipeSaveDisabled: boolean;
   onOpenRecipe: () => void;
   onClose: () => void;
   returnFocusRef: Readonly<{ current: HTMLElement | null }>;
@@ -3489,15 +4009,15 @@ function FigureSheet({
       className="figure-sheet export-sheet"
       id="figure-sheet"
       role="dialog"
-      aria-label="Figure options"
+      aria-label="Export figure"
       tabIndex={-1}
     >
       <header className="export-heading">
         <div>
-          <strong>Figure</strong>
+          <strong>Export figure</strong>
           <span>{output.width.toLocaleString()} × {output.height.toLocaleString()} px · {formatNumber(output.dpi)} DPI</span>
         </div>
-        <button className="icon-button" type="button" onClick={onClose} aria-label="Close figure options"><Icon name="close" /></button>
+        <button className="icon-button" type="button" onClick={onClose} aria-label="Close export"><Icon name="close" /></button>
       </header>
       <div className="export-body">
         <section className="figure-section">
@@ -3571,7 +4091,7 @@ function FigureSheet({
               </button>
             ))}
           </div>
-          <div className="figure-choice-row" role="group" aria-label="Figure background">
+          <div className="figure-choice-row" data-setting-id="export-background" role="group" aria-label="Figure background">
             <button
               type="button"
               className={output.background.kind === "solid" ? "is-active" : ""}
@@ -3656,7 +4176,12 @@ function FigureSheet({
           <p>Save this source, frame, scene, and camera as one reproducible view.</p>
           <div>
             <button type="button" onClick={onOpenRecipe}>Open</button>
-            <button type="button" onClick={onSaveRecipe}>Save</button>
+            <button
+              type="button"
+              disabled={recipeSaveDisabled}
+              title={recipeSaveDisabled ? "Download and reopen the edited structure first" : undefined}
+              onClick={onSaveRecipe}
+            >Save</button>
           </div>
         </section>
       </div>
@@ -3708,12 +4233,12 @@ function CommandPalette({
   };
 
   return <div className="command-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <section ref={panelRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Commands" tabIndex={-1}>
+    <section ref={panelRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Search" tabIndex={-1}>
       <label className="command-search"><Icon name="search" /><input
         ref={inputRef}
         value={query}
-        placeholder="Search commands"
-        aria-label="Search commands"
+        placeholder="Search atoms, settings, and commands"
+        aria-label="Search atoms, settings, and commands"
         role="combobox"
         aria-autocomplete="list"
         aria-controls="command-results"
@@ -3744,14 +4269,17 @@ function CommandPalette({
             if (!action.disabled) action.run();
           }}
         >
-          <span>{action.label}</span>
-          {action.detail && (
+          <span className="command-result-copy">
+            <span>{action.label}</span>
+            {action.breadcrumb && <small>{action.breadcrumb}</small>}
+          </span>
+          {action.detail && <span className="command-result-detail">{
             action.disabled
               ? <small>{action.detail}</small>
               : <kbd>{action.detail}</kbd>
-          )}
+          }</span>}
         </button>)}
-        {visible.length === 0 && <p>No commands found</p>}
+        {visible.length === 0 && <p>No matching atoms, settings, or commands</p>}
       </div>
     </section>
   </div>;
@@ -3788,7 +4316,8 @@ function ShortcutSheet({
         ["1 / 2 / 3 / 4", "3D / XY / XZ / YZ"],
         ["↑ / ↓", "Browse atoms"],
         ["Enter", "Toggle atom"],
-        ["V", "View controls"],
+        ["E / V", "Edit / View tools"],
+        ["D", "Light / dark appearance"],
         ["B", "Bonds / lines"],
         ["C / F / W", "Cell / forces / water"],
       ],
@@ -3796,7 +4325,7 @@ function ShortcutSheet({
     {
       title: "Workspace",
       items: [
-        [shortcutLabels.commands, "Search commands"],
+        [shortcutLabels.commands, "Search atoms, settings, commands"],
         [shortcutLabels.open, "Open files"],
         [shortcutLabels.export, "Export figure"],
         ["? / Esc", "Shortcuts / close"],
@@ -3807,7 +4336,7 @@ function ShortcutSheet({
     ["l / h", "Next / previous frame"],
     ["L / H", "Forward / back ten"],
     ["gg / G", "First / last frame"],
-    [":", "Search commands"],
+    [":", "Search atoms, settings, commands"],
     ["Ctrl [", "Close surface"],
   ];
 
@@ -3836,9 +4365,231 @@ function ShortcutSheet({
   </div>;
 }
 
+function StructurePanel({
+  manifest,
+  frame,
+  frameIndex,
+  pbc,
+  editedFrame,
+  topologyEdited,
+  revealCellMode,
+  onCellEdit,
+  onDownload,
+  onReset,
+}: {
+  manifest: Manifest;
+  frame: FrameData | null;
+  frameIndex: number;
+  pbc: [boolean, boolean, boolean];
+  editedFrame: boolean;
+  topologyEdited: boolean;
+  revealCellMode?: "parameters" | "vectors";
+  onCellEdit: (
+    values: readonly number[],
+    pbc: readonly boolean[],
+    scaleAtoms: boolean,
+  ) => void;
+  onDownload: () => void;
+  onReset: () => void;
+}) {
+  const cell = cellMatrix(frame);
+  const cellKey = [
+    frameIndex,
+    ...(cell ?? []),
+    ...pbc.map(Number),
+  ].join(":");
+  const dirty = editedFrame || topologyEdited;
+  return <div className="structure-panel">
+    <section className="workbench-section structure-overview">
+      <div className="structure-fact-grid">
+        <div><span>Formula</span><strong>{structureFormula(manifest)}</strong></div>
+        <div><span>Atoms</span><strong>{manifest.topology.atom_count.toLocaleString()}</strong></div>
+        <div><span>Frames</span><strong>{manifest.frame_count.toLocaleString()}</strong></div>
+        <div><span>Boundary</span><strong>{cell ? periodicAxesLabel(pbc) : "Nonperiodic"}</strong></div>
+      </div>
+      <p className="scientific-note">
+        Coordinates are Cartesian in Å. The displayed PQ cell remains centered at −L/2 to +L/2.
+      </p>
+    </section>
+    <CellEditor
+      key={`${cellKey}:${revealCellMode ?? ""}`}
+      frame={frame}
+      pbc={pbc}
+      initialMode={revealCellMode}
+      onApply={onCellEdit}
+    />
+    <section className="workbench-section structure-actions">
+      <button type="button" className="primary-panel-action" onClick={onDownload}>
+        Download current frame
+        <small>EXTXYZ</small>
+      </button>
+      <button type="button" onClick={onReset} disabled={!dirty}>Reset local edits</button>
+      <p>Edits stay local until downloaded. Figures and exports use the edited structure.</p>
+    </section>
+  </div>;
+}
+
+function CellEditor({
+  frame,
+  pbc,
+  initialMode = "parameters",
+  onApply,
+}: {
+  frame: FrameData | null;
+  pbc: [boolean, boolean, boolean];
+  initialMode?: "parameters" | "vectors";
+  onApply: (
+    values: readonly number[],
+    pbc: readonly boolean[],
+    scaleAtoms: boolean,
+  ) => void;
+}) {
+  const sourceCell = cellMatrix(frame);
+  const baseline = sourceCell ?? suggestedCell(frame);
+  const baselineParameters = cellParameters(baseline);
+  const [mode, setMode] = useState<"parameters" | "vectors">(initialMode);
+  const [parameterDraft, setParameterDraft] = useState(
+    () => cellParameterValues(baselineParameters),
+  );
+  const [vectorDraft, setVectorDraft] = useState(
+    () => baseline.map(cellInputValue),
+  );
+  const [axes, setAxes] = useState<[boolean, boolean, boolean]>([...pbc]);
+  const [scaleAtoms, setScaleAtoms] = useState(false);
+  const [error, setError] = useState("");
+
+  const currentCell = () => mode === "parameters"
+    ? cellFromParameters(cellParametersFromValues(parameterDraft))
+    : validateCell(vectorDraft.map(numericCellInput));
+  const changeMode = (nextMode: "parameters" | "vectors") => {
+    if (nextMode === mode) return;
+    try {
+      const cell = currentCell();
+      setVectorDraft(cell.map(cellInputValue));
+      setParameterDraft(cellParameterValues(cellParameters(cell)));
+      setError("");
+      setMode(nextMode);
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      onApply(currentCell(), axes, scaleAtoms);
+      setError("");
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+
+  return <form className="workbench-section cell-editor" data-setting-id="edit-cell" onSubmit={submit}>
+    <div className="workbench-section-heading">
+      <h3>Cell</h3>
+      <span>{sourceCell ? "3 × 3 lattice" : "Not in source · creates cell"}</span>
+    </div>
+    <div className="segmented-options cell-editor-mode" role="group" aria-label="Cell editing mode">
+      <button
+        type="button"
+        className={mode === "parameters" ? "is-active" : ""}
+        aria-pressed={mode === "parameters"}
+        onClick={() => changeMode("parameters")}
+      >Lengths + angles</button>
+      <button
+        type="button"
+        data-setting-id="edit-cell-vectors"
+        className={mode === "vectors" ? "is-active" : ""}
+        aria-pressed={mode === "vectors"}
+        onClick={() => changeMode("vectors")}
+      >Vectors</button>
+    </div>
+    {mode === "parameters" ? (
+      <div className="cell-parameter-grid">
+        {([
+          ["a", "Å"],
+          ["b", "Å"],
+          ["c", "Å"],
+          ["α", "°"],
+          ["β", "°"],
+          ["γ", "°"],
+        ] as const).map(([label, unit], index) => <label key={label}>
+          <span>{label}</span>
+          <input
+            type="number"
+            step="any"
+            inputMode="decimal"
+            aria-label={index < 3 ? `Cell length ${label}` : `Cell angle ${["alpha", "beta", "gamma"][index - 3]}`}
+            value={parameterDraft[index]}
+            onChange={(event) => setParameterDraft((current) => replaceStringValue(
+              current,
+              index,
+              event.target.value,
+            ))}
+          />
+          <small>{unit}</small>
+        </label>)}
+      </div>
+    ) : (
+      <div className="cell-vector-grid" aria-label="Lattice vectors">
+        <span />
+        {(["x", "y", "z"] as const).map((axis) => <span key={axis}>{axis}</span>)}
+        {(["a", "b", "c"] as const).flatMap((vector, row) => [
+          <strong key={`${vector}-label`}>{vector}</strong>,
+          ...([0, 1, 2] as const).map((column) => {
+            const index = row * 3 + column;
+            return <input
+              key={`${vector}-${column}`}
+              type="number"
+              step="any"
+              inputMode="decimal"
+              aria-label={`Cell vector ${vector} ${["x", "y", "z"][column]}`}
+              value={vectorDraft[index]}
+              onChange={(event) => setVectorDraft((current) => replaceStringValue(
+                current,
+                index,
+                event.target.value,
+              ))}
+            />;
+          }),
+        ])}
+      </div>
+    )}
+    <div className="cell-axis-row">
+      <span>Periodic axes</span>
+      <div role="group" aria-label="Periodic axes">
+        {(["a", "b", "c"] as const).map((axis, index) => <button
+          key={axis}
+          type="button"
+          className={axes[index] ? "is-active" : ""}
+          aria-label={`Periodic ${axis}`}
+          aria-pressed={axes[index]}
+          onClick={() => setAxes((current) => current.map(
+            (value, currentIndex) => currentIndex === index ? !value : value,
+          ) as [boolean, boolean, boolean])}
+        >{axis}</button>)}
+      </div>
+    </div>
+    <label className="cell-scale-choice">
+      <input
+        type="checkbox"
+        checked={scaleAtoms}
+        disabled={!sourceCell}
+        onChange={(event) => setScaleAtoms(event.target.checked)}
+      />
+      <span>
+        Keep fractional positions
+        <small>{scaleAtoms ? "Atoms scale with the cell" : "Cartesian atom positions stay fixed"}</small>
+      </span>
+    </label>
+    {error && <p className="editor-error" role="alert">{error}</p>}
+    <button type="submit" className="primary-panel-action">Apply cell</button>
+  </form>;
+}
+
 function ScenePanel({
   presentation,
   capabilities,
+  appearance,
   cellAvailable,
   forceAvailable,
   velocityAvailable,
@@ -3849,11 +4600,13 @@ function ScenePanel({
   forceScale,
   velocityScale,
   onPresentation,
+  onAppearance,
   onForceScale,
   onVelocityScale,
 }: {
   presentation: ScenePresentation;
   capabilities: SceneCapabilities;
+  appearance: Appearance;
   cellAvailable: boolean;
   forceAvailable: boolean;
   velocityAvailable: boolean;
@@ -3864,29 +4617,10 @@ function ScenePanel({
   forceScale: number;
   velocityScale: number;
   onPresentation: (change: Partial<ScenePresentation>) => void;
+  onAppearance: (appearance: Appearance) => void;
   onForceScale: (scale: number) => void;
   onVelocityScale: (scale: number) => void;
 }) {
-  const modes: Array<{
-    mode: RepresentationMode;
-    available: boolean;
-    reason?: string;
-  }> = [
-    { mode: "ball-stick", available: true },
-    { mode: "spacefill", available: true },
-    { mode: "lines", available: true },
-    ...(capabilities.ribbon
-      ? [{ mode: "ribbon" as const, available: true }]
-      : []),
-    ...(cellAvailable || capabilities.polyhedra
-      ? [{
-          mode: "polyhedra" as const,
-          available: capabilities.polyhedra,
-          reason: capabilities.polyhedraReason,
-        }]
-      : []),
-  ];
-  const polyhedraNoteId = "polyhedra-requirement";
   const repeatCounts = repeatCountsFromImages(presentation.images, pbc);
   const imageBudget = Math.min(
     MAX_PERIODIC_IMAGES,
@@ -3898,6 +4632,28 @@ function ScenePanel({
   const structureCentered = !pqCentered
     && !selectionCentered
     && Boolean(structureCellOrigin && sameCellOrigin(presentation.cellOrigin, structureCellOrigin));
+  const bondCapable = !(
+    presentation.mode === "spacefill"
+    || presentation.mode === "ribbon"
+    || presentation.mode === "polyhedra"
+  );
+  const periodicSummary = [
+    presentation.wrap === "atom"
+      ? "Atoms"
+      : presentation.wrap === "molecule"
+        ? "Molecules"
+        : "Unwrapped",
+    pqCentered
+      ? "PQ-centered"
+      : selectionCentered
+        ? "Selection-centered"
+        : structureCentered
+          ? "Structure-centered"
+          : "Custom center",
+    repeatCounts.reduce((total, value) => total * value, 1) > 1
+      ? `${repeatCounts.reduce((total, value) => total * value, 1)} cells`
+      : "",
+  ].filter(Boolean).join(" · ");
   const setRepeatCount = (axis: number, count: number) => {
     const next = [...repeatCounts] as CellOffset;
     next[axis] = Math.max(1, Math.min(5, Math.round(count)));
@@ -3907,43 +4663,106 @@ function ScenePanel({
 
   return (
     <div className="scene-panel">
-      <section className="workbench-section">
-        <span className="section-label">Representation</span>
-        <div className="segmented-options representation-options">
-          {modes.map(({ mode, available, reason }) => <button
+      <section className="workbench-section appearance-settings" data-setting-id="view-appearance">
+        <div className="workbench-section-heading">
+          <h3>Appearance</h3>
+          <span>D</span>
+        </div>
+        <div className="segmented-options appearance-options" role="group" aria-label="Viewer appearance">
+          {(["light", "dark"] as const).map((option) => <button
+            key={option}
+            type="button"
+            className={appearance === option ? "is-active" : ""}
+            aria-pressed={appearance === option}
+            onClick={() => onAppearance(option)}
+          >{option === "light" ? "Light" : "Dark"}</button>)}
+        </div>
+      </section>
+
+      <section className="workbench-section representation-settings" data-setting-id="view-representation">
+        <div className="workbench-section-heading">
+          <h3>Representation</h3>
+          <span>3Dmol</span>
+        </div>
+        <div className="representation-grid">
+          {([
+            ["ball-stick", "Ball + stick", true, ""],
+            ["spacefill", "Spacefill", true, ""],
+            ["licorice", "Licorice", true, ""],
+            ["lines", "Lines", true, ""],
+            ["ribbon", "Ribbon", capabilities.ribbon, capabilities.ribbonReason],
+            ["polyhedra", "Polyhedra", capabilities.polyhedra, capabilities.polyhedraReason],
+            ["surface", "Surface", true, ""],
+          ] as const).map(([mode, label, available, reason]) => <button
             key={mode}
             type="button"
             className={presentation.mode === mode ? "is-active" : ""}
             aria-pressed={presentation.mode === mode}
-            aria-describedby={!available && mode === "polyhedra"
-              ? polyhedraNoteId
-              : undefined}
             disabled={!available}
             title={!available ? reason : undefined}
             onClick={() => onPresentation({ mode })}
-          >{representationLabel(mode)}</button>)}
+          >{label}</button>)}
         </div>
-        {cellAvailable && !capabilities.polyhedra && (
-          <span className="capability-note" id={polyhedraNoteId}>
-            Polyhedra · {capabilities.polyhedraReason}
-          </span>
-        )}
       </section>
 
-      {(capabilities.water || cellAvailable || forceAvailable || velocityAvailable) && <section className="workbench-section display-toggles">
-        <span className="section-label">Overlays</span>
+      <section className="workbench-section atom-display-settings" data-setting-id="view-atoms">
+        <span className="section-label">Atoms</span>
+        <Toggle label="Hydrogens" checked={presentation.hydrogens} onChange={(hydrogens) => onPresentation({ hydrogens })} />
+        <label className="panel-select-row">
+          <span>Color</span>
+          <select
+            value={presentation.color}
+            onChange={(event) => onPresentation({
+              color: event.target.value as ScenePresentation["color"],
+            })}
+          >
+            <option value="element">Element</option>
+            <option value="residue">Residue</option>
+            <option value="chain">Chain</option>
+          </select>
+        </label>
+        <VectorScale label="Atom size" value={presentation.atomScale} min={0.4} max={1.8} onChange={(atomScale) => onPresentation({ atomScale })} />
+        <VectorScale label="Bond size" value={presentation.bondScale} min={0.25} max={1.8} onChange={(bondScale) => onPresentation({ bondScale })} />
+        <label className="panel-select-row">
+          <span>Quality</span>
+          <select
+            value={presentation.quality}
+            onChange={(event) => onPresentation({
+              quality: event.target.value as ScenePresentation["quality"],
+            })}
+          >
+            <option value="auto">Interactive</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </section>
+
+      <section className="workbench-section display-toggles" data-setting-id="view-layers">
+        <span className="section-label">Layers</span>
+        <Toggle
+          label="Bonds"
+          checked={presentation.bonds}
+          disabled={!bondCapable}
+          settingId="view-bonds"
+          title={bondCapable ? undefined : "Not used by the current representation"}
+          onChange={(bonds) => onPresentation({ bonds })}
+        />
         {capabilities.water && <Toggle label="Water" checked={presentation.water !== "hide"} onChange={(shown) => onPresentation({ water: shown ? "show" : "hide" })} />}
         {cellAvailable && <Toggle label="Cell" checked={presentation.cell} onChange={(cell) => onPresentation({ cell })} />}
         {forceAvailable && <Toggle label="Forces" checked={presentation.forces} onChange={(forces) => onPresentation({ forces })} />}
         {forceAvailable && presentation.forces && <VectorScale label="Force scale" value={forceScale} onChange={onForceScale} />}
         {velocityAvailable && <Toggle label="Velocities" checked={presentation.velocities} onChange={(velocities) => onPresentation({ velocities })} />}
         {velocityAvailable && presentation.velocities && <VectorScale label="Velocity scale" value={velocityScale} onChange={onVelocityScale} />}
-      </section>}
+      </section>
 
-      {cellAvailable && <section className="workbench-section">
-        <span className="section-label">Periodic system</span>
-        <span className="periodic-control-label">Coordinates</span>
-        <div className="segmented-options periodic-coordinate-options">
+      {cellAvailable && <details className="workbench-section periodic-settings" data-setting-id="view-periodic">
+        <summary>
+          <span>Periodic cell</span>
+          <small>{periodicSummary}</small>
+        </summary>
+        <div className="periodic-settings-body">
+          <span className="periodic-control-label">Coordinates</span>
+          <div className="segmented-options periodic-coordinate-options">
           {([
             ["atom", "Atoms"],
             ["molecule", "Molecules"],
@@ -3955,10 +4774,10 @@ function ScenePanel({
             aria-pressed={presentation.wrap === wrap}
             onClick={() => onPresentation({ wrap })}
           >{label}</button>)}
-        </div>
+          </div>
 
-        <span className="periodic-control-label">Center cell</span>
-        <div className="segmented-options periodic-center-options">
+          <span className="periodic-control-label">Center cell</span>
+          <div className="segmented-options periodic-center-options">
           <button
             type="button"
             className={pqCentered ? "is-active" : ""}
@@ -3984,9 +4803,9 @@ function ScenePanel({
               if (selectionCellOrigin) onPresentation({ cellOrigin: selectionCellOrigin });
             }}
           >Selection</button>
-        </div>
+          </div>
 
-        <div className="periodic-inline-control">
+          <div className="periodic-inline-control">
           <span className="periodic-control-label">Mirror</span>
           <div className="periodic-axis-options" aria-label="Mirror cell axes">
             {(["a", "b", "c"] as const).map((axis, index) => <button
@@ -4002,13 +4821,13 @@ function ScenePanel({
               })}
             >{axis}</button>)}
           </div>
-        </div>
+          </div>
 
-        <div className="periodic-repeat-heading">
+          <div className="periodic-repeat-heading">
           <span className="periodic-control-label">Repeat</span>
           <span>{repeatCounts.reduce((total, value) => total * value, 1)} / {imageBudget} cells</span>
-        </div>
-        <div className="periodic-repeat-grid">
+          </div>
+          <div className="periodic-repeat-grid">
           {(["a", "b", "c"] as const).map((axis, index) => {
             const count = repeatCounts[index];
             const next = [...repeatCounts] as CellOffset;
@@ -4043,8 +4862,9 @@ function ScenePanel({
               >+</button>
             </div>;
           })}
+          </div>
         </div>
-      </section>}
+      </details>}
     </div>
   );
 }
@@ -4052,15 +4872,19 @@ function ScenePanel({
 function VectorScale({
   label,
   value,
+  min = 0.1,
+  max = 3,
   onChange,
 }: {
   label: string;
   value: number;
+  min?: number;
+  max?: number;
   onChange: (value: number) => void;
 }) {
   return <label className="vector-scale-row">
     <span>{label}</span>
-    <input type="range" min={0.1} max={3} step={0.1} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+    <input type="range" min={min} max={max} step={0.05} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     <output>{value.toFixed(1)}×</output>
   </label>;
 }
@@ -4069,14 +4893,22 @@ function Toggle({
   label,
   checked,
   disabled = false,
+  settingId,
+  title,
   onChange,
 }: {
   label: string;
   checked: boolean;
   disabled?: boolean;
+  settingId?: string;
+  title?: string;
   onChange: (checked: boolean) => void;
 }) {
-  return <div className={disabled ? "toggle-row is-disabled" : "toggle-row"}>
+  return <div
+    className={disabled ? "toggle-row is-disabled" : "toggle-row"}
+    data-setting-id={settingId}
+    title={title}
+  >
     <span>{label}</span>
     <button type="button" role="switch" aria-label={label} aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}><i /></button>
   </div>;
@@ -4500,19 +5332,126 @@ function SelectionSummaryPanel({
   </div>;
 }
 
+function AnalyzePanel({
+  selectedCount,
+  selectionFormula,
+  summary,
+  uniqueAtoms,
+  canPlot,
+  plotOpen,
+  canPin,
+  analysisAvailable,
+  staticDemo,
+  onPlot,
+  onPin,
+  onRdf,
+  onCoordination,
+  onClear,
+}: {
+  selectedCount: number;
+  selectionFormula: string;
+  summary: SelectionSummary | null;
+  uniqueAtoms: number;
+  canPlot: boolean;
+  plotOpen: boolean;
+  canPin: boolean;
+  analysisAvailable: boolean;
+  staticDemo: boolean;
+  onPlot: () => void;
+  onPin: () => void;
+  onRdf: () => void;
+  onCoordination: () => void;
+  onClear: () => void;
+}) {
+  const measurementName = selectedCount === 2
+    ? "Distance"
+    : selectedCount === 3
+      ? "Angle"
+      : selectedCount === 4
+        ? "Dihedral"
+        : null;
+  return <div className="analysis-panel">
+    <section className="workbench-section analysis-selection" data-setting-id="analyze-measurement">
+      <div className="workbench-section-heading">
+        <h3>{selectedCount === 0 ? "Selection" : measurementName ?? "Selection summary"}</h3>
+        <span>{selectedCount === 0 ? "Canvas" : `${selectedCount.toLocaleString()} atoms`}</span>
+      </div>
+      {selectedCount === 0 ? (
+        <div className="analysis-empty">
+          <strong>Start on the structure</strong>
+          <p>Click an atom to inspect it. Shift-click two to four atoms for a distance, angle, or dihedral.</p>
+          <div>
+            <span><kbd>Click</kbd> inspect</span>
+            <span><kbd>Shift</kbd> add atoms</span>
+            <span><kbd>Esc</kbd> clear</span>
+          </div>
+        </div>
+      ) : selectedCount > 4 ? (
+        <SelectionSummaryPanel summary={summary} uniqueAtoms={uniqueAtoms} />
+      ) : (
+        <>
+          <div className="analysis-measurement-copy">
+            <strong>{measurementName}</strong>
+            <span>{selectionFormula || `${selectedCount} selected atoms`}</span>
+            <p>The live value is shown below the structure. Periodic systems use minimum-image geometry by default.</p>
+          </div>
+          <div className="analysis-actions">
+            <button type="button" onClick={onPlot} disabled={!canPlot}>
+              {plotOpen ? "Hide trajectory plot" : "Plot over trajectory"}
+            </button>
+            <button type="button" onClick={onPin} disabled={!canPin}>Pin measurement</button>
+            <button type="button" onClick={onClear}>Clear selection</button>
+          </div>
+        </>
+      )}
+    </section>
+    <section className="workbench-section analysis-methods">
+      <div className="workbench-section-heading">
+        <h3>Periodic analysis</h3>
+        <span>{analysisAvailable ? "PQAnalysis" : staticDemo ? "Local viewer" : "Trajectory + full cell"}</span>
+      </div>
+      <div className="analysis-method-grid">
+        <button
+          type="button"
+          disabled={!analysisAvailable}
+          title={analysisAvailable ? undefined : staticDemo ? "Available in the installed Python viewer" : "Requires a periodic trajectory"}
+          onClick={onRdf}
+        >Pair distribution</button>
+        <button
+          type="button"
+          disabled={!analysisAvailable}
+          title={analysisAvailable ? undefined : staticDemo ? "Available in the installed Python viewer" : "Requires a periodic trajectory"}
+          onClick={onCoordination}
+        >Coordination</button>
+      </div>
+    </section>
+  </div>;
+}
+
 function Inspector({
   manifest,
   frame,
   selectedAtom,
   selectedPosition,
   cellAvailable,
+  editedFrame,
+  topologyEdited,
+  editable,
+  onEdit,
+  onRequestEdit,
 }: {
   manifest: Manifest;
   frame: FrameData | null;
   selectedAtom: number | null;
   selectedPosition: Float64Array | null;
   cellAvailable: boolean;
+  editedFrame: boolean;
+  topologyEdited: boolean;
+  editable: boolean;
+  onEdit: (atom: number, element: string, position: readonly number[]) => void;
+  onRequestEdit?: () => void;
 }) {
+  const positions = frameArray(frame, ["positions", "position", "coordinates", "coords"]);
   const forces = frameArray(frame, ["forces", "force"]);
   const velocities = frameArray(frame, ["velocities", "velocity", "vel"]);
   const charges = frameArray(frame, ["charges", "charge"]);
@@ -4525,8 +5464,25 @@ function Inspector({
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
   const residueId = meaningfulResidueId(manifest.topology.residue_ids, atom);
   return <div className="inspector-content">
-    {atom === null ? <p className="quiet-copy">Click an atom to inspect it.</p> : <section className="readout-section atom-section">
-      <Readout label="Element" value={symbol ?? "—"} />
+    {atom === null ? <p className="quiet-copy">Click an atom to inspect and edit it.</p> : <>
+      {editable ? (
+        <AtomEditor
+          key={`${atom}:${editedFrame}:${topologyEdited}:${positions?.[atom * 3] ?? ""}:${positions?.[atom * 3 + 1] ?? ""}:${positions?.[atom * 3 + 2] ?? ""}`}
+          atom={atom}
+          symbol={symbol ?? "X"}
+          positions={positions}
+          onEdit={onEdit}
+        />
+      ) : (
+        <section className="selected-atom-overview">
+          <div>
+            <span>Atom {atom + 1}</span>
+            <strong>{symbol ?? "X"}</strong>
+          </div>
+          {onRequestEdit && <button type="button" onClick={onRequestEdit}>Edit atom</button>}
+        </section>
+      )}
+      <section className="readout-section atom-section">
       {manifest.topology.atom_names?.[atom] && <Readout label="Name" value={manifest.topology.atom_names[atom]} />}
       {residue && <Readout label="Residue" value={`${residue.name ?? `Type ${residue.type_id ?? "—"}`} · ${residue.index + 1}`} />}
       {!residue && residueId !== null && <Readout label="Residue ID" value={residueId} />}
@@ -4541,8 +5497,85 @@ function Inspector({
       {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} unit={forceUnit} />}
       {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3} unit={velocityUnit} />}
       {charges && charges[atom] !== undefined && <Readout label="Charge" value={withUnit(formatNumber(charges[atom]), chargeUnit)} />}
-    </section>}
+      </section>
+    </>}
   </div>;
+}
+
+function AtomEditor({
+  atom,
+  symbol,
+  positions,
+  onEdit,
+}: {
+  atom: number;
+  symbol: string;
+  positions: Float32Array | Int32Array | null;
+  onEdit: (atom: number, element: string, position: readonly number[]) => void;
+}) {
+  const offset = atom * 3;
+  const [element, setElement] = useState(symbol);
+  const [coordinates, setCoordinates] = useState(() => [0, 1, 2].map(
+    (axis) => cellInputValue(positions?.[offset + axis] ?? 0),
+  ));
+  const [error, setError] = useState("");
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      const next = coordinates.map(numericCellInput);
+      onEdit(atom, element, next);
+      setError("");
+    } catch (reason) {
+      setError(message(reason));
+    }
+  };
+  return <form className="atom-editor" onSubmit={submit}>
+    <div className="atom-editor-heading">
+      <div>
+        <span>Atom {atom + 1}</span>
+        <strong>{symbol}</strong>
+      </div>
+      <small>Editable source data</small>
+    </div>
+    <label className="atom-element-field">
+      <span>Element</span>
+      <input
+        value={element}
+        list="pqviewer-elements"
+        spellCheck={false}
+        autoComplete="off"
+        aria-label="Atom element"
+        onChange={(event) => setElement(event.target.value)}
+      />
+    </label>
+    <datalist id="pqviewer-elements">
+      {ELEMENT_SYMBOLS.slice(1).map((value, index) => (
+        <option key={value} value={value}>{ELEMENT_NAMES[index + 1]}</option>
+      ))}
+    </datalist>
+    <fieldset className="atom-coordinate-fields">
+      <legend>Cartesian coordinates</legend>
+      {(["x", "y", "z"] as const).map((axis, index) => <label key={axis}>
+        <span>{axis}</span>
+        <input
+          type="number"
+          step="any"
+          inputMode="decimal"
+          aria-label={`Atom ${axis} coordinate`}
+          value={coordinates[index]}
+          onChange={(event) => setCoordinates((current) => replaceStringValue(
+            current,
+            index,
+            event.target.value,
+          ))}
+        />
+        <small>Å</small>
+      </label>)}
+    </fieldset>
+    <p>Element identity applies to every frame. Coordinates apply to the current frame.</p>
+    {error && <p className="editor-error" role="alert">{error}</p>}
+    <button type="submit" className="primary-panel-action">Apply atom</button>
+  </form>;
 }
 
 function Timeline({
@@ -5073,27 +6106,6 @@ function CenteredState({
   );
 }
 
-function Icon({ name }: { name: IconName }) {
-  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  return (
-    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
-      {name === "folder" && <path d="M4 7.5h6l1.6 2H20v8.5H4V7.5Z" {...common} />}
-      {name === "image" && <><rect x="4" y="5" width="16" height="14" rx="2" {...common} /><circle cx="9" cy="10" r="1.5" {...common} /><path d="m6.5 17 4.2-4 2.6 2.4 2.2-2 2 1.8" {...common} /></>}
-      {name === "sliders" && <><path d="M5 7h5m4 0h5M5 17h3m4 0h7" {...common} /><circle cx="12" cy="7" r="2" {...common} /><circle cx="10" cy="17" r="2" {...common} /></>}
-      {name === "play" && <path d="m9 7 7 5-7 5V7Z" fill="currentColor" />}
-      {name === "pause" && <><path d="M9 7v10M15 7v10" {...common} strokeWidth="2" /></>}
-      {name === "first" && <><path d="M7.5 7v10" {...common} /><path d="m16 8-5 4 5 4" {...common} /></>}
-      {name === "back" && <path d="m14.5 8-5 4 5 4" {...common} />}
-      {name === "next" && <path d="m9.5 8 5 4-5 4" {...common} />}
-      {name === "last" && <><path d="M16.5 7v10" {...common} /><path d="m8 8 5 4-5 4" {...common} /></>}
-      {name === "more" && <><circle cx="7" cy="12" r="1" fill="currentColor" /><circle cx="12" cy="12" r="1" fill="currentColor" /><circle cx="17" cy="12" r="1" fill="currentColor" /></>}
-      {name === "search" && <><circle cx="10.5" cy="10.5" r="5.5" {...common} /><path d="m14.6 14.6 4 4" {...common} /></>}
-      {name === "close" && <path d="m8 8 8 8m0-8-8 8" {...common} />}
-      {name === "retry" && <><path d="M18 9a7 7 0 1 0 .5 5" {...common} /><path d="M18 5v4h-4" {...common} /></>}
-    </svg>
-  );
-}
-
 function arrayUnit(frame: FrameData | null, manifest: Manifest, name: string): string | undefined {
   const normalized = normalizeName(name);
   const descriptor = frame?.header.arrays.find((entry) => normalizeName(entry.name) === normalized);
@@ -5111,7 +6123,7 @@ function withUnit(value: string, unit: string | undefined): string {
 }
 
 function atomSymbol(manifest: Manifest, index: number): string {
-  return manifest.topology.symbols?.[index] ?? elementSymbols[manifest.topology.atomic_numbers?.[index] ?? 0] ?? "X";
+  return manifest.topology.symbols?.[index] ?? ELEMENT_SYMBOLS[manifest.topology.atomic_numbers?.[index] ?? 0] ?? "X";
 }
 
 function atomSelectionLabel(manifest: Manifest, selection: AtomSelection): string {
@@ -5150,7 +6162,62 @@ function representationLabel(mode: RepresentationMode): string {
     lines: "Lines",
     ribbon: "Ribbon",
     polyhedra: "Polyhedra",
+    surface: "Surface",
   } as const)[mode];
+}
+
+interface SceneProfileOption {
+  profile: Exclude<SceneProfile, "auto" | "custom">;
+  label: string;
+  available: boolean;
+  reason?: string;
+}
+
+function sceneProfileOptions(
+  capabilities: SceneCapabilities,
+  cellAvailable: boolean,
+  trajectoryAvailable: boolean,
+): SceneProfileOption[] {
+  return [
+    { profile: "molecule", label: "Molecule", available: true },
+    {
+      profile: "protein",
+      label: "Protein",
+      available: capabilities.ribbon,
+      reason: capabilities.ribbonReason,
+    },
+    {
+      profile: "liquid",
+      label: "Liquid",
+      available: cellAvailable && capabilities.water,
+      reason: capabilities.water ? "Periodic cell required" : "Solvent required",
+    },
+    {
+      profile: "crystal",
+      label: "Crystal",
+      available: cellAvailable,
+      reason: "Periodic cell required",
+    },
+    {
+      profile: "mof",
+      label: "MOF",
+      available: cellAvailable,
+      reason: "Periodic cell required",
+    },
+    {
+      profile: "trajectory",
+      label: "Trajectory",
+      available: trajectoryAvailable,
+      reason: "Multiple frames required",
+    },
+  ];
+}
+
+function sceneProfileLabel(
+  profile: Exclude<SceneProfile, "custom">,
+): string {
+  if (profile === "mof") return "MOF";
+  return profile.charAt(0).toUpperCase() + profile.slice(1);
 }
 
 export function autoProfile(
@@ -5172,7 +6239,9 @@ export function selectedProfilePresentation(
   capabilities: SceneCapabilities,
 ): ScenePresentation {
   const resolved = selectedProfile === "auto"
-    ? autoProfile(capabilities, forceAvailable, hasSeries)
+    ? cellAvailable && capabilities.water
+      ? "liquid"
+      : autoProfile(capabilities, forceAvailable, hasSeries)
     : selectedProfile;
   return profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
 }
@@ -5193,20 +6262,52 @@ export function profilePresentation(
     wrap: "molecule",
     images: unit,
     cell: false,
+    bonds: true,
     forces: false,
     velocities: false,
     color: capabilities.ribbon ? "residue" : "element",
   };
   if (profile === "crystal") return {
     ...current,
-    mode: "ball-stick",
+    mode: capabilities.polyhedra ? "polyhedra" : "ball-stick",
     water: "show",
     hydrogens: true,
     wrap: "atom",
     images: unit,
     cell: cellAvailable,
+    bonds: false,
     forces: false,
     velocities: false,
+    atomScale: 0.9,
+    bondScale: 0.5,
+    color: "element",
+  };
+  if (profile === "liquid") return {
+    ...current,
+    mode: "ball-stick",
+    water: "show",
+    hydrogens: true,
+    wrap: "molecule",
+    images: unit,
+    cell: cellAvailable,
+    bonds: true,
+    forces: false,
+    velocities: false,
+    color: "element",
+  };
+  if (profile === "mof") return {
+    ...current,
+    mode: "lines",
+    water: "hide",
+    hydrogens: false,
+    wrap: cellAvailable ? "atom" : "molecule",
+    images: unit,
+    cell: cellAvailable,
+    bonds: true,
+    forces: false,
+    velocities: false,
+    atomScale: 0.72,
+    bondScale: 0.52,
     color: "element",
   };
   if (profile === "trajectory") return {
@@ -5217,6 +6318,7 @@ export function profilePresentation(
     wrap: cellAvailable ? "atom" : "none",
     images: unit,
     cell: cellAvailable,
+    bonds: true,
     forces: forceAvailable,
     velocities: false,
     color: "element",
@@ -5229,7 +6331,8 @@ export function profilePresentation(
     wrap: "molecule",
     images: unit,
     cell: false,
-    forces: forceAvailable,
+    bonds: true,
+    forces: false,
     velocities: false,
     color: "element",
   };
@@ -5550,6 +6653,84 @@ function initialVimMode(): boolean {
   }
 }
 
+function initialAppearance(): Appearance {
+  try {
+    const stored = window.localStorage.getItem("pqviewer-appearance");
+    if (stored === "light" || stored === "dark") return stored;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function frameDraftKey(
+  coordinateMode: "source" | "unwrapped",
+  frameIndex: number,
+): string {
+  return `${coordinateMode}:${frameIndex}`;
+}
+
+function structureFormula(manifest: Manifest): string {
+  const atomicNumbers = manifest.topology.atomic_numbers
+    ?? manifest.topology.symbols?.map((symbol) => (
+      ELEMENT_SYMBOLS.findIndex((candidate) => candidate.toLowerCase() === symbol.toLowerCase())
+    ))
+    ?? [];
+  return hillFormula(atomicNumbers) || "—";
+}
+
+function periodicAxesLabel(pbc: readonly boolean[]): string {
+  const axes = pbc.slice(0, 3).map((value, index) => value ? "abc"[index] : "").join("");
+  return `PBC ${axes || "off"}`;
+}
+
+function cellParameterValues(parameters: CellParameters): string[] {
+  return [
+    parameters.a,
+    parameters.b,
+    parameters.c,
+    parameters.alpha,
+    parameters.beta,
+    parameters.gamma,
+  ].map(cellInputValue);
+}
+
+function cellParametersFromValues(values: readonly string[]): CellParameters {
+  if (values.length < 6) throw new Error("Cell parameters are incomplete");
+  return {
+    a: numericCellInput(values[0]),
+    b: numericCellInput(values[1]),
+    c: numericCellInput(values[2]),
+    alpha: numericCellInput(values[3]),
+    beta: numericCellInput(values[4]),
+    gamma: numericCellInput(values[5]),
+  };
+}
+
+function cellInputValue(value: number): string {
+  return Number(value.toPrecision(10)).toString();
+}
+
+function numericCellInput(value: string): number {
+  if (value.trim() === "") throw new Error("Every numeric field is required");
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error("Values must be finite numbers");
+  return parsed;
+}
+
+function replaceStringValue(
+  values: readonly string[],
+  index: number,
+  value: string,
+): string[] {
+  return values.map((current, currentIndex) => currentIndex === index ? value : current);
+}
+
+function structureFileName(name: string, frameIndex: number): string {
+  const suffix = frameIndex > 0 ? `.frame-${frameIndex + 1}` : "";
+  return `${safeFileBase(name, "structure")}${suffix}.extxyz`;
+}
+
 function browserPlatform(): string {
   if (typeof navigator === "undefined") return "";
   const navigatorWithHints = navigator as Navigator & { userAgentData?: { platform?: string } };
@@ -5560,7 +6741,15 @@ function initialPresentation(): ScenePresentation {
   try {
     const parsed = JSON.parse(window.localStorage.getItem("pqviewer-presentation") ?? "null") as Partial<ScenePresentation> | null;
     if (!parsed || typeof parsed !== "object") return defaultPresentation;
-    const modes: RepresentationMode[] = ["ball-stick", "spacefill", "lines", "ribbon", "polyhedra"];
+    const modes: RepresentationMode[] = [
+      "ball-stick",
+      "spacefill",
+      "licorice",
+      "lines",
+      "ribbon",
+      "polyhedra",
+      "surface",
+    ];
     return {
       mode: modes.includes(parsed.mode as RepresentationMode) ? parsed.mode as RepresentationMode : defaultPresentation.mode,
       water: parsed.water === "hide" ? "hide" : "show",
@@ -5570,6 +6759,7 @@ function initialPresentation(): ScenePresentation {
       cellOrigin: [0, 0, 0],
       mirror: [false, false, false],
       cell: typeof parsed.cell === "boolean" ? parsed.cell : defaultPresentation.cell,
+      bonds: typeof parsed.bonds === "boolean" ? parsed.bonds : defaultPresentation.bonds,
       forces: typeof parsed.forces === "boolean" ? parsed.forces : defaultPresentation.forces,
       velocities: typeof parsed.velocities === "boolean" ? parsed.velocities : defaultPresentation.velocities,
       atomScale: defaultPresentation.atomScale,
@@ -5581,8 +6771,3 @@ function initialPresentation(): ScenePresentation {
     return defaultPresentation;
   }
 }
-
-const elementSymbols = [
-  "X", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar",
-  "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr",
-];

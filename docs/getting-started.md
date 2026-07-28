@@ -28,6 +28,12 @@ Optional ASE file and object support:
 python -m pip install '.[ase]'
 ```
 
+Optional Jupyter display support:
+
+```bash
+python -m pip install '.[jupyter,ase]'
+```
+
 Optional headless figure rendering:
 
 ```bash
@@ -99,11 +105,14 @@ pqviewer trajectory.xyz \
 
 1. Drag to rotate, secondary-drag or middle-drag to pan, and scroll to zoom.
 2. Click the first atom, then Shift-click further atoms in measurement order.
-3. Use **View** for representations, vectors, water, and periodic display.
-4. Use the timeline for multi-frame data.
-5. Press `Cmd/Ctrl+K` or `/` to search major contextual actions.
-6. Press `?` for the shortcut sheet.
-7. Choose **Figure** for a publication-ready image of the current view.
+3. Use **View** for representations, vectors, water, appearance, and periodic display.
+4. Use **Edit** for atom coordinates, identity, and cell data.
+5. Use **Analyze** for atom properties, measurements, and periodic analysis.
+6. Use the timeline for multi-frame data.
+7. Press `Cmd/Ctrl+K` or `/` to search atoms, settings, and commands.
+8. Press `?` or choose **Help** for the shortcut sheet.
+9. Choose **Export** for a publication-ready figure of the current view.
 
 Continue with the [viewer guide](viewer-guide.md) and
-[data conventions](data-and-conventions.md).
+[data conventions](data-and-conventions.md). For notebook workflows, continue
+with the [Jupyter guide](jupyter.md).

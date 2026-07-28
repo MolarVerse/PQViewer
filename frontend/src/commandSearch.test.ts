@@ -5,6 +5,7 @@ interface Action {
   id: string;
   label: string;
   keywords?: string | readonly string[];
+  breadcrumb?: string;
   detail?: string;
   disabled?: boolean;
   run?: () => void;
@@ -93,6 +94,30 @@ describe("command matching", () => {
     expect(searchCommandActions(actions, "periodic box").map(({ id }) => id)).toEqual(["cell"]);
     expect(searchCommandActions(actions, "ctrl shift").map(({ id }) => id)).toEqual(["export"]);
     expect(searchCommandActions(actions, "trajectory missing")).toEqual([]);
+  });
+
+  it("matches setting breadcrumbs and natural scientific synonyms", () => {
+    const settings = [
+      {
+        id: "bonds",
+        label: "Bond display",
+        breadcrumb: "View › Layers › Bonds",
+        keywords: "crossing across boundary periodic unit cell",
+      },
+      {
+        id: "vectors",
+        label: "Cell lattice vectors",
+        breadcrumb: "Edit › Cell › Vectors",
+        keywords: "matrix ax ay az",
+      },
+    ];
+
+    expect(searchCommandActions(settings, "view bonds").map(({ id }) => id))
+      .toEqual(["bonds"]);
+    expect(searchCommandActions(settings, "bond across cell").map(({ id }) => id))
+      .toEqual(["bonds"]);
+    expect(searchCommandActions(settings, "edit lattice vectors").map(({ id }) => id))
+      .toEqual(["vectors"]);
   });
 
   it("ranks exact and prefix label matches ahead of keyword matches", () => {

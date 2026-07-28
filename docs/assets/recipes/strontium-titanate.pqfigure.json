@@ -1,0 +1,119 @@
+{
+  "schema": "pqviewer.figure",
+  "schema_version": 1,
+  "source": {
+    "kind": "pq-trajectory",
+    "path": "../sources/strontium-titanate.extxyz",
+    "slice": {
+      "start": null,
+      "stop": null,
+      "step": null
+    },
+    "segments": [
+      {
+        "source_id": "../sources/strontium-titanate.extxyz",
+        "kind": "pq-trajectory",
+        "path": "../sources/strontium-titanate.extxyz",
+        "input": null,
+        "frame_count": 1,
+        "files": {
+          "trajectory": "../sources/strontium-titanate.extxyz"
+        }
+      }
+    ]
+  },
+  "frame": {
+    "index": 0,
+    "key": {
+      "source_id": "../sources/strontium-titanate.extxyz",
+      "source_index": 0,
+      "segment_index": 0,
+      "step": null,
+      "time": null,
+      "time_unit": null
+    },
+    "fingerprint": "frame-v1:6861b5469924e539"
+  },
+  "scene": {
+    "presentation": {
+      "mode": "polyhedra",
+      "water": "show",
+      "hydrogens": true,
+      "wrap": "atom",
+      "cellOrigin": [
+        0,
+        0,
+        0
+      ],
+      "mirror": [
+        false,
+        false,
+        false
+      ],
+      "images": {
+        "min": [
+          0,
+          0,
+          0
+        ],
+        "max": [
+          0,
+          0,
+          0
+        ]
+      },
+      "cell": true,
+      "forces": false,
+      "velocities": false,
+      "atomScale": 0.58,
+      "bondScale": 0.5,
+      "color": "element",
+      "quality": "high"
+    },
+    "selection": {
+      "atoms": [],
+      "intent": "measurement",
+      "minimumImage": true
+    },
+    "vectors": {
+      "forceScale": 1,
+      "velocityScale": 1
+    }
+  },
+  "camera": {
+    "position": [
+      24.82288379633109,
+      20.85574287283014,
+      39.724918049642225
+    ],
+    "target": [
+      0,
+      0,
+      0
+    ],
+    "up": [
+      -0.21553758263541173,
+      0.9135454576426009,
+      -0.34493223579748816
+    ],
+    "fov": 20,
+    "zoom": 1,
+    "near": 1,
+    "far": 800
+  },
+  "output": {
+    "format": "png",
+    "width": 2400,
+    "height": 1800,
+    "dpi": 300,
+    "background": {
+      "kind": "solid",
+      "color": "#f5f8f8"
+    },
+    "projection": "orthographic",
+    "fit": true,
+    "padding": 0.08,
+    "periodicContext": true
+  },
+  "annotations": []
+}

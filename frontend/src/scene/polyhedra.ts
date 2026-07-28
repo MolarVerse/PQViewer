@@ -24,6 +24,8 @@ export interface CoordinationPolyhedraOptions {
   centerAtoms?: readonly number[];
   centerAtomicNumbers?: readonly number[];
   images?: readonly CellOffset[];
+  containedInCell?: boolean;
+  cellCenter?: THREE.Vector3;
   maxCenters?: number;
   maxCoordination?: number;
   maxTriangles?: number;
@@ -76,6 +78,12 @@ const DEFAULT_COLOR = new THREE.Color("#568da3");
 const EXCLUDED_AUTO_CENTERS = new Set([
   1, 2, 6, 7, 8, 9, 10, 17, 18, 35, 36, 53, 54, 85, 86,
 ]);
+const PREFERRED_METAL_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [21, 30],
+  [39, 48],
+  [57, 80],
+  [89, 112],
+];
 const EMPTY_NEIGHBORS: readonly number[] = Object.freeze([]);
 const preparedTopologyMetadata = new WeakMap<
   PreparedCoordinationPolyhedraTopology,
@@ -202,6 +210,15 @@ export function buildCoordinationPolyhedraGeometry(
     const translation = imageTranslation(image, input.basis);
     for (let polyhedronIndex = 0; polyhedronIndex < polyhedra.length; polyhedronIndex += 1) {
       const polyhedron = polyhedra[polyhedronIndex];
+      if (
+        options.containedInCell
+        && !polyhedronContainedInCell(
+          polyhedron,
+          translation,
+          input,
+          options.cellCenter,
+        )
+      ) continue;
       if (triangleCount + polyhedron.triangles.length > maxTriangles) break outer;
       color.copy(DEFAULT_COLOR);
       const requestedColor = options.colorForCenter?.(
@@ -289,6 +306,45 @@ export function isSuitableCoordinationCenter(atomicNumber: number): boolean {
     && atomicNumber > 0
     && atomicNumber <= 118
     && !EXCLUDED_AUTO_CENTERS.has(atomicNumber);
+}
+
+export function preferredCoordinationCenterAtomicNumbers(
+  input: CoordinationPolyhedraInput,
+): number[] {
+  const candidates = new Set<number>();
+  for (const [left, right] of input.bonds) {
+    for (const atom of [left, right]) {
+      const atomicNumber = input.atomicNumbers[atom] ?? 0;
+      if (isSuitableCoordinationCenter(atomicNumber)) {
+        candidates.add(atomicNumber);
+      }
+    }
+  }
+  const ordered = [...candidates].sort((left, right) => left - right);
+  const preferred = ordered.filter((atomicNumber) => (
+    PREFERRED_METAL_RANGES.some(
+      ([first, last]) => atomicNumber >= first && atomicNumber <= last,
+    )
+  ));
+  return preferred.length > 0 ? preferred : ordered;
+}
+
+function polyhedronContainedInCell(
+  polyhedron: CoordinationPolyhedron,
+  translation: THREE.Vector3,
+  input: CoordinationPolyhedraInput,
+  cellCenter: THREE.Vector3 | undefined,
+): boolean {
+  if (!input.basis || !input.pbc.some(Boolean)) return true;
+  const center = (cellCenter ?? new THREE.Vector3()).clone().add(translation);
+  const tolerance = 2e-5;
+  return polyhedron.vertices.every((vertex) => {
+    const relative = vertex.clone().add(translation).sub(center);
+    return input.pbc.every((periodic, axis) => (
+      !periodic
+      || Math.abs(relative.dot(input.basis!.reciprocal[axis])) <= 0.5 + tolerance
+    ));
+  });
 }
 
 function* coordinationPolyhedronCandidates(

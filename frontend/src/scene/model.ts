@@ -482,13 +482,43 @@ export function sceneBondSegments(
   model: PreparedScene,
   presentation: ScenePresentation,
 ): Segment[] {
-  if (presentation.mode === "spacefill" || presentation.mode === "ribbon") return [];
+  if (
+    !presentation.bonds
+    || presentation.mode === "spacefill"
+    || presentation.mode === "ribbon"
+    || presentation.mode === "polyhedra"
+  ) return [];
   const visible = new Set(model.visibleAtoms);
+  const periodicCoordinates = presentation.wrap === "atom" || presentation.wrap === "unwrapped";
+  const includedImages = new Set(model.images.map(cellOffsetKey));
   const segments: Segment[] = [];
   for (const image of model.images) {
     const shift = imageTranslation(image, model.basis);
     for (const [a, b] of model.bonds) {
       if (!visible.has(a) || !visible.has(b)) continue;
+      if (periodicCoordinates) {
+        const bondShift = minimumImageBondShift(
+          model.positions,
+          a,
+          b,
+          model.basis,
+          model.pbc,
+        );
+        if (bondShift.some((value) => value !== 0)) {
+          const peerImage: CellOffset = [
+            image[0] + bondShift[0],
+            image[1] + bondShift[1],
+            image[2] + bondShift[2],
+          ];
+          if (!includedImages.has(cellOffsetKey(peerImage))) continue;
+          segments.push({
+            from: new THREE.Vector3().fromArray(model.positions, a * 3).add(shift),
+            to: new THREE.Vector3().fromArray(model.positions, b * 3)
+              .add(imageTranslation(peerImage, model.basis)),
+          });
+          continue;
+        }
+      }
       const base = presentation.wrap === "atom"
         ? periodicBondSegments(model.positions, a, b, model.basis, model.pbc, model.cellCenter)
         : presentation.wrap === "unwrapped"
@@ -511,7 +541,12 @@ export function publicationBondGeometry(
       contextAtoms: [],
     };
   }
-  if (presentation.mode === "spacefill" || presentation.mode === "ribbon") {
+  if (
+    !presentation.bonds
+    || presentation.mode === "spacefill"
+    || presentation.mode === "ribbon"
+    || presentation.mode === "polyhedra"
+  ) {
     return { segments: [], contextAtoms: [] };
   }
 
@@ -527,7 +562,12 @@ export function publicationBondGeometry(
       shift: presentation.wrap === "atom" || presentation.wrap === "unwrapped"
         ? minimumImageBondShift(model.positions, a, b, model.basis, model.pbc)
         : [0, 0, 0] as CellOffset,
-    }));
+    }))
+    .filter(({ shift }) => (
+      !presentation.cell
+      || model.images.length > 1
+      || shift.every((value) => value === 0)
+    ));
   const appendBond = (
     fromAtom: number,
     fromImage: CellOffset,
@@ -687,10 +727,20 @@ export function representationRadius(
   if (mode === "licorice") return 0.22 * safeScale;
   if (mode === "lines") return 0.075 * safeScale;
   if (mode === "ribbon") return 0;
+  if (mode === "surface") {
+    return Math.max(0.12, (covalentRadii[atomicNumber] ?? 0.78) * 0.22) * safeScale;
+  }
   if (mode === "polyhedra") {
-    return Math.max(0.18, (covalentRadii[atomicNumber] ?? 0.78) * 0.3) * safeScale;
+    return Math.min(
+      0.28,
+      Math.max(0.14, (covalentRadii[atomicNumber] ?? 0.78) * 0.18),
+    ) * safeScale;
   }
   return Math.max(0.22, (covalentRadii[atomicNumber] ?? 0.78) * 0.43) * safeScale;
+}
+
+export function covalentRadius(atomicNumber: number): number {
+  return covalentRadii[atomicNumber] ?? 0.78;
 }
 
 export function periodicBondSegments(

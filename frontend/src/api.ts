@@ -11,6 +11,12 @@ const utf8 = new TextDecoder();
 const DEFAULT_FRAME_CACHE_LIMIT = 96;
 const DEFAULT_FRAME_CACHE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_PENDING_PREFETCH_LIMIT = 4;
+const STATIC_DEMO = import.meta.env.VITE_STATIC_DEMO === "true";
+const STATIC_DEMO_DATA = `${import.meta.env.BASE_URL}demo`;
+
+export function isStaticDemoMode(): boolean {
+  return STATIC_DEMO;
+}
 
 export type FrameCoordinateMode = "source" | "unwrapped";
 
@@ -79,7 +85,10 @@ export interface RdfAnalysisResult {
 }
 
 export async function getManifest(): Promise<Manifest> {
-  const response = await fetch("/api/manifest", { headers: { Accept: "application/json" } });
+  const response = await fetch(
+    STATIC_DEMO ? `${STATIC_DEMO_DATA}/manifest.json` : "/api/manifest",
+    { headers: { Accept: "application/json" } },
+  );
   if (!response.ok) throw new Error(await responseMessage(response, "Could not load the trajectory"));
   const manifest = (await response.json()) as Manifest;
   validateManifest(manifest, "The trajectory manifest is incomplete");
@@ -87,6 +96,7 @@ export async function getManifest(): Promise<Manifest> {
 }
 
 export async function getInitialRecipe(): Promise<unknown> {
+  if (STATIC_DEMO) return null;
   const response = await fetch("/api/initial-recipe", {
     headers: { Accept: "application/json" },
   });
@@ -100,6 +110,9 @@ export async function getSelectedPositions(
   request: SelectedPositionsRequest,
   signal?: AbortSignal,
 ): Promise<SelectedPositions> {
+  if (STATIC_DEMO) {
+    throw new Error("Trajectory analysis is available in the local Python viewer");
+  }
   const response = await fetch("/api/positions", {
     method: "POST",
     headers: {
@@ -129,6 +142,9 @@ export async function runRdfAnalysis(
   request: RdfAnalysisRequest,
   signal?: AbortSignal,
 ): Promise<RdfAnalysisResult> {
+  if (STATIC_DEMO) {
+    throw new Error("Pair analysis is available in the local Python viewer");
+  }
   const response = await fetch("/api/analysis/rdf", {
     method: "POST",
     headers: {
@@ -159,6 +175,9 @@ export async function runRdfAnalysis(
 }
 
 export async function openFiles(files: File[], signal?: AbortSignal): Promise<Manifest> {
+  if (STATIC_DEMO) {
+    throw new Error("Open local files with the installed Python viewer");
+  }
   if (files.length === 0) throw new Error("Choose at least one trajectory file");
   const body = new FormData();
   files.forEach((file) => body.append("files", file, file.name));
@@ -188,6 +207,16 @@ export async function getFrame(
   datasetGeneration?: string,
   coordinates: FrameCoordinateMode = "source",
 ): Promise<FrameData> {
+  if (STATIC_DEMO) {
+    const response = await fetch(`${STATIC_DEMO_DATA}/frames/${index}.bin`, {
+      headers: { Accept: "application/octet-stream" },
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(await responseMessage(response, `Could not load frame ${index + 1}`));
+    }
+    return decodeFrame(await response.arrayBuffer());
+  }
   const parameters: string[] = [];
   if (datasetGeneration) {
     parameters.push(`dataset_generation=${encodeURIComponent(datasetGeneration)}`);

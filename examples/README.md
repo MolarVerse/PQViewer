@@ -8,6 +8,8 @@ The examples are small fixtures for checking the viewer:
 | `periodic-boundary.extxyz` | Centered cell, forces, time, and minimum image | Synthetic PQViewer fixture |
 | `periodic-boundary.in` | PQ input resolution | Synthetic PQViewer fixture |
 | `periodic-crossing.extxyz` | Continuous motion across a periodic boundary | Synthetic PQViewer fixture |
+| `collision-indicators.xyz` + `.topology` | Explicit bond and nonbonded collision indicators | Synthetic PQViewer fixture |
+| `strontium-titanate.extxyz` | Centered SrTiO3 perovskite and TiO6 coordination polyhedra | Synthetic PQViewer fixture |
 | `acof-triclinic.xyz` | Triclinic framework, wrapping, and dense-scene regression | First four frames of the PQAnalysis `acof_triclinic.xyz` example |
 
 The synthetic fixtures were created for this repository and are covered by its

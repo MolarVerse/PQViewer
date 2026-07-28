@@ -49,6 +49,47 @@ html[data-theme="dark"] {
   border-radius: 0.35rem;
 }
 
+.pq-demo-shell {
+  margin: 1.5rem 0 2rem;
+  overflow: hidden;
+  border: 1px solid var(--pst-color-border);
+  border-radius: 0.55rem;
+  background: var(--pst-color-surface);
+}
+
+.pq-demo-heading {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid var(--pst-color-border);
+}
+
+.pq-demo-heading div {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.pq-demo-heading span {
+  color: var(--pst-color-text-muted);
+  font-size: 0.86rem;
+}
+
+.pq-demo-heading a {
+  white-space: nowrap;
+  font-weight: 650;
+}
+
+.pq-demo-shell iframe {
+  display: block;
+  width: 100%;
+  height: min(72vh, 690px);
+  min-height: 420px;
+  border: 0;
+  background: #f6f8f8;
+}
+
 .sd-card {
   box-shadow: none;
 }
@@ -67,5 +108,16 @@ html[data-theme="dark"] {
 @media screen and (max-width: 67.99em) {
   .bd-main .bd-content .bd-article-container {
     max-width: 100%;
+  }
+}
+
+@media screen and (max-width: 40em) {
+  .pq-demo-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pq-demo-shell iframe {
+    min-height: 520px;
   }
 }

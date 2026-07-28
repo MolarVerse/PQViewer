@@ -5,7 +5,8 @@ PQViewer is a local molecular structure and trajectory viewer built on
 trajectory access, PQ-centred periodic cells, direct measurements, and
 reproducible publication figures in a modern browser interface.
 
-[Get started](getting-started.md) · [Viewer guide](viewer-guide.md) ·
+[Try the interactive viewer](https://molarverse.github.io/PQViewer/viewer/) · [Get started](getting-started.md) ·
+[Jupyter](jupyter.md) · [Viewer guide](viewer-guide.md) ·
 [Figure guide](figures-and-recipes.md) ·
 [Python API](python-api.md)
 
@@ -26,6 +27,28 @@ pqviewer trajectory.xyz
 The interface is bundled with the Python package. Node.js is not required to
 install or run the viewer.
 
+## Try it in the browser
+
+<div class="pq-demo-shell">
+  <div class="pq-demo-heading">
+    <div>
+      <strong>Interactive SrTiO3 perovskite</strong>
+      <span>Drag to rotate. Use Search for Polyhedra.</span>
+    </div>
+    <a href="viewer/">Open full screen</a>
+  </div>
+  <iframe
+    src="viewer/"
+    title="Interactive PQViewer perovskite demo"
+    loading="lazy"
+    allowfullscreen
+  ></iframe>
+</div>
+
+The web demo is a read-only build of the same interface. Install PQViewer for
+local files, trajectory streaming, and PQAnalysis calculations. See
+[how the web demo differs](web-demo.md).
+
 ## Trajectory workspace
 
 Playback, selection, measurements, periodic display, and figure export remain
@@ -43,6 +66,20 @@ UMCM-9 trajectory, frame 1 of 100.
 
 ::::{grid} 1 2 3 3
 :gutter: 2
+
+:::{grid-item-card} Interactive web demo
+:link: web-demo
+:link-type: doc
+
+The GitHub Pages viewer, its limits, and deployment path.
+:::
+
+:::{grid-item-card} Jupyter
+:link: jupyter
+:link-type: doc
+
+Display the real local viewer in a notebook cell.
+:::
 
 :::{grid-item-card} Getting started
 :link: getting-started
@@ -132,14 +169,14 @@ Centred cell · 27 molecules
 {download}`Figure recipe <assets/recipes/water-box.pqfigure.json>`
 :::
 
-:::{grid-item-card} Crystal — NaCl
-:img-top: assets/renders/nacl-crystal.png
-:img-alt: Sodium chloride crystal supercell
+:::{grid-item-card} Crystal — SrTiO3
+:img-top: assets/renders/strontium-titanate.png
+:img-alt: Strontium titanate perovskite with complete titanium oxygen octahedra
 
-2 × 2 × 2 supercell · coordination polyhedra
+2 × 2 × 2 perovskite · contained TiO6 octahedra
 
 +++
-{download}`Figure recipe <assets/recipes/nacl.pqfigure.json>`
+{download}`Figure recipe <assets/recipes/strontium-titanate.pqfigure.json>`
 :::
 
 :::{grid-item-card} COF — ACOF
@@ -159,6 +196,8 @@ examples.
 :maxdepth: 2
 
 getting-started
+web-demo
+jupyter
 viewer-guide
 data-and-conventions
 trajectory-analysis

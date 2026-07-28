@@ -56,6 +56,7 @@ function completeRecipe(): FigureRecipe {
         mirror: [true, false, true],
         images: { min: [-1, 0, -2], max: [1, 0, 2] },
         cell: true,
+        bonds: true,
         forces: true,
         velocities: true,
         atomScale: 1.2,
@@ -119,6 +120,15 @@ function completeRecipe(): FigureRecipe {
 }
 
 describe("figure recipe parsing", () => {
+  it("opens recipes saved before the bond layer was explicit", () => {
+    const legacy = JSON.parse(JSON.stringify(completeRecipe())) as {
+      scene: { presentation: Record<string, unknown> };
+    };
+    delete legacy.scene.presentation.bonds;
+
+    expect(parseFigureRecipe(legacy).scene.presentation.bonds).toBe(true);
+  });
+
   it("round-trips every scene, camera, output and annotation field", () => {
     const input = completeRecipe();
     const parsed = parseFigureRecipe(input);

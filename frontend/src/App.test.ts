@@ -39,6 +39,7 @@ const presentation: ScenePresentation = {
   cellOrigin: [0, 0, 0],
   mirror: [false, false, false],
   cell: false,
+  bonds: true,
   forces: true,
   velocities: false,
   atomScale: 1,
@@ -68,7 +69,10 @@ describe("scene profiles", () => {
     expect(profilePresentation("crystal", presentation, true, true, capabilities)).toMatchObject({
       wrap: "atom",
       cell: true,
+      bonds: false,
       forces: false,
+      atomScale: 0.9,
+      bondScale: 0.5,
       images: { min: [0, 0, 0], max: [0, 0, 0] },
     });
   });
@@ -90,6 +94,28 @@ describe("scene profiles", () => {
       false,
       capabilities,
     )).toMatchObject({ wrap: "atom", color: "element" });
+  });
+
+  it("uses complete coordination polyhedra for a supported crystal", () => {
+    const capabilities: SceneCapabilities = {
+      water: false,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      polyhedra: true,
+      polyhedraReason: "Coordination topology available",
+      suggestedProfile: "crystal",
+    };
+    expect(profilePresentation(
+      "crystal",
+      presentation,
+      true,
+      false,
+      capabilities,
+    )).toMatchObject({
+      mode: "polyhedra",
+      wrap: "atom",
+      cell: true,
+    });
   });
 
   it("keeps automatic display choices deterministic", () => {
@@ -148,6 +174,50 @@ describe("scene profiles", () => {
       wrap: "atom",
       cell: true,
       forces: true,
+    });
+  });
+
+  it("uses the liquid preset for periodic solvent", () => {
+    const capabilities: SceneCapabilities = {
+      water: true,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
+      suggestedProfile: "molecule",
+    };
+    expect(selectedProfilePresentation(
+      "auto",
+      presentation,
+      true,
+      false,
+      false,
+      capabilities,
+    )).toMatchObject({
+      mode: "ball-stick",
+      wrap: "molecule",
+      cell: true,
+      water: "show",
+    });
+  });
+
+  it("keeps periodic MOFs inside the displayed cell", () => {
+    const capabilities: SceneCapabilities = {
+      water: false,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      polyhedra: true,
+      polyhedraReason: "Coordination topology available",
+      suggestedProfile: "crystal",
+    };
+    expect(profilePresentation("mof", presentation, true, false, capabilities)).toMatchObject({
+      mode: "lines",
+      wrap: "atom",
+      cell: true,
+      bonds: true,
+      hydrogens: false,
+      atomScale: 0.72,
+      bondScale: 0.52,
     });
   });
 });

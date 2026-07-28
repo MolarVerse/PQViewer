@@ -2,6 +2,7 @@ export interface SearchableCommand {
   id: string;
   label: string;
   keywords?: string | readonly string[];
+  breadcrumb?: string;
   detail?: string;
   disabled?: boolean;
   discoverableWhenDisabled?: boolean;
@@ -92,9 +93,11 @@ function matchScore(
   const keywords = normalize(
     typeof action.keywords === "string" ? action.keywords : action.keywords?.join(" ") ?? "",
   );
+  const breadcrumb = normalize(action.breadcrumb ?? "");
   const detail = normalize(action.detail ?? "");
   const labelWords = label.split(" ");
   const keywordWords = keywords.split(" ");
+  const breadcrumbWords = breadcrumb.split(" ");
   const detailWords = detail.split(" ");
   let score = 0;
 
@@ -105,6 +108,8 @@ function matchScore(
       labelWords,
       keywords,
       keywordWords,
+      breadcrumb,
+      breadcrumbWords,
       detail,
       detailWords,
     );
@@ -120,6 +125,10 @@ function matchScore(
   else if (keywords.startsWith(query)) score += 160;
   else if (keywords.includes(query)) score += 100;
 
+  if (breadcrumb === query) score += 180;
+  else if (breadcrumb.startsWith(query)) score += 120;
+  else if (breadcrumb.includes(query)) score += 80;
+
   if (detail === query) score += 60;
   else if (detail.includes(query)) score += 30;
 
@@ -132,6 +141,8 @@ function bestTermScore(
   labelWords: readonly string[],
   keywords: string,
   keywordWords: readonly string[],
+  breadcrumb: string,
+  breadcrumbWords: readonly string[],
   detail: string,
   detailWords: readonly string[],
 ): number {
@@ -141,6 +152,8 @@ function bestTermScore(
   if (label.includes(term)) return 100;
   if (keywordWords.some((word) => word.startsWith(term))) return 80;
   if (keywords.includes(term)) return 60;
+  if (breadcrumbWords.some((word) => word.startsWith(term))) return 70;
+  if (breadcrumb.includes(term)) return 50;
   if (detailWords.some((word) => word.startsWith(term))) return 40;
   if (detail.includes(term)) return 20;
   return 0;
