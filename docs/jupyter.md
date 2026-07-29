@@ -1,9 +1,8 @@
 # Jupyter
 
-PQViewer can display the real local application in a Jupyter output cell. It is
-not a screenshot or a reduced notebook renderer: the iframe retains 3Dmol.js,
-structure and cell editing, representations, selection, command search,
-trajectories, and figure export.
+PQViewer can embed the local application in a Jupyter output cell. The iframe
+retains 3Dmol.js, structure and cell editing, representations, selection,
+command search, trajectories, and figure export.
 
 ## Install
 

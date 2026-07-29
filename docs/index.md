@@ -1,11 +1,10 @@
 # PQViewer
 
-PQViewer is a local molecular structure and trajectory viewer built on
-[PQAnalysis](https://github.com/MolarVerse/PQAnalysis). It combines indexed
-trajectory access, PQ-centred periodic cells, direct measurements, and
-reproducible publication figures in a modern browser interface.
+PQViewer opens molecular structures and trajectories from PQ in a local
+browser, with optional ASE format support. It provides indexed playback,
+PQ-centred periodic cells, measurements, and reproducible figure export.
 
-[Try the interactive viewer](https://molarverse.github.io/PQViewer/viewer/) · [Get started](getting-started.md) ·
+[Open the web demo](https://molarverse.github.io/PQViewer/viewer/) · [Get started](getting-started.md) ·
 [Jupyter](jupyter.md) · [Viewer guide](viewer-guide.md) ·
 [Figure guide](figures-and-recipes.md) ·
 [Python API](python-api.md)
@@ -20,14 +19,18 @@ still change before 1.0.
 PQViewer requires Python 3.12 or newer.
 
 ```bash
+git clone https://github.com/MolarVerse/PQViewer.git
+cd PQViewer
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install .
-pqviewer trajectory.xyz
+pqviewer examples/water.xyz
 ```
 
 The interface is bundled with the Python package. Node.js is not required to
 install or run the viewer.
 
-## Try it in the browser
+## Web demo
 
 <div class="pq-demo-shell">
   <div class="pq-demo-heading">
@@ -45,14 +48,14 @@ install or run the viewer.
   ></iframe>
 </div>
 
-The web demo is a read-only build of the same interface. Install PQViewer for
-local files, trajectory streaming, and PQAnalysis calculations. See
-[how the web demo differs](web-demo.md).
+The fixed-dataset demo keeps edits in the browser. Install PQViewer to open
+local files, stream trajectories, and run PQAnalysis calculations. See
+[what differs in the web demo](web-demo.md).
 
 ## Trajectory workspace
 
-Playback, selection, measurements, periodic display, and figure export remain
-close to the structure without crowding the molecular canvas.
+The timeline provides frame playback and navigation. Selection, measurements,
+periodic display, and figure export remain in the same workspace.
 
 ```{figure} assets/screenshots/trajectory-workspace.png
 :alt: PQViewer showing a 100-frame UMCM-9 trajectory
@@ -71,14 +74,14 @@ UMCM-9 trajectory, frame 1 of 100.
 :link: web-demo
 :link-type: doc
 
-The GitHub Pages viewer, its limits, and deployment path.
+Use the fixed-dataset viewer and understand its limits.
 :::
 
 :::{grid-item-card} Jupyter
 :link: jupyter
 :link-type: doc
 
-Display the real local viewer in a notebook cell.
+Embed PQViewer in a notebook cell.
 :::
 
 :::{grid-item-card} Getting started
@@ -121,6 +124,13 @@ Publication output and reproducible headless rendering.
 :link-type: doc
 
 Open datasets, pass ASE objects, and create an application.
+:::
+
+:::{grid-item-card} Troubleshooting
+:link: troubleshooting
+:link-type: doc
+
+Resolve browser, file, notebook, and figure-rendering problems.
 :::
 ::::
 
