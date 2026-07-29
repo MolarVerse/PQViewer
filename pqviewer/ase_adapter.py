@@ -327,7 +327,7 @@ def _require_ase() -> Any:
         import ase
     except ImportError as error:
         raise RuntimeError(
-            "ASE support is optional; install pqanalysis-viewer[ase]"
+            "ASE support is optional; install pqviewer3d[ase]"
         ) from error
     return ase
 

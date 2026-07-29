@@ -27,26 +27,7 @@ jobs:
         run: |
           wheel=$(find dist -name '*.whl' -print -quit)
           sdist=$(find dist -name '*.tar.gz' -print -quit)
-          python - "$wheel" <<'PY'
-          import re
-          import sys
-          from zipfile import ZipFile
-
-          with ZipFile(sys.argv[1]) as archive:
-              files = set(archive.namelist())
-              index = "pqviewer/static/index.html"
-              assert index in files, f"missing {index}"
-              html = archive.read(index).decode()
-              for asset in re.findall(r'(?:src|href)="(/assets/[^"?]+)', html):
-                  bundled = f"pqviewer/static{asset}"
-                  assert bundled in files, f"missing {bundled}"
-                  if asset.endswith(".css"):
-                      css = archive.read(bundled).decode()
-                      for nested in re.findall(r"url\((/assets/[^)]+)\)", css):
-                          nested_file = f"pqviewer/static{nested}"
-                          assert nested_file in files, f"missing {nested_file}"
-          PY
-          tar -tzf "$sdist" | grep -q '/docs/conf.py$'
+          python scripts/verify_distribution.py "$wheel" "$sdist"
           python -m venv /tmp/pqviewer-smoke
           /tmp/pqviewer-smoke/bin/pip install "$wheel"
           cd /tmp

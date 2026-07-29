@@ -371,7 +371,7 @@ def test_ase_missing_message_is_actionable(monkeypatch: pytest.MonkeyPatch) -> N
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", unavailable)
-    with pytest.raises(RuntimeError, match=r"pqanalysis-viewer\[ase\]"):
+    with pytest.raises(RuntimeError, match=r"pqviewer3d\[ase\]"):
         _require_ase()
 
 

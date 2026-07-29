@@ -1,0 +1,256 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify release commit
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - "$RELEASE_TAG" <<'PY'
+          import json
+          import re
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          version = project["version"]
+          tag = sys.argv[1]
+          tag_pattern = (
+              r"^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+              r"(?:(?:a|b|rc)(?:0|[1-9]\d*))?$"
+          )
+          if not re.fullmatch(tag_pattern, tag):
+              raise SystemExit(f"tag {tag} is not a supported release tag")
+          if project["name"] != "PQViewer3D":
+              raise SystemExit("unexpected Python distribution name")
+          if tag != f"v{version}":
+              raise SystemExit(f"tag {tag} does not match version {version}")
+
+          frontend = json.loads(Path("frontend/package.json").read_text())["version"]
+          lockfile = json.loads(Path("frontend/package-lock.json").read_text())
+          citation = Path("CITATION.cff").read_text()
+          changelog = Path("CHANGELOG.md").read_text()
+          if (
+              frontend != version
+              or lockfile["version"] != version
+              or lockfile["packages"][""]["version"] != version
+          ):
+              raise SystemExit("frontend version does not match the release")
+          if not re.search(rf"^version: {re.escape(version)}$", citation, re.MULTILINE):
+              raise SystemExit("CITATION.cff version does not match the release")
+          citation_date = re.search(
+              r'^date-released: ["\']?(\d{4}-\d{2}-\d{2})["\']?$',
+              citation,
+              re.MULTILINE,
+          )
+          changelog_date = re.search(
+              rf"^## \[{re.escape(version)}\] - (\d{{4}}-\d{{2}}-\d{{2}})$",
+              changelog,
+              re.MULTILINE,
+          )
+          if citation_date is None or changelog_date is None:
+              raise SystemExit("release date is missing from CITATION.cff or CHANGELOG.md")
+          if citation_date.group(1) != changelog_date.group(1):
+              raise SystemExit("release dates do not match")
+          PY
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade ".[dev]" build twine
+      - name: Run Python tests
+        run: python -m pytest
+      - name: Build bundled interface
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Verify bundled interface
+        run: git diff --exit-code -- pqviewer/static
+      - name: Build Python distributions
+        run: |
+          python -m build
+          python -m twine check --strict dist/*
+          wheel=$(find dist -name '*.whl' -print -quit)
+          sdist=$(find dist -name '*.tar.gz' -print -quit)
+          python scripts/verify_distribution.py "$wheel" "$sdist"
+      - name: Upload Python distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  smoke:
+    needs: build
+    strategy:
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - name: Install wheel
+        run: |
+          wheel=$(find dist -name '*.whl' -print -quit)
+          python -m pip install "$wheel"
+      - name: Verify installed application
+        run: |
+          python -m pip check
+          python - <<'PY'
+          from importlib.resources import files
+
+          import pqviewer
+
+          assert (files("pqviewer") / "static" / "index.html").is_file()
+          assert pqviewer.__name__ == "pqviewer"
+          PY
+          pqviewer --help
+          pqviewer render --help
+          pqviewer-render --help
+      - name: Smoke-test local server
+        run: |
+          pqviewer --no-open --port 8765 > pqviewer.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8765/api/health > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if ! curl --fail --silent http://127.0.0.1:8765/api/health; then
+            cat pqviewer.log
+            exit 1
+          fi
+          curl --fail --silent http://127.0.0.1:8765/ > /dev/null
+          kill "$server_pid" 2>/dev/null || true
+          wait "$server_pid" || true
+          trap - EXIT
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Python dependencies
+        run: python -m pip install ".[dev,render]"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install browser dependencies
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Install render browser
+        run: python -m playwright install chromium
+      - name: Run browser tests
+        working-directory: frontend
+        run: npm run test:e2e
+      - name: Smoke-test headless rendering
+        env:
+          PQVIEWER_HEADLESS_TEST: "1"
+        run: python -m pytest tests/test_recipe.py -k headless_render_command
+      - name: Upload browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-browser-artifacts
+          path: output/playwright
+          if-no-files-found: ignore
+
+  publish-pypi:
+    needs:
+      - smoke
+      - browser
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/PQViewer3D
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+
+  github-release:
+    needs:
+      - smoke
+      - publish-pypi
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - name: Add release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+          release_flags=()
+          if [[ "$RELEASE_TAG" =~ (a|b|rc)[0-9]+$ ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            ./*.whl ./*.tar.gz ./SHA256SUMS \
+            --generate-notes \
+            --title "PQViewer ${RELEASE_TAG#v}" \
+            --verify-tag \
+            --repo "$GITHUB_REPOSITORY" \
+            "${release_flags[@]}"

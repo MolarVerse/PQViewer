@@ -88,5 +88,7 @@ MIT License.
    third-party license notices.
 8. Before announcing public access, enable and test private vulnerability
    reporting, security alerts, and dependency alerts.
-9. Tag the version and publish a GitHub release. Mark pre-1.0 test releases as
-   pre-releases.
+9. Push the version tag and let the release workflow build and smoke-test the
+   wheel and source archive. Use a PEP 440 pre-release version for test releases.
+10. Approve the protected `pypi` environment. The workflow publishes to PyPI,
+    then creates the GitHub release with checksums.

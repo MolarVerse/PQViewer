@@ -21,6 +21,8 @@ python -m pip install .
 ```
 
 PQViewer includes its compiled interface in the Python package.
+The distribution is named `PQViewer3D`; the import package and command remain
+`pqviewer`.
 
 Optional ASE file and object support:
 
