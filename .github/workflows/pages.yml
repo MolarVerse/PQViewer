@@ -9,12 +9,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
-
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -33,9 +29,9 @@ jobs:
         run: python -m pip install '.[docs,ase]'
       - name: Build documentation
         run: >-
-          python -m sphinx -W -b html
+          python -m sphinx -W --keep-going -b html
           -d _build/doctrees
-          docs _site/PQViewer
+          docs _site
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
@@ -44,38 +40,33 @@ jobs:
         env:
           VITE_STATIC_DEMO: "true"
           VITE_BASE_PATH: /PQViewer/viewer/
-          PQVIEWER_OUT_DIR: ../_site/PQViewer/viewer
+          PQVIEWER_OUT_DIR: ../_site/viewer
         run: npm run build
       - name: Pack the perovskite demo
         run: >-
           python scripts/build_static_demo.py
           examples/strontium-titanate.extxyz
-          _site/PQViewer/viewer/demo
-      - name: Configure deployment key
-        env:
-          DOCS_DEPLOY_KEY: ${{ secrets.DOCS_DEPLOY_KEY }}
-        run: |
-          if [ -z "$DOCS_DEPLOY_KEY" ]; then
-            echo "::error::DOCS_DEPLOY_KEY is not configured"
-            exit 1
-          fi
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$DOCS_DEPLOY_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' \
-            "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" \
-            > ~/.ssh/known_hosts
-      - name: Publish generated site
-        run: |
-          git clone --branch gh-pages --single-branch \
-            git@github.com:MolarVerse/molarverse.github.io.git _pages
-          rsync -a --delete _site/PQViewer/ _pages/PQViewer/
-          touch _pages/.nojekyll
-          git -C _pages config user.name "github-actions[bot]"
-          git -C _pages config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C _pages add -- .nojekyll PQViewer
-          if ! git -C _pages diff --cached --quiet; then
-            git -C _pages commit -m "Update PQViewer documentation"
-            git -C _pages push origin gh-pages
-          fi
+          _site/viewer/demo
+      - name: Prepare Pages
+        run: touch _site/.nojekyll
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

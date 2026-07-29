@@ -204,6 +204,7 @@ examples.
 ```{toctree}
 :hidden:
 :maxdepth: 2
+:caption: Contents
 
 getting-started
 web-demo

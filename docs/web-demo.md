@@ -33,5 +33,6 @@ features. The local server binds to `127.0.0.1` by default.
 
 ## Deployment
 
-The Pages workflow builds this documentation and the fixed-dataset viewer, then
-publishes the generated files under `/PQViewer/` on the MolarVerse Pages site.
+The Pages workflow builds this documentation and the fixed-dataset viewer as
+one artifact. Pushes to `main` publish it through the repository's GitHub Pages
+environment.

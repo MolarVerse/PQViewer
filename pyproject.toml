@@ -34,9 +34,10 @@ jupyter = [
     "ipython>=8,<10",
 ]
 docs = [
+    "furo>=2024.8.6,<2027",
     "myst-parser>=4,<5",
-    "pydata-sphinx-theme>=0.16,<1",
     "sphinx>=8,<9",
+    "sphinx-copybutton>=0.5,<1",
     "sphinx-design>=0.6,<1",
 ]
 dev = [
