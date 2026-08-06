@@ -19,7 +19,7 @@ pqviewer trajectory.xyz --port 8877
 Install the optional adapter:
 
 ```bash
-python -m pip install '.[ase]'
+python -m pip install 'molarverse-pqviewer[ase]'
 ```
 
 PQViewer then uses the formats detected by the installed ASE version.
@@ -60,7 +60,7 @@ reports that it is too large.
 ## Headless rendering cannot find Chromium
 
 ```bash
-python -m pip install '.[render]'
+python -m pip install 'molarverse-pqviewer[render]'
 python -m playwright install chromium
 ```
 

@@ -19,7 +19,7 @@ Install the `ase` extra to open ASE `Atoms`, indexed sequences of `Atoms`,
 `.traj`, and file types detected by ASE:
 
 ```bash
-python -m pip install '.[ase]'
+python -m pip install 'molarverse-pqviewer[ase]'
 ```
 
 ASE `.traj` files and indexed Python sequences retain indexed access. Other ASE

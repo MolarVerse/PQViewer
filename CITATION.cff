@@ -3,6 +3,7 @@ message: "If PQViewer supports published work, please cite the software."
 type: software
 title: PQViewer
 version: 0.1.0
+date-released: "2026-08-06"
 authors:
   - given-names: Josef M.
     family-names: Gallmetzer

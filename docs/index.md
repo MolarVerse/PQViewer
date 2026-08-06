@@ -19,12 +19,8 @@ still change before 1.0.
 PQViewer requires Python 3.12 or newer.
 
 ```bash
-git clone https://github.com/MolarVerse/PQViewer.git
-cd PQViewer
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install .
-pqviewer examples/water.xyz
+python -m pip install molarverse-pqviewer
+pqviewer
 ```
 
 The interface is bundled with the Python package. Node.js is not required to

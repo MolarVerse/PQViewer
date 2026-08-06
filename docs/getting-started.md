@@ -10,45 +10,41 @@ The automated browser and render release suite uses Chromium on Linux. Other
 current WebGL 2 browsers are intended to work but are not yet part of the
 release suite.
 
-## Install from a checkout
+## Install
 
 ```bash
-git clone https://github.com/MolarVerse/PQViewer.git
-cd PQViewer
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install .
+python -m pip install molarverse-pqviewer
 ```
 
 PQViewer includes its compiled interface in the Python package.
-The distribution is named `PQViewer3D`; the import package and command remain
-`pqviewer`.
+The distribution is named `molarverse-pqviewer`; the import package and command
+remain `pqviewer`.
 
 Optional ASE file and object support:
 
 ```bash
-python -m pip install '.[ase]'
+python -m pip install 'molarverse-pqviewer[ase]'
 ```
 
 Optional Jupyter display support:
 
 ```bash
-python -m pip install '.[jupyter,ase]'
+python -m pip install 'molarverse-pqviewer[jupyter,ase]'
 ```
 
 Optional headless figure rendering:
 
 ```bash
-python -m pip install '.[render]'
+python -m pip install 'molarverse-pqviewer[render]'
 python -m playwright install chromium
 ```
 
 ## Open data
 
-Open the included water trajectory:
+Open an empty workspace, then use **Open** or drop a structure onto the canvas:
 
 ```bash
-pqviewer examples/water.xyz
+pqviewer
 ```
 
 PQViewer starts a local server at `http://127.0.0.1:8765` and opens the default
@@ -70,8 +66,8 @@ pqviewer 'trajectory.xyz@100:1000:10'
 The slice uses Python's `start:stop:step` rules. Quote it in the shell to avoid
 special-character handling.
 
-Run `pqviewer` without a path to open an empty workspace. Use **Open** or drop
-files on the canvas to replace the current source.
+From a source checkout, `pqviewer examples/water.xyz` opens the included water
+trajectory.
 
 ## Add companion data
 

@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/MolarVerse/PQViewer/actions/workflows/ci.yml/badge.svg)](https://github.com/MolarVerse/PQViewer/actions/workflows/ci.yml)
 [![Documentation](https://github.com/MolarVerse/PQViewer/actions/workflows/pages.yml/badge.svg)](https://molarverse.github.io/PQViewer/)
+[![PyPI](https://img.shields.io/pypi/v/molarverse-pqviewer.svg)](https://pypi.org/project/molarverse-pqviewer/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://github.com/MolarVerse/PQViewer/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2f718f.svg)](https://github.com/MolarVerse/PQViewer/blob/main/LICENSE)
 
@@ -17,26 +18,21 @@ centred periodic cells, measurements, and reproducible figure export.
 
 ![PQViewer showing a 100-frame UMCM-9 trajectory](https://raw.githubusercontent.com/MolarVerse/PQViewer/main/docs/assets/screenshots/trajectory-workspace.png)
 
-PQViewer is preparing for its first public beta. File and Python interfaces may
-change before 1.0.
+PQViewer is in public beta. File and Python interfaces may change before 1.0.
 
 ## Install
 
 PQViewer requires Python 3.12 or newer.
-The Python distribution is named `PQViewer3D`; the application, import package,
-and command remain `PQViewer`, `pqviewer`, and `pqviewer`.
+The distribution is named `molarverse-pqviewer`; the application, import
+package, and command remain `PQViewer`, `pqviewer`, and `pqviewer`.
 
 ```bash
-git clone https://github.com/MolarVerse/PQViewer.git
-cd PQViewer
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install .
-pqviewer examples/water.xyz
+python -m pip install molarverse-pqviewer
+pqviewer
 ```
 
 Node.js is not required. Optional ASE format support is installed with
-`python -m pip install '.[ase]'`.
+`python -m pip install 'molarverse-pqviewer[ase]'`.
 
 The CLI also accepts PQ inputs, run directories, ASE sources, and frame slices.
 See [Getting started](https://molarverse.github.io/PQViewer/getting-started.html)
@@ -56,7 +52,7 @@ Search atoms, settings, and commands with the central **Search** field,
 ## Jupyter
 
 ```bash
-python -m pip install '.[jupyter,ase]'
+python -m pip install 'molarverse-pqviewer[jupyter,ase]'
 ```
 
 ```python

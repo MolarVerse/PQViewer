@@ -9,7 +9,7 @@ command search, trajectories, and figure export.
 From a checkout:
 
 ```bash
-python -m pip install -e '.[jupyter,ase]'
+python -m pip install 'molarverse-pqviewer[jupyter,ase]'
 ```
 
 The `ase` extra is only required for ASE objects and formats handled by ASE.

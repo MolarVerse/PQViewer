@@ -56,7 +56,7 @@ pqviewer view.pqfigure.json
 Install the rendering extra and Chromium once:
 
 ```bash
-python -m pip install '.[render]'
+python -m pip install 'molarverse-pqviewer[render]'
 python -m playwright install chromium
 ```
 
