@@ -4,13 +4,22 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -20,10 +29,14 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - name: Verify release commit
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          release_sha=$(git rev-parse HEAD)
+          tag_sha=$(git rev-parse "$RELEASE_TAG^{commit}")
+          test "$release_sha" = "$tag_sha"
+          git merge-base --is-ancestor "$release_sha" origin/main
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -34,8 +47,6 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Verify release version
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           python - "$RELEASE_TAG" <<'PY'
           import json
@@ -173,6 +184,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
@@ -211,6 +223,8 @@ jobs:
       - smoke
       - browser
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     environment:
       name: pypi
       url: https://pypi.org/p/molarverse-pqviewer
@@ -221,8 +235,6 @@ jobs:
           path: dist
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
 
   github-release:
     needs:
@@ -239,7 +251,6 @@ jobs:
       - name: Add release files
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd dist
           sha256sum *.whl *.tar.gz > SHA256SUMS
