@@ -587,10 +587,10 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
   await expect(page.getByRole("option", { name: /Bond display/ }))
     .toContainText("View › Layers › Bonds");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("tab", { name: "View" }))
-    .toHaveAttribute("aria-selected", "true");
   await expect(page.locator('[data-setting-id="view-bonds"]'))
     .toHaveClass(/is-search-target/);
+  await expect(page.getByRole("tab", { name: "View" }))
+    .toHaveAttribute("aria-selected", "true");
   await page.locator("#workbench").getByRole("button", {
     name: "Close",
     exact: true,
