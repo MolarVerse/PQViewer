@@ -10,8 +10,7 @@ PQ-centred periodic cells, measurements, and reproducible figure export.
 [Python API](python-api.md)
 
 :::{note}
-PQViewer is preparing for its first public beta. File and Python interfaces may
-still change before 1.0.
+PQViewer is in public beta. File and Python interfaces may change before 1.0.
 :::
 
 ## Quick start
