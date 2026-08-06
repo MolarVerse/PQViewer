@@ -327,7 +327,7 @@ def _require_ase() -> Any:
         import ase
     except ImportError as error:
         raise RuntimeError(
-            "ASE support is optional; install molarverse-pqviewer[ase]"
+            "ASE support is optional; install MolarVerse-PQViewer[ase]"
         ) from error
     return ase
 

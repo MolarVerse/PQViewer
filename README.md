@@ -23,16 +23,16 @@ PQViewer is in public beta. File and Python interfaces may change before 1.0.
 ## Install
 
 PQViewer requires Python 3.12 or newer.
-The distribution is named `molarverse-pqviewer`; the application, import
+The distribution is named `MolarVerse-PQViewer`; the application, import
 package, and command remain `PQViewer`, `pqviewer`, and `pqviewer`.
 
 ```bash
-python -m pip install molarverse-pqviewer
+python -m pip install MolarVerse-PQViewer
 pqviewer
 ```
 
 Node.js is not required. Optional ASE format support is installed with
-`python -m pip install 'molarverse-pqviewer[ase]'`.
+`python -m pip install 'MolarVerse-PQViewer[ase]'`.
 
 The CLI also accepts PQ inputs, run directories, ASE sources, and frame slices.
 See [Getting started](https://molarverse.github.io/PQViewer/getting-started.html)
@@ -52,7 +52,7 @@ Search atoms, settings, and commands with the central **Search** field,
 ## Jupyter
 
 ```bash
-python -m pip install 'molarverse-pqviewer[jupyter,ase]'
+python -m pip install 'MolarVerse-PQViewer[jupyter,ase]'
 ```
 
 ```python

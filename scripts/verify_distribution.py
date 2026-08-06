@@ -20,7 +20,7 @@ def verify_wheel(path: Path) -> None:
             raise SystemExit("wheel has no package metadata")
 
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
-        if metadata["Name"] != "molarverse-pqviewer":
+        if metadata["Name"] != "MolarVerse-PQViewer":
             raise SystemExit(f"unexpected distribution name: {metadata['Name']}")
 
         required = (

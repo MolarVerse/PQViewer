@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Changed
+
+- Capitalize the Python distribution name as `MolarVerse-PQViewer`
+
 ## [0.1.0] - 2026-08-06
 
 Initial public beta.

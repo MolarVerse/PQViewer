@@ -13,29 +13,29 @@ release suite.
 ## Install
 
 ```bash
-python -m pip install molarverse-pqviewer
+python -m pip install MolarVerse-PQViewer
 ```
 
 PQViewer includes its compiled interface in the Python package.
-The distribution is named `molarverse-pqviewer`; the import package and command
+The distribution is named `MolarVerse-PQViewer`; the import package and command
 remain `pqviewer`.
 
 Optional ASE file and object support:
 
 ```bash
-python -m pip install 'molarverse-pqviewer[ase]'
+python -m pip install 'MolarVerse-PQViewer[ase]'
 ```
 
 Optional Jupyter display support:
 
 ```bash
-python -m pip install 'molarverse-pqviewer[jupyter,ase]'
+python -m pip install 'MolarVerse-PQViewer[jupyter,ase]'
 ```
 
 Optional headless figure rendering:
 
 ```bash
-python -m pip install 'molarverse-pqviewer[render]'
+python -m pip install 'MolarVerse-PQViewer[render]'
 python -m playwright install chromium
 ```
 

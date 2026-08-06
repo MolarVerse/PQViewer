@@ -100,7 +100,7 @@ def render_recipe(
         from playwright.sync_api import sync_playwright
     except ImportError as error:
         raise RuntimeError(
-            "headless rendering requires molarverse-pqviewer[render]"
+            "headless rendering requires MolarVerse-PQViewer[render]"
         ) from error
 
     application = create_app(dataset=dataset, initial_recipe=recipe)

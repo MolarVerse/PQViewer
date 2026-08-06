@@ -18,7 +18,7 @@ PQViewer is in public beta. File and Python interfaces may change before 1.0.
 PQViewer requires Python 3.12 or newer.
 
 ```bash
-python -m pip install molarverse-pqviewer
+python -m pip install MolarVerse-PQViewer
 pqviewer
 ```
 

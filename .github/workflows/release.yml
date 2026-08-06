@@ -57,7 +57,7 @@ jobs:
           )
           if not re.fullmatch(tag_pattern, tag):
               raise SystemExit(f"tag {tag} is not a supported release tag")
-          if project["name"] != "molarverse-pqviewer":
+          if project["name"] != "MolarVerse-PQViewer":
               raise SystemExit("unexpected Python distribution name")
           if tag != f"v{version}":
               raise SystemExit(f"tag {tag} does not match version {version}")
