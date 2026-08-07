@@ -30,7 +30,7 @@ install or run the viewer.
 <div class="pq-demo-shell">
   <div class="pq-demo-heading">
     <div>
-      <strong>Interactive SrTiO3 perovskite</strong>
+      <strong>Interactive SrTiO<sub>3</sub> perovskite</strong>
       <span>Drag to rotate. Use Search for Polyhedra.</span>
     </div>
     <a href="viewer/">Open full screen</a>
@@ -147,9 +147,9 @@ PDB 1CRN · 46 residues
 {download}`Figure recipe <assets/recipes/crambin.pqfigure.json>`
 :::
 
-:::{grid-item-card} Molecule — C60
+:::{grid-item-card} Molecule — C<sub>60</sub>
 :img-top: assets/renders/c60.png
-:img-alt: C60 fullerene rendered as a ball-and-stick molecule
+:img-alt: C₆₀ fullerene rendered as a ball-and-stick molecule
 
 Isolated fullerene · 60 atoms
 
@@ -174,11 +174,11 @@ Centred cell · 27 molecules
 {download}`Figure recipe <assets/recipes/water-box.pqfigure.json>`
 :::
 
-:::{grid-item-card} Crystal — SrTiO3
+:::{grid-item-card} Crystal — SrTiO<sub>3</sub>
 :img-top: assets/renders/strontium-titanate.png
 :img-alt: Strontium titanate perovskite with complete titanium oxygen octahedra
 
-2 × 2 × 2 perovskite · contained TiO6 octahedra
+2 × 2 × 2 perovskite · contained TiO<sub>6</sub> octahedra
 
 +++
 {download}`Figure recipe <assets/recipes/strontium-titanate.pqfigure.json>`

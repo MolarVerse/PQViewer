@@ -1,7 +1,7 @@
 # Web demo
 
 The [hosted viewer](https://molarverse.github.io/PQViewer/viewer/) packages the
-PQViewer frontend and a SrTiO3 perovskite dataset as static files. It runs
+PQViewer frontend and a SrTiO<sub>3</sub> perovskite dataset as static files. It runs
 without a Python server.
 
 ## Available in the demo
@@ -16,7 +16,7 @@ without a Python server.
 - PNG and TIFF output through the independent publication renderer
 
 Use the visible **Search** field or press `Cmd/Ctrl+K` or `/`. Search for
-**Polyhedra** to inspect complete TiO6 octahedra, or search for
+**Polyhedra** to inspect complete TiO<sub>6</sub> octahedra, or search for
 `edit lattice vectors` to open the cell matrix.
 
 Edits remain in the browser and reset when the page reloads. No structure is

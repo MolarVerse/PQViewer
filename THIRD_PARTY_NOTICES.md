@@ -195,11 +195,11 @@ be cited as:
 
 ## Demonstration geometries
 
-The C60 fullerene, NaCl supercell, and illustrative water box shown in the
+The C<sub>60</sub> fullerene, NaCl supercell, and illustrative water box shown in the
 documentation were generated with
 [ASE 3.29.0](https://wiki.fysik.dtu.dk/ase/) and rendered by PQViewer:
 
-- C60 uses `ase.build.molecule("C60")`.
+- C<sub>60</sub> uses `ase.build.molecule("C60")`.
 - NaCl uses `ase.build.bulk("NaCl", "rocksalt", a=5.64, cubic=True)` repeated
   twice along each axis.
 - The water box places 27 `ase.build.molecule("H2O")` geometries on a
