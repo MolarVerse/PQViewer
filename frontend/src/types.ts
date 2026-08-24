@@ -150,7 +150,7 @@ export interface ScenePresentation {
   velocities: boolean;
   atomScale: number;
   bondScale: number;
-  color: "element" | "residue" | "chain";
+  color: "element" | "residue" | "chain" | "structure";
   quality: "auto" | "high";
 }
 
@@ -160,5 +160,5 @@ export interface SceneCapabilities {
   ribbonReason: string;
   polyhedra: boolean;
   polyhedraReason: string;
-  suggestedProfile: "molecule" | "protein" | "crystal";
+  suggestedProfile: "molecule" | "protein" | "crystal" | "mof";
 }

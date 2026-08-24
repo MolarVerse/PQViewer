@@ -70,11 +70,14 @@ Choose **View** or press `V` to open the controls supported by the current
 source.
 
 Representations are explicit: ball-and-stick, spacefill, licorice, lines,
-ribbon, coordination polyhedra, and surface. Atom and bond size, coloring,
-hydrogen visibility, and interactive quality are adjustable in the same
-inspector. Light and dark appearance are explicit View settings. PQViewer
-chooses a sensible initial display for the loaded data, but every representation
-and layer remains directly controllable; the inspector does not require a
+ribbon, coordination polyhedra, and surface. Atom color, hydrogen visibility,
+and atom and bond size follow in the same inspector, then on/off layers such as
+bonds, water, the cell, forces, and velocities. Periodic wrap, centering, and
+repeats stay in a collapsed **Periodic cell** section when a cell is present.
+Light and dark appearance and interactive quality sit at the end, because they
+change the viewer chrome rather than the scientific display. PQViewer chooses a
+sensible initial display for the loaded data, but every representation and
+layer remains directly controllable; the inspector does not require a
 scientific-system preset.
 
 Coordination geometry follows the visible bonding topology. Planar ligand

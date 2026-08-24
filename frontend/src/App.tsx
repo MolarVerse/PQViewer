@@ -100,6 +100,7 @@ import {
   hillFormula,
   mergeSelections,
   parseWithinSelectionCommand,
+  parseAtomJumpCommand,
   replaceSelections,
   SelectionIndex,
 } from "./scientificSelection";
@@ -157,6 +158,7 @@ import type {
   RepresentationMode,
   SceneCapabilities,
   ScenePresentation,
+  Topology,
 } from "./types";
 
 type LoadState = "loading" | "ready" | "error";
@@ -422,10 +424,9 @@ export default function App() {
     setFigureBridgeError("");
     pendingFigureRecipe.current = null;
     setSceneInfo(null);
-    setPresentation((current) => ({
-      ...current,
-      ...defaultPeriodicPresentation(),
-    }));
+    setForceScale(1);
+    setVelocityScale(1);
+    setPresentation(defaultPresentation);
     setLoadState("ready");
     setLoadError("");
     setProfile("auto");
@@ -1304,11 +1305,13 @@ export default function App() {
   ]);
   const analysisAvailable = Boolean(
     !staticDemo
-    && canPlay
     && manifest?.source?.path
     && pbc.every(Boolean)
     && analysisSelectionOptions.length > 0,
   );
+  const hasHydrogens = structureHasHydrogens(manifest?.topology);
+  const hasResidueColor = structureHasResidueColor(manifest?.topology);
+  const hasChainColor = structureHasChainColor(manifest?.topology);
   const trackingAvailable = canPlay
     && selectedAtoms.length > 0
     && selectedAtoms.length <= MAX_TRACKED_SELECTIONS;
@@ -1770,7 +1773,7 @@ export default function App() {
   const showRdfSetup = useCallback((view: "rdf" | "coordination") => {
     if (!analysisAvailable) {
       setNotice({
-        message: "Pair analysis needs a trajectory with a full periodic cell.",
+        message: "Pair analysis needs a full three-dimensional periodic cell.",
         tone: "status",
       });
       return;
@@ -2199,7 +2202,17 @@ export default function App() {
       });
       return;
     }
-    setPresentation((current) => ({ ...current, ...change }));
+    setPresentation((current) => {
+      const next = { ...current, ...change };
+      if (
+        change.mode === "ball-stick"
+        || change.mode === "licorice"
+        || change.mode === "lines"
+      ) {
+        next.bonds = change.bonds ?? true;
+      }
+      return next;
+    });
     if (change.mode !== undefined) setProfile("custom");
   }, [capabilities]);
 
@@ -2646,6 +2659,26 @@ export default function App() {
   ]);
 
   const resolveCommandAction = useCallback((query: string): CommandAction | null => {
+    const atom = manifest
+      ? parseAtomJumpCommand(query, {
+        atomCount: manifest.topology.atom_count,
+        symbolAt: (index) => atomSymbol(manifest, index),
+        atomNames: manifest.topology.atom_names,
+      })
+      : null;
+    if (atom !== null) {
+      const selection = { atom, image: [0, 0, 0] as CellOffset };
+      return {
+        id: `select-atom-${atom}`,
+        label: `Select ${atomSelectionLabel(manifest!, selection)}`,
+        keywords: "atom inspect jump",
+        detail: "Jump",
+        run: () => {
+          selectAtom(selection);
+          setCommandOpen(false);
+        },
+      };
+    }
     const distance = parseWithinSelectionCommand(query);
     if (distance === null) return null;
     return {
@@ -2659,7 +2692,7 @@ export default function App() {
         setCommandOpen(false);
       },
     };
-  }, [selectWithinDistance, selectedAtoms.length, selectionIndex]);
+  }, [manifest, selectAtom, selectWithinDistance, selectedAtoms.length, selectionIndex]);
 
   const commands = useMemo<CommandAction[]>(() => {
     const run = (action: () => void) => () => {
@@ -2777,10 +2810,10 @@ export default function App() {
       }) },
       { id: "analyze-tools", label: workbenchVisible && workbenchTab === "analyze" ? "Close Analyze tools" : "Open Analyze tools", keywords: "selection inspect measure distance angle dihedral rdf coordination", breadcrumb: "Viewer tools", disabled: !manifest || !frame, run: run(() => workbenchVisible && workbenchTab === "analyze" ? closeWorkbench(false) : openWorkbench("analyze")) },
       { id: "setting-representation", label: "Representation", keywords: "view display style ball stick spacefill licorice lines ribbon protein polyhedra surface", breadcrumb: "View › Representation", disabled: !capabilities, run: run(() => openSetting("view", "view-representation")) },
-      { id: "setting-atom-appearance", label: "Atom color and size", keywords: "atom atoms color colour element residue chain radius size bond thickness quality hydrogen", breadcrumb: "View › Atoms", disabled: !capabilities, run: run(() => openSetting("view", "view-atoms")) },
+      { id: "setting-atom-appearance", label: "Atom color and size", keywords: "atom atoms color colour element residue chain structure radius size bond thickness hydrogen", breadcrumb: "View › Atoms", disabled: !capabilities, run: run(() => openSetting("view", "view-atoms")) },
       { id: "setting-bonds", label: "Bond display", keywords: "bond bonds connectivity crossing across through boundary periodic unit cell clip clutter connection", breadcrumb: "View › Layers › Bonds", disabled: !capabilities, run: run(() => openSetting("view", "view-bonds")) },
       { id: "setting-periodic", label: "Periodic images and wrapping", keywords: "unit cell box periodic pbc wrap unwrap reconstruct molecule repeat replicate supercell mirror centered crossing boundary", breadcrumb: "View › Periodic cell", disabled: !cellAvailable, discoverableWhenDisabled: true, run: run(() => openSetting("view", "view-periodic")) },
-      { id: "setting-theme", label: "Light or dark appearance", keywords: "dark mode light theme appearance contrast colors", breadcrumb: "View › Appearance", run: run(() => openSetting("view", "view-appearance")) },
+      { id: "setting-theme", label: "Light or dark appearance", keywords: "dark mode light theme appearance contrast colors quality tessellation interactive", breadcrumb: "View › Appearance", run: run(() => openSetting("view", "view-appearance")) },
       { id: "setting-cell", label: "Cell lengths and angles", keywords: "edit unit cell lattice parameters lengths angles alpha beta gamma pbc periodic axes", breadcrumb: "Edit › Cell", disabled: !manifest || !frame, run: run(() => {
         setEditTarget("cell");
         openSetting("edit", "edit-cell");
@@ -3110,7 +3143,7 @@ export default function App() {
       && selectedAtoms.length >= 2
       && selectedAtoms.length <= 4 ? ["pin-measurement"] : []),
     ...(canPlotMeasurement ? ["plot-measurement"] : []),
-    ...(displayedFrameMark ? ["frame-bookmark", "frame-reference"] : []),
+    ...(canPlay && displayedFrameMark ? ["frame-bookmark", "frame-reference"] : []),
     ...(trackingAvailable ? ["track-trail"] : []),
     ...(study.reference && trackingAvailable ? ["track-displacement"] : []),
     ...(comparablePins.length >= 2 ? ["measurement-compare"] : []),
@@ -3267,7 +3300,7 @@ export default function App() {
             <button
               className="tools-button"
               type="button"
-              aria-label="Open viewer tools"
+              aria-label={workbenchVisible ? "Close viewer tools" : "Open viewer tools"}
               aria-controls="workbench"
               aria-expanded={workbenchVisible}
               disabled={rendering || !capabilities}
@@ -3432,6 +3465,9 @@ export default function App() {
               velocityAvailable={velocityAvailable}
               pbc={pbc}
               atomCount={manifest.topology.atom_count}
+              hasHydrogens={hasHydrogens}
+              hasResidueColor={hasResidueColor}
+              hasChainColor={hasChainColor}
               structureCellOrigin={structureCellOrigin}
               selectionCellOrigin={selectionCellOrigin}
               forceScale={forceScale}
@@ -4595,6 +4631,9 @@ function ScenePanel({
   velocityAvailable,
   pbc,
   atomCount,
+  hasHydrogens,
+  hasResidueColor,
+  hasChainColor,
   structureCellOrigin,
   selectionCellOrigin,
   forceScale,
@@ -4612,6 +4651,9 @@ function ScenePanel({
   velocityAvailable: boolean;
   pbc: [boolean, boolean, boolean];
   atomCount: number;
+  hasHydrogens: boolean;
+  hasResidueColor: boolean;
+  hasChainColor: boolean;
   structureCellOrigin: CellOffset | null;
   selectionCellOrigin: CellOffset | null;
   forceScale: number;
@@ -4660,29 +4702,24 @@ function ScenePanel({
     if (!canUseRepeatCounts(next, pbc, atomCount)) return;
     onPresentation({ images: repeatImages(next, pbc) });
   };
+  const colorOptions: Array<[ScenePresentation["color"], string]> = [
+    ["element", "Element"],
+  ];
+  if (capabilities.ribbon || presentation.color === "structure") {
+    colorOptions.push(["structure", "Secondary structure"]);
+  }
+  if (hasResidueColor || presentation.color === "residue") {
+    colorOptions.push(["residue", "Residue"]);
+  }
+  if (hasChainColor || presentation.color === "chain") {
+    colorOptions.push(["chain", "Chain"]);
+  }
 
   return (
     <div className="scene-panel">
-      <section className="workbench-section appearance-settings" data-setting-id="view-appearance">
-        <div className="workbench-section-heading">
-          <h3>Appearance</h3>
-          <span>D</span>
-        </div>
-        <div className="segmented-options appearance-options" role="group" aria-label="Viewer appearance">
-          {(["light", "dark"] as const).map((option) => <button
-            key={option}
-            type="button"
-            className={appearance === option ? "is-active" : ""}
-            aria-pressed={appearance === option}
-            onClick={() => onAppearance(option)}
-          >{option === "light" ? "Light" : "Dark"}</button>)}
-        </div>
-      </section>
-
       <section className="workbench-section representation-settings" data-setting-id="view-representation">
         <div className="workbench-section-heading">
           <h3>Representation</h3>
-          <span>3Dmol</span>
         </div>
         <div className="representation-grid">
           {([
@@ -4706,42 +4743,44 @@ function ScenePanel({
       </section>
 
       <section className="workbench-section atom-display-settings" data-setting-id="view-atoms">
-        <span className="section-label">Atoms</span>
-        <Toggle label="Hydrogens" checked={presentation.hydrogens} onChange={(hydrogens) => onPresentation({ hydrogens })} />
-        <label className="panel-select-row">
-          <span>Color</span>
-          <select
-            value={presentation.color}
-            onChange={(event) => onPresentation({
-              color: event.target.value as ScenePresentation["color"],
-            })}
-          >
-            <option value="element">Element</option>
-            <option value="residue">Residue</option>
-            <option value="chain">Chain</option>
-          </select>
-        </label>
+        <div className="workbench-section-heading">
+          <h3>Atoms</h3>
+        </div>
+        {hasHydrogens && (
+          <Toggle
+            label="Hydrogens"
+            checked={presentation.hydrogens}
+            onChange={(hydrogens) => onPresentation({ hydrogens })}
+          />
+        )}
+        {colorOptions.length > 1 && (
+          <label className="panel-select-row">
+            <span>Color</span>
+            <select
+              value={presentation.color}
+              onChange={(event) => onPresentation({
+                color: event.target.value as ScenePresentation["color"],
+              })}
+            >
+              {colorOptions.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <VectorScale label="Atom size" value={presentation.atomScale} min={0.4} max={1.8} onChange={(atomScale) => onPresentation({ atomScale })} />
-        <VectorScale label="Bond size" value={presentation.bondScale} min={0.25} max={1.8} onChange={(bondScale) => onPresentation({ bondScale })} />
-        <label className="panel-select-row">
-          <span>Quality</span>
-          <select
-            value={presentation.quality}
-            onChange={(event) => onPresentation({
-              quality: event.target.value as ScenePresentation["quality"],
-            })}
-          >
-            <option value="auto">Interactive</option>
-            <option value="high">High</option>
-          </select>
-        </label>
+        {bondCapable && (
+          <VectorScale label="Bond size" value={presentation.bondScale} min={0.25} max={1.8} onChange={(bondScale) => onPresentation({ bondScale })} />
+        )}
       </section>
 
       <section className="workbench-section display-toggles" data-setting-id="view-layers">
-        <span className="section-label">Layers</span>
+        <div className="workbench-section-heading">
+          <h3>Layers</h3>
+        </div>
         <Toggle
           label="Bonds"
-          checked={presentation.bonds}
+          checked={bondCapable && presentation.bonds}
           disabled={!bondCapable}
           settingId="view-bonds"
           title={bondCapable ? undefined : "Not used by the current representation"}
@@ -4865,6 +4904,33 @@ function ScenePanel({
           </div>
         </div>
       </details>}
+
+      <section className="workbench-section appearance-settings" data-setting-id="view-appearance">
+        <div className="workbench-section-heading">
+          <h3>Appearance</h3>
+        </div>
+        <div className="segmented-options appearance-options" role="group" aria-label="Viewer appearance">
+          {(["light", "dark"] as const).map((option) => <button
+            key={option}
+            type="button"
+            className={appearance === option ? "is-active" : ""}
+            aria-pressed={appearance === option}
+            onClick={() => onAppearance(option)}
+          >{option === "light" ? "Light" : "Dark"}</button>)}
+        </div>
+        <label className="panel-select-row">
+          <span>Quality</span>
+          <select
+            value={presentation.quality}
+            onChange={(event) => onPresentation({
+              quality: event.target.value as ScenePresentation["quality"],
+            })}
+          >
+            <option value="auto">Interactive</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </section>
     </div>
   );
 }
@@ -5408,19 +5474,19 @@ function AnalyzePanel({
     <section className="workbench-section analysis-methods">
       <div className="workbench-section-heading">
         <h3>Periodic analysis</h3>
-        <span>{analysisAvailable ? "PQAnalysis" : staticDemo ? "Local viewer" : "Trajectory + full cell"}</span>
+        <span>{analysisAvailable ? "PQAnalysis" : staticDemo ? "Local viewer" : "Full 3D cell"}</span>
       </div>
       <div className="analysis-method-grid">
         <button
           type="button"
           disabled={!analysisAvailable}
-          title={analysisAvailable ? undefined : staticDemo ? "Available in the installed Python viewer" : "Requires a periodic trajectory"}
+          title={analysisAvailable ? undefined : staticDemo ? "Available in the installed Python viewer" : "Requires a full 3D periodic cell"}
           onClick={onRdf}
         >Pair distribution</button>
         <button
           type="button"
           disabled={!analysisAvailable}
-          title={analysisAvailable ? undefined : staticDemo ? "Available in the installed Python viewer" : "Requires a periodic trajectory"}
+          title={analysisAvailable ? undefined : staticDemo ? "Available in the installed Python viewer" : "Requires a full 3D periodic cell"}
           onClick={onCoordination}
         >Coordination</button>
       </div>
@@ -5856,6 +5922,30 @@ export function meaningfulResidueId(
   return meaningful && current !== "" ? current : null;
 }
 
+export function structureHasHydrogens(topology: Topology | undefined): boolean {
+  if (!topology) return false;
+  if (topology.atomic_numbers?.some((value) => value === 1)) return true;
+  return Boolean(topology.symbols?.some((symbol) => {
+    const normalized = symbol.trim().toUpperCase();
+    return normalized === "H" || normalized === "D" || normalized === "T";
+  }));
+}
+
+export function structureHasResidueColor(topology: Topology | undefined): boolean {
+  return Boolean(topology?.residues?.some((residue) => (
+    residue.category === "amino-acid" || residue.category === "nucleotide"
+  )));
+}
+
+export function structureHasChainColor(topology: Topology | undefined): boolean {
+  const chains = new Set(
+    (topology?.residues ?? [])
+      .map((residue) => residue.chain_id?.trim())
+      .filter((value): value is string => Boolean(value)),
+  );
+  return chains.size > 1;
+}
+
 export function measurementPbc(frame: FrameData | null): [boolean, boolean, boolean] {
   const values = frame?.header.pbc;
   if (Array.isArray(values) && values.length === 3) {
@@ -6227,6 +6317,7 @@ export function autoProfile(
 ): Exclude<SceneProfile, "auto" | "custom"> {
   if (capabilities.ribbon) return "protein";
   if (capabilities.suggestedProfile === "crystal") return "crystal";
+  if (capabilities.suggestedProfile === "mof") return "mof";
   return "molecule";
 }
 
@@ -6265,7 +6356,7 @@ export function profilePresentation(
     bonds: true,
     forces: false,
     velocities: false,
-    color: capabilities.ribbon ? "residue" : "element",
+    color: capabilities.ribbon ? "structure" : "element",
   };
   if (profile === "crystal") return {
     ...current,

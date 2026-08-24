@@ -719,23 +719,30 @@ function applyModelStyle(
       thickness: 0.42,
       opacity: 1,
     };
-    model.setStyle(
-      { hetflag: false },
-      {
-        cartoon: {
-          ...cartoon,
-          color: "#438493",
+    if (presentation.color === "structure") {
+      model.setStyle(
+        { hetflag: false },
+        {
+          cartoon: {
+            ...cartoon,
+            color: "#438493",
+          },
         },
-      },
-    );
-    model.setStyle(
-      { hetflag: false, ss: "h" },
-      { cartoon: { ...cartoon, color: "#C96A5A" } },
-    );
-    model.setStyle(
-      { hetflag: false, ss: "s" },
-      { cartoon: { ...cartoon, color: "#D2A23A" } },
-    );
+      );
+      model.setStyle(
+        { hetflag: false, ss: "h" },
+        { cartoon: { ...cartoon, color: "#C96A5A" } },
+      );
+      model.setStyle(
+        { hetflag: false, ss: "s" },
+        { cartoon: { ...cartoon, color: "#D2A23A" } },
+      );
+    } else {
+      model.setStyle(
+        { hetflag: false },
+        { cartoon: { ...cartoon, colorfunc: color } },
+      );
+    }
     model.setStyle(
       { hetflag: true },
       {

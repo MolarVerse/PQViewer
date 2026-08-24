@@ -48,8 +48,9 @@ navigates to that frame.
 
 ## Pair distribution and coordination
 
-Pair analysis requires a multi-frame, file-backed trajectory with a full
-three-dimensional periodic cell.
+Pair analysis requires a file-backed structure or trajectory with a full
+three-dimensional periodic cell. A single periodic frame is enough; extra
+frames are averaged when they are present.
 
 Open **Pair distribution** or **Coordination** from the timeline menu, selection
 bar, or command search. In the setup:

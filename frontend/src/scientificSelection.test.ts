@@ -8,6 +8,7 @@ import {
   ELEMENT_SYMBOLS,
   hillFormula,
   mergeSelections,
+  parseAtomJumpCommand,
   parseWithinSelectionCommand,
   replaceSelections,
   SelectionIndex,
@@ -293,6 +294,23 @@ describe("element and command language", () => {
     ]) {
       expect(parseWithinSelectionCommand(invalid)).toBeNull();
     }
+  });
+
+  it("jumps to a 1-based atom index or matching atom label", () => {
+    const options = {
+      atomCount: 3,
+      symbolAt: (index: number) => ["O", "H", "H"][index],
+      atomNames: ["O1", "H1", "H2"],
+    };
+    expect(parseAtomJumpCommand("1", options)).toBe(0);
+    expect(parseAtomJumpCommand("#2", options)).toBe(1);
+    expect(parseAtomJumpCommand("atom 3", options)).toBe(2);
+    expect(parseAtomJumpCommand("O1", options)).toBe(0);
+    expect(parseAtomJumpCommand("H2", options)).toBe(1);
+    expect(parseAtomJumpCommand("H1", options)).toBe(1);
+    expect(parseAtomJumpCommand("0", options)).toBeNull();
+    expect(parseAtomJumpCommand("4", options)).toBeNull();
+    expect(parseAtomJumpCommand("C1", options)).toBeNull();
   });
 });
 

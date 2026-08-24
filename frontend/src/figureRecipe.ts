@@ -460,7 +460,11 @@ function parsePresentation(value: unknown): ScenePresentation {
     velocities: boolean(presentation.velocities, "Figure presentation velocities"),
     atomScale: positiveNumber(presentation.atomScale, "Figure presentation atomScale"),
     bondScale: positiveNumber(presentation.bondScale, "Figure presentation bondScale"),
-    color: enumeration(presentation.color, ["element", "residue", "chain"], "Figure presentation color"),
+    color: enumeration(
+      presentation.color,
+      ["element", "residue", "chain", "structure"],
+      "Figure presentation color",
+    ),
     quality: enumeration(presentation.quality, ["auto", "high"], "Figure presentation quality"),
   };
 }

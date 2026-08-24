@@ -1417,6 +1417,35 @@ describe("scientific representations", () => {
     ).polyhedra).toBe(false);
   });
 
+  it("suggests molecule for small periodic systems and crystal when polyhedra exist", () => {
+    const small = manifest([6, 6, 7, 8], [[0, 1], [1, 2], [2, 3]]);
+    const periodic = frame(
+      [0, 0, 0, 1.4, 0, 0, 2.7, 0.2, 0, 3.9, 0, 0],
+      [12, 0, 0, 0, 12, 0, 0, 0, 12],
+      [true, true, true],
+    );
+    expect(sceneCapabilities(small, periodic, basePresentation).suggestedProfile).toBe("molecule");
+
+    const framework = manifest(Array(32).fill(6));
+    const frameworkFrame = frame(
+      Array.from({ length: 96 }, (_, index) => (index % 3 === 0 ? index / 3 : 0)),
+      [20, 0, 0, 0, 20, 0, 0, 0, 20],
+      [true, true, true],
+    );
+    expect(sceneCapabilities(framework, frameworkFrame, basePresentation).suggestedProfile).toBe("mof");
+
+    const crystal = manifest(
+      [14, 8, 8, 8, 8],
+      [[0, 1], [0, 2], [0, 3], [0, 4]],
+    );
+    const crystalFrame = frame(
+      [0, 0, 0, 1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1],
+      [8, 0, 0, 0, 8, 0, 0, 0, 8],
+      [true, true, true],
+    );
+    expect(sceneCapabilities(crystal, crystalFrame, basePresentation).suggestedProfile).toBe("crystal");
+  });
+
   it("checks polyhedra against the trajectory's stable topology", () => {
     const topology = manifest([14, 8, 8, 8, 8]);
     topology.topology.bond_source = "inferred";
