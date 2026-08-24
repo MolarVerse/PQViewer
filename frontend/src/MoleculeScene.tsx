@@ -404,6 +404,7 @@ const scenePalettes: Record<Appearance, ScenePalette> = {
 };
 
 const yAxis = new THREE.Vector3(0, 1, 0);
+const MIN_AUTO_MOF_ATOMS = 32;
 
 export function sceneCapabilities(
   manifest: Manifest,
@@ -447,7 +448,13 @@ function buildSceneCapabilities(
     polyhedraReason: polyhedra
       ? "Coordination centers available"
       : POLYHEDRA_REQUIREMENT,
-    suggestedProfile: ribbon ? "protein" : periodic && !water ? "crystal" : "molecule",
+    suggestedProfile: ribbon
+      ? "protein"
+      : polyhedra
+        ? "crystal"
+        : periodic && !water && manifest.topology.atom_count >= MIN_AUTO_MOF_ATOMS
+          ? "mof"
+          : "molecule",
   };
 }
 
@@ -2439,39 +2446,47 @@ function updateRibbonColors(
   for (let vertex = 0; vertex < atoms.count; vertex += 1) {
     const atom = Math.round(atoms.getX(vertex));
     let color: THREE.Color;
-    if (presentation.color === "element") {
-      color = atomColor(manifest, atom, model.atomicNumbers[atom], presentation.color, appearance);
-    } else if (
-      presentation.color === "chain"
-      || !(secondaryStructure instanceof THREE.BufferAttribute)
+    if (
+      presentation.color === "structure"
+      && secondaryStructure instanceof THREE.BufferAttribute
     ) {
+      if (
+        secondaryStructureWeights instanceof THREE.BufferAttribute
+        && secondaryStructureWeights.itemSize === 3
+      ) {
+        const coil = Math.max(0, secondaryStructureWeights.getX(vertex));
+        const helix = Math.max(0, secondaryStructureWeights.getY(vertex));
+        const sheet = Math.max(0, secondaryStructureWeights.getZ(vertex));
+        const total = Math.max(coil + helix + sheet, Number.EPSILON);
+        blendedColor.setRGB(
+          (structureColors[0].r * coil
+            + structureColors[1].r * helix
+            + structureColors[2].r * sheet) / total,
+          (structureColors[0].g * coil
+            + structureColors[1].g * helix
+            + structureColors[2].g * sheet) / total,
+          (structureColors[0].b * coil
+            + structureColors[1].b * helix
+            + structureColors[2].b * sheet) / total,
+        );
+        color = blendedColor;
+      } else {
+        color = structureColors[THREE.MathUtils.clamp(
+          Math.round(secondaryStructure.getX(vertex)),
+          0,
+          structureColors.length - 1,
+        )];
+      }
+    } else if (presentation.color === "chain") {
       color = chainColor;
-    } else if (
-      secondaryStructureWeights instanceof THREE.BufferAttribute
-      && secondaryStructureWeights.itemSize === 3
-    ) {
-      const coil = Math.max(0, secondaryStructureWeights.getX(vertex));
-      const helix = Math.max(0, secondaryStructureWeights.getY(vertex));
-      const sheet = Math.max(0, secondaryStructureWeights.getZ(vertex));
-      const total = Math.max(coil + helix + sheet, Number.EPSILON);
-      blendedColor.setRGB(
-        (structureColors[0].r * coil
-          + structureColors[1].r * helix
-          + structureColors[2].r * sheet) / total,
-        (structureColors[0].g * coil
-          + structureColors[1].g * helix
-          + structureColors[2].g * sheet) / total,
-        (structureColors[0].b * coil
-          + structureColors[1].b * helix
-          + structureColors[2].b * sheet) / total,
-      );
-      color = blendedColor;
     } else {
-      color = structureColors[THREE.MathUtils.clamp(
-        Math.round(secondaryStructure.getX(vertex)),
-        0,
-        structureColors.length - 1,
-      )];
+      color = atomColor(
+        manifest,
+        atom,
+        model.atomicNumbers[atom],
+        presentation.color,
+        appearance,
+      );
     }
     colors.setXYZ(vertex, color.r, color.g, color.b);
   }
