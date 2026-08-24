@@ -29,6 +29,10 @@ const proteinFixture = path.join(
   repositoryRoot,
   "docs/assets/sources/1CRN.pdb",
 );
+const waterBoxFixture = path.join(
+  repositoryRoot,
+  "docs/assets/sources/water-box.extxyz",
+);
 const polyhedraRequirement =
   "Requires a supported center with 3+ bonded ligands";
 
@@ -486,10 +490,10 @@ test("uses one canonical scientific viewer with editable cell and display contro
     name: "Edit",
     exact: true,
   }).click();
-  await expect(page.getByRole("tab", { name: "Edit" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(page.locator(".task-navigation").getByRole("button", {
+    name: "Edit",
+    exact: true,
+  })).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByText("CH2O", { exact: true })).toBeVisible();
   const lengthA = page.getByRole("spinbutton", { name: "Cell length a" });
   await expect(lengthA).toHaveValue("10");
@@ -508,7 +512,10 @@ test("uses one canonical scientific viewer with editable cell and display contro
 
   await page.getByRole("button", { name: "Reset local edits" }).click();
   await expect(lengthA).toHaveValue("10");
-  await page.getByRole("tab", { name: "View" }).click();
+  await page.locator(".task-navigation").getByRole("button", {
+    name: "View",
+    exact: true,
+  }).click();
   await page.getByRole("button", { name: "Spacefill" }).click();
   await expect(canvas).toHaveAttribute("data-representation", "spacefill");
   await page.getByRole("button", { name: "Dark", exact: true }).click();
@@ -539,10 +546,10 @@ test("edits selected atom identity and current-frame coordinates", async ({
   const canvas = page.locator(".molecule-canvas");
   await canvas.focus();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("tab", { name: "Analyze" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(page.locator(".task-navigation").getByRole("button", {
+    name: "Analyze",
+    exact: true,
+  })).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Edit atom" }).click();
   await page.getByRole("combobox", { name: "Atom element" }).fill("N");
   await page.getByRole("spinbutton", { name: "Atom x coordinate" }).fill("4.25");
@@ -589,8 +596,10 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
   await page.keyboard.press("Enter");
   await expect(page.locator('[data-setting-id="view-bonds"]'))
     .toHaveClass(/is-search-target/);
-  await expect(page.getByRole("tab", { name: "View" }))
-    .toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".task-navigation").getByRole("button", {
+    name: "View",
+    exact: true,
+  })).toHaveAttribute("aria-expanded", "true");
   await page.locator("#workbench").getByRole("button", {
     name: "Close",
     exact: true,
@@ -599,8 +608,10 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
   await page.keyboard.press("/");
   await search.fill("edit lattice vectors");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("tab", { name: "Edit" }))
-    .toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".task-navigation").getByRole("button", {
+    name: "Edit",
+    exact: true,
+  })).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: "Vectors" }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
@@ -804,6 +815,71 @@ test("links frame marks, atom tracking, and PQAnalysis pair plots", async ({ pag
   const csvPath = await (await csvDownload).path();
   expect(csvPath).not.toBeNull();
   expect((await readFile(csvPath!, "utf8")).split("\n")[0]).toContain("Radius");
+  expect(errors).toEqual([]);
+});
+
+test("jumps to an atom from search and runs pair analysis on one periodic frame", async ({
+  page,
+}) => {
+  test.slow();
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+
+  await page.getByRole("button", { name: "Search atoms, settings, and commands" }).click();
+  await page.getByRole("combobox", { name: "Search atoms, settings, and commands" }).fill("1");
+  await expect(page.getByRole("option", { name: /Select C1/ })).toBeVisible();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".selection-readout strong")).toContainText("C1");
+
+  await openFixture(page, waterBoxFixture, "water-box.extxyz");
+  await page.locator(".task-navigation").getByRole("button", {
+    name: "Analyze",
+    exact: true,
+  }).click();
+  const pairButton = page.locator("#workbench").getByRole("button", { name: "Pair distribution" });
+  await expect(pairButton).toBeEnabled();
+  await pairButton.click();
+  const setup = page.getByRole("dialog", { name: "Pair analysis" });
+  await expect(setup).toBeVisible();
+  const analysisResponse = page.waitForResponse(
+    (response) => response.url().endsWith("/api/analysis/rdf")
+      && response.request().method() === "POST",
+  );
+  await setup.getByRole("button", { name: "Run", exact: true }).click();
+  expect((await analysisResponse).ok()).toBe(true);
+  const rdfPlot = page.getByRole("region", {
+    name: /Pair distribution .* trajectory plot/,
+  });
+  await expect(rdfPlot).toBeVisible();
+  await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("1 frame");
+  expect(errors).toEqual([]);
+});
+
+test("does not leak crystal display onto a periodic framework", async ({ page }) => {
+  test.slow();
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+  await openFixture(page, perovskiteFixture, "strontium-titanate.extxyz");
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute(
+    "data-representation",
+    "polyhedra",
+    { timeout: 30_000 },
+  );
+
+  await openFixture(page, acofFixture, "acof-triclinic.xyz");
+  const canvas = page.locator(".molecule-canvas");
+  await expect(canvas).toHaveAttribute("data-representation", "lines");
+  await expect.poll(
+    async () => Number(await canvas.getAttribute("data-bond-count")),
+  ).toBeGreaterThan(0);
+  await page.locator(".task-navigation").getByRole("button", {
+    name: "View",
+    exact: true,
+  }).click();
+  await expect(page.getByRole("button", { name: "Lines", exact: true }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("switch", { name: "Bonds" }))
+    .toHaveAttribute("aria-checked", "true");
   expect(errors).toEqual([]);
 });
 
@@ -1111,6 +1187,9 @@ test("fits and exports a publication Ribbon for 1CRN", async ({ page }) => {
     name: "Ribbon",
     exact: true,
   })).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.locator(".atom-display-settings .panel-select-row").filter({ hasText: "Color" }).locator("select"),
+  ).toHaveValue("structure");
   await page.getByRole("button", { name: "Close", exact: true }).click();
 
   await expect(canvas).toHaveAttribute("data-representation", "ribbon", {
@@ -1248,12 +1327,6 @@ test("renders complete perovskite polyhedra and clips boundary bonds", async ({
     name: /Representation · Ball \+ stick/,
   }).click();
   await expect(canvas).toHaveAttribute("data-representation", "ball-stick");
-  await expect(canvas).toHaveAttribute("data-rendered-boundary-bond-count", "0");
-  await page.getByRole("button", { name: "Search atoms, settings, and commands" }).click();
-  await page.getByRole("combobox", { name: "Search atoms, settings, and commands" }).fill(
-    "show bonds",
-  );
-  await page.keyboard.press("Enter");
   await expect.poll(
     async () => Number(await canvas.getAttribute("data-bond-count")),
   ).toBeGreaterThan(0);

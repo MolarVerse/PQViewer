@@ -19,6 +19,9 @@ import {
   sameCellOrigin,
   selectedProfilePresentation,
   shouldNormalizePolyhedra,
+  structureHasChainColor,
+  structureHasHydrogens,
+  structureHasResidueColor,
   uniqueAtomIndices,
   usesPeriodicFigureContext,
 } from "./App";
@@ -56,17 +59,26 @@ describe("scene profiles", () => {
     expect(shouldNormalizePolyhedra("ball-stick", false, false)).toBe(false);
   });
 
-  it("keeps periodic solids on the crystal profile when forces are present", () => {
-    const capabilities: SceneCapabilities = {
+  it("does not let forces choose the structural view", () => {
+    const framework: SceneCapabilities = {
       water: false,
       ribbon: false,
       ribbonReason: "Backbone topology unavailable",
       polyhedra: false,
       polyhedraReason: "Coordination topology unavailable",
+      suggestedProfile: "mof",
+    };
+    const crystal: SceneCapabilities = {
+      water: false,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      polyhedra: true,
+      polyhedraReason: "Coordination topology available",
       suggestedProfile: "crystal",
     };
-    expect(autoProfile(capabilities, true, true)).toBe("crystal");
-    expect(profilePresentation("crystal", presentation, true, true, capabilities)).toMatchObject({
+    expect(autoProfile(framework, true, true)).toBe("mof");
+    expect(autoProfile(crystal, true, true)).toBe("crystal");
+    expect(profilePresentation("crystal", presentation, true, true, crystal)).toMatchObject({
       wrap: "atom",
       cell: true,
       bonds: false,
@@ -84,7 +96,7 @@ describe("scene profiles", () => {
       ribbonReason: "Backbone topology unavailable",
       polyhedra: false,
       polyhedraReason: "Coordination topology unavailable",
-      suggestedProfile: "crystal",
+      suggestedProfile: "mof",
     };
     expect(selectedProfilePresentation(
       "auto",
@@ -93,7 +105,7 @@ describe("scene profiles", () => {
       false,
       false,
       capabilities,
-    )).toMatchObject({ wrap: "atom", color: "element" });
+    )).toMatchObject({ wrap: "atom", color: "element", mode: "lines", bonds: true });
   });
 
   it("uses complete coordination polyhedra for a supported crystal", () => {
@@ -125,7 +137,7 @@ describe("scene profiles", () => {
       ribbonReason: "Backbone topology unavailable",
       polyhedra: false,
       polyhedraReason: "Coordination topology unavailable",
-      suggestedProfile: "crystal",
+      suggestedProfile: "mof",
     };
     expect(selectedProfilePresentation(
       "auto",
@@ -134,7 +146,7 @@ describe("scene profiles", () => {
       false,
       false,
       capabilities,
-    )).toMatchObject({ wrap: "atom", color: "element", cell: true });
+    )).toMatchObject({ wrap: "atom", color: "element", cell: true, mode: "lines", bonds: true });
   });
 
   it("prefers an available protein ribbon", () => {
@@ -147,6 +159,10 @@ describe("scene profiles", () => {
       suggestedProfile: "protein",
     };
     expect(autoProfile(capabilities, true, true)).toBe("protein");
+    expect(profilePresentation("protein", presentation, false, false, capabilities)).toMatchObject({
+      mode: "ribbon",
+      color: "structure",
+    });
   });
 
   it("does not let scalar series choose the structural view", () => {
@@ -220,6 +236,31 @@ describe("scene profiles", () => {
       bondScale: 0.52,
     });
   });
+
+  it("uses the MOF preset automatically for periodic frameworks without polyhedra", () => {
+    const capabilities: SceneCapabilities = {
+      water: false,
+      ribbon: false,
+      ribbonReason: "Backbone topology unavailable",
+      polyhedra: false,
+      polyhedraReason: "Coordination topology unavailable",
+      suggestedProfile: "mof",
+    };
+    expect(autoProfile(capabilities, false, false)).toBe("mof");
+    expect(selectedProfilePresentation(
+      "auto",
+      presentation,
+      true,
+      false,
+      false,
+      capabilities,
+    )).toMatchObject({
+      mode: "lines",
+      bonds: true,
+      wrap: "atom",
+      cell: true,
+    });
+  });
 });
 
 describe("command search", () => {
@@ -275,6 +316,37 @@ describe("residue identifiers", () => {
     expect(meaningfulResidueId([4, 4], 1)).toBe("4");
     expect(meaningfulResidueId(["", "1"], 0)).toBeNull();
     expect(meaningfulResidueId([" A ", "B"], 0)).toBe("A");
+  });
+});
+
+describe("view control availability", () => {
+  it("shows hydrogens only when hydrogen atoms are present", () => {
+    expect(structureHasHydrogens(undefined)).toBe(false);
+    expect(structureHasHydrogens({ atom_count: 2, atomic_numbers: [8, 8] })).toBe(false);
+    expect(structureHasHydrogens({ atom_count: 3, atomic_numbers: [8, 1, 1] })).toBe(true);
+    expect(structureHasHydrogens({ atom_count: 1, symbols: ["D"] })).toBe(true);
+  });
+
+  it("shows residue and chain color only for protein-like topology", () => {
+    expect(structureHasResidueColor({
+      atom_count: 1,
+      residues: [{ index: 0, type_id: null, name: "UNL", category: "other" }],
+    })).toBe(false);
+    expect(structureHasResidueColor({
+      atom_count: 1,
+      residues: [{ index: 0, type_id: 1, name: "ALA", category: "amino-acid" }],
+    })).toBe(true);
+    expect(structureHasChainColor({
+      atom_count: 1,
+      residues: [{ index: 0, type_id: 1, name: "ALA", category: "amino-acid", chain_id: "A" }],
+    })).toBe(false);
+    expect(structureHasChainColor({
+      atom_count: 2,
+      residues: [
+        { index: 0, type_id: 1, name: "ALA", category: "amino-acid", chain_id: "A" },
+        { index: 1, type_id: 1, name: "ALA", category: "amino-acid", chain_id: "B" },
+      ],
+    })).toBe(true);
   });
 });
 

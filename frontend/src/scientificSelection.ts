@@ -196,6 +196,43 @@ export function parseWithinSelectionCommand(query: string): number | null {
   return Number.isFinite(distance) && distance > 0 ? distance : null;
 }
 
+export function parseAtomJumpCommand(
+  query: string,
+  options: {
+    atomCount: number;
+    symbolAt?: (index: number) => string | undefined;
+    atomNames?: readonly string[];
+  },
+): number | null {
+  const trimmed = query.trim();
+  if (!trimmed || options.atomCount < 1) return null;
+
+  const indexMatch = trimmed.match(/^(?:#|atom\s+)?(\d+)$/i);
+  if (indexMatch) {
+    const value = Number(indexMatch[1]);
+    if (!Number.isInteger(value) || value < 1 || value > options.atomCount) return null;
+    return value - 1;
+  }
+
+  const names = options.atomNames;
+  const labeled = trimmed.match(/^([A-Za-z][a-z]?)(\d+)$/);
+  if (labeled && options.symbolAt) {
+    const index = Number(labeled[2]) - 1;
+    if (index >= 0 && index < options.atomCount) {
+      const symbol = options.symbolAt(index);
+      if (symbol && symbol.toLowerCase() === labeled[1].toLowerCase()) return index;
+    }
+  }
+
+  if (names) {
+    const needle = trimmed.toLowerCase();
+    const named = names.findIndex((name) => name.trim().toLowerCase() === needle);
+    if (named >= 0) return named;
+  }
+
+  return null;
+}
+
 export function createSelectionTopology(
   context: SceneSelectionContext,
 ): SelectionTopology {

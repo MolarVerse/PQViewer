@@ -5,9 +5,26 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Reset the display when a new file is opened so crystal and MOF settings do not leak
+- Choose the MOF preset for larger periodic frameworks that do not have coordination polyhedra
+- Allow pair distribution and coordination on a single fully periodic frame
+- Turn bonds on when switching to ball-and-stick, licorice, or lines
+- Hide hydrogen, residue, and chain controls when they do not apply
+- Color protein ribbons by secondary structure by default
+- Jump to an atom from search by 1-based index or atom label
+- Keep empty search suggestions on the current structure instead of trajectory bookmarks
+- Hide duplicate View/Edit/Analyze tabs in the inspector on wide layouts
+- Treat Export as a quiet header action until the figure sheet is open
+- Show the Bonds switch as off when the current representation does not use bonds
+
 ### Changed
 
 - Capitalize the Python distribution name as `MolarVerse-PQViewer`
+- Put representation, atoms, and layers first in View, with the periodic cell and appearance last
+- Move interactive quality next to light and dark appearance
+- Enlarge inspector labels and controls from 9–10 px to 11–12 px and load Inter at regular weights
 
 ## [0.1.0] - 2026-08-06
 

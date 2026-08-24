@@ -1,6 +1,6 @@
 :root {
   color-scheme: light;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   --header-height: 44px;
@@ -897,7 +897,7 @@ output {
 .readout-section h3 {
   margin: 0 0 9px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -936,7 +936,7 @@ output {
   overflow: hidden;
   color: var(--text);
   font-family: var(--numeric);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 500;
   text-align: right;
   text-overflow: ellipsis;
@@ -2478,8 +2478,8 @@ input[type="range"]::-moz-range-thumb {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 10px;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2517,7 +2517,7 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -2685,7 +2685,7 @@ button.measurement-plot__legend-item:hover {
 .rdf-sheet > footer {
   border-top: 1px solid var(--line-soft);
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .rdf-sheet > footer button {
@@ -2953,7 +2953,7 @@ button.measurement-plot__legend-item:hover {
   display: block;
   margin-bottom: 8px;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.075em;
   line-height: 1.2;
@@ -2982,7 +2982,7 @@ button.measurement-plot__legend-item:hover {
   border-radius: 5px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -3016,7 +3016,7 @@ button.measurement-plot__legend-item:hover {
   gap: 2px 10px;
   padding: 1px 0 9px 12px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .vector-scale-row input {
@@ -3026,7 +3026,7 @@ button.measurement-plot__legend-item:hover {
 
 .vector-scale-row output {
   color: var(--text);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .selection-bar {
@@ -3564,7 +3564,7 @@ button.measurement-plot__legend-item:hover {
 
 .viewport-toolbar > label > span {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -3742,7 +3742,7 @@ button.measurement-plot__legend-item:hover {
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -3790,7 +3790,7 @@ button.measurement-plot__legend-item:hover {
 .workbench-heading span {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .workbench-heading-actions {
@@ -3894,7 +3894,7 @@ button.measurement-plot__legend-item:hover {
 .render-panel .settings-section h3 {
   margin: 0 0 9px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -3911,7 +3911,7 @@ button.measurement-plot__legend-item:hover {
 .workbench-section-heading output {
   color: var(--quiet);
   font-family: var(--numeric);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .workbench-section-heading h3 {
@@ -3930,7 +3930,7 @@ button.measurement-plot__legend-item:hover {
   gap: 10px;
   border-top: 1px solid var(--line);
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .panel-select-row:first-of-type {
@@ -3945,7 +3945,7 @@ button.measurement-plot__legend-item:hover {
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .panel-details {
@@ -4178,7 +4178,7 @@ button.measurement-plot__legend-item:hover {
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .notice {
@@ -4723,7 +4723,7 @@ button.measurement-plot__legend-item:hover {
 .export-heading span {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .export-body {
@@ -4775,7 +4775,7 @@ button.measurement-plot__legend-item:hover {
   display: block;
   margin-bottom: 10px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -4808,7 +4808,7 @@ button.measurement-plot__legend-item:hover {
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -4834,7 +4834,7 @@ button.measurement-plot__legend-item:hover {
   display: grid;
   gap: 5px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .figure-number-grid input,
@@ -4872,14 +4872,14 @@ button.measurement-plot__legend-item:hover {
 
 .figure-toggle strong {
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .figure-toggle small {
   margin-top: 2px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .figure-toggle input {
@@ -4897,7 +4897,7 @@ button.measurement-plot__legend-item:hover {
 .figure-recipe-actions p {
   margin: 0 0 10px;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.45;
 }
 
@@ -4937,7 +4937,7 @@ button.measurement-plot__legend-item:hover {
 .export-options > summary small {
   overflow: hidden;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5545,7 +5545,7 @@ button.measurement-plot__legend-item:hover {
   min-width: 0;
   overflow: hidden;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 450;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5560,7 +5560,7 @@ button.measurement-plot__legend-item:hover {
   display: block;
   margin: 12px 0 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -5584,7 +5584,7 @@ button.measurement-plot__legend-item:hover {
 
 .periodic-repeat-heading > span:last-child {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -5641,7 +5641,7 @@ button.measurement-plot__legend-item:hover {
 
 .periodic-repeat-row output {
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
@@ -6419,7 +6419,7 @@ button.measurement-plot__legend-item:hover {
 .selection-tools-popover label,
 .selection-tools-popover section > span {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -6439,7 +6439,7 @@ button.measurement-plot__legend-item:hover {
   border-radius: 6px;
   background: transparent;
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -6761,7 +6761,7 @@ button.measurement-plot__legend-item:hover {
 .structure-fact-grid span {
   margin-bottom: 3px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -6780,7 +6780,7 @@ button.measurement-plot__legend-item:hover {
 .atom-editor > p {
   margin: 12px 0 0;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.55;
 }
 
@@ -6806,7 +6806,7 @@ button.measurement-plot__legend-item:hover {
   top: 9px;
   color: var(--quiet);
   font-family: var(--numeric);
-  font-size: 9px;
+  font-size: 11px;
   pointer-events: none;
 }
 
@@ -6855,7 +6855,7 @@ button.measurement-plot__legend-item:hover {
 .cell-vector-grid > strong {
   color: var(--quiet);
   font-family: var(--numeric);
-  font-size: 9px;
+  font-size: 11px;
   text-align: center;
 }
 
@@ -6878,7 +6878,7 @@ button.measurement-plot__legend-item:hover {
   margin-top: 10px;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .cell-axis-row > div {
@@ -6912,7 +6912,7 @@ button.measurement-plot__legend-item:hover {
   gap: 9px;
   border-top: 1px solid var(--line);
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .cell-scale-choice input {
@@ -6927,13 +6927,13 @@ button.measurement-plot__legend-item:hover {
 .cell-scale-choice small {
   margin-top: 2px;
   color: var(--quiet);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .editor-error {
   margin: 0 0 8px;
   color: var(--error);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.4;
 }
 
@@ -6950,7 +6950,7 @@ button.measurement-plot__legend-item:hover {
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -6968,7 +6968,7 @@ button.measurement-plot__legend-item:hover {
 .primary-panel-action small {
   color: inherit;
   font-family: var(--numeric);
-  font-size: 8px;
+  font-size: 11px;
   opacity: 0.72;
 }
 
@@ -7000,13 +7000,13 @@ button.measurement-plot__legend-item:hover {
 
 .representation-grid button {
   min-width: 0;
-  min-height: 34px;
+  min-height: 38px;
   padding: 0 7px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -7040,7 +7040,7 @@ button.measurement-plot__legend-item:hover {
   padding: 0 16px;
   list-style: none;
   color: var(--text);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -7062,7 +7062,7 @@ button.measurement-plot__legend-item:hover {
 
 .profile-settings > summary small {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 400;
 }
 
@@ -7098,7 +7098,7 @@ button.measurement-plot__legend-item:hover {
 
 .atom-editor-heading span {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .atom-editor-heading strong {
@@ -7109,7 +7109,7 @@ button.measurement-plot__legend-item:hover {
 
 .atom-editor-heading small {
   color: var(--quiet);
-  font-size: 8px;
+  font-size: 11px;
 }
 
 .atom-element-field {
@@ -7118,7 +7118,7 @@ button.measurement-plot__legend-item:hover {
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .atom-editor input {
@@ -7140,7 +7140,7 @@ button.measurement-plot__legend-item:hover {
 .atom-coordinate-fields legend {
   padding: 0;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .atom-coordinate-fields label {
@@ -7154,7 +7154,7 @@ button.measurement-plot__legend-item:hover {
   z-index: 1;
   top: 9px;
   color: var(--quiet);
-  font: 9px var(--numeric);
+  font: 11px var(--numeric);
   pointer-events: none;
 }
 
@@ -7331,6 +7331,22 @@ button.measurement-plot__legend-item:hover {
 
 .export-button.render-button {
   border-radius: 7px;
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.export-button.render-button:hover:not(:disabled) {
+  border-color: var(--line-strong, var(--line));
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.export-button.render-button[aria-expanded="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 
 .workbench-heading-actions {
@@ -7349,12 +7365,12 @@ button.measurement-plot__legend-item:hover {
 }
 
 .edit-target-options button {
-  min-height: 32px;
+  min-height: 36px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 650;
   cursor: pointer;
 }
@@ -7381,7 +7397,12 @@ button.measurement-plot__legend-item:hover {
 }
 
 .appearance-options button {
-  min-height: 32px;
+  min-height: 36px;
+}
+
+.appearance-settings .panel-select-row {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
 }
 
 .selected-atom-overview {
@@ -7402,7 +7423,7 @@ button.measurement-plot__legend-item:hover {
 
 .selected-atom-overview span {
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
 }
 
 .selected-atom-overview strong {
@@ -7414,13 +7435,13 @@ button.measurement-plot__legend-item:hover {
 .selected-atom-overview button,
 .analysis-actions button,
 .analysis-method-grid button {
-  min-height: 32px;
+  min-height: 36px;
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface);
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -7443,7 +7464,7 @@ button.measurement-plot__legend-item:hover {
 .analysis-empty strong,
 .analysis-measurement-copy strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -7451,7 +7472,7 @@ button.measurement-plot__legend-item:hover {
 .analysis-measurement-copy p {
   margin: 7px 0 0;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -7463,7 +7484,7 @@ button.measurement-plot__legend-item:hover {
 
 .analysis-empty > div span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .analysis-empty kbd {
@@ -7607,7 +7628,7 @@ button.measurement-plot__legend-item:hover {
   max-width: none;
   margin-top: 3px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: 11px;
   line-height: 1.2;
   text-align: left;
   white-space: nowrap;
@@ -7628,6 +7649,10 @@ button.measurement-plot__legend-item:hover {
 
   .identity {
     max-width: calc(50% - 150px);
+  }
+
+  .workbench-tabs {
+    display: none;
   }
 }
 
@@ -7749,12 +7774,26 @@ button.measurement-plot__legend-item:hover {
 
 @media (max-width: 420px) {
   .identity > div {
+    display: block;
+    min-width: 0;
+  }
+
+  .identity strong {
     display: none;
   }
 
+  .identity span:last-child {
+    display: block;
+    max-width: none;
+    font-size: 10px;
+  }
+
   .identity {
-    width: 38px;
-    min-width: 38px;
+    width: auto;
+    min-width: 0;
+    max-width: min(42vw, 148px);
+    padding: 0 4px 0 0;
+    justify-content: flex-start;
   }
 
   .topbar-tools {
