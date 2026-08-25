@@ -18,6 +18,7 @@ user-visible changes.
 - Hide duplicate View/Edit/Analyze tabs in the inspector on wide layouts
 - Treat Export as a quiet header action until the figure sheet is open
 - Show the Bonds switch as off when the current representation does not use bonds
+- Ignore `?renderer=three` so interactive viewing stays on 3Dmol
 
 ### Changed
 
@@ -25,6 +26,7 @@ user-visible changes.
 - Put representation, atoms, and layers first in View, with the periodic cell and appearance last
 - Move interactive quality next to light and dark appearance
 - Enlarge inspector labels and controls from 9–10 px to 11–12 px and load Inter at regular weights
+- Ship only Latin, Latin-extended, and Greek Inter files
 
 ## [0.1.0] - 2026-08-06
 

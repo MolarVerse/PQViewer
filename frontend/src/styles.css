@@ -468,39 +468,6 @@ output {
   font-size: 10px;
 }
 
-.profile-strip {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 2px;
-  margin-bottom: 13px;
-  padding: 2px;
-  border-radius: 9px;
-  background: var(--surface-soft);
-}
-
-.profile-strip button {
-  min-width: 0;
-  min-height: 32px;
-  padding: 0 3px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.profile-strip button:hover {
-  color: var(--text);
-}
-
-.profile-strip button.is-active {
-  background: var(--surface);
-  box-shadow: 0 1px 3px rgba(31, 51, 57, 0.1);
-  color: var(--text);
-  font-weight: 600;
-}
-
 .scene-group {
   padding: 13px 0;
   border-top: 1px solid var(--line);
@@ -2130,7 +2097,6 @@ input[type="range"]::-moz-range-thumb {
   }
 
   .more-menu button,
-  .profile-strip button,
   .representation-grid button,
   .image-presets button,
   .scene-actions button,
@@ -3684,41 +3650,6 @@ button.measurement-plot__legend-item:hover {
   pointer-events: none;
 }
 
-.preset-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-}
-
-.preset-options button {
-  min-width: 0;
-  min-height: 34px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.preset-options button:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
-  color: var(--text);
-}
-
-.preset-options button.is-active {
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 650;
-}
-
-.preset-options button:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
 .workbench[hidden],
 .workbench-pane[hidden] {
   display: none;
@@ -3916,10 +3847,6 @@ button.measurement-plot__legend-item:hover {
 
 .workbench-section-heading h3 {
   margin-bottom: 9px;
-}
-
-.workbench .profile-strip {
-  margin: 0;
 }
 
 .panel-select-row {
@@ -5485,23 +5412,6 @@ button.measurement-plot__legend-item:hover {
   border-top: 1px solid var(--line);
 }
 
-.preset-options {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.preset-options button {
-  min-height: 36px;
-  padding-inline: 5px;
-  border-color: var(--line-soft);
-  background: var(--surface-soft);
-}
-
-.preset-options button.is-active {
-  border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
-  background: var(--accent-soft);
-}
-
 .periodic-settings {
   padding: 0;
 }
@@ -7025,49 +6935,6 @@ button.measurement-plot__legend-item:hover {
 .representation-grid button:disabled {
   opacity: 0.38;
   cursor: default;
-}
-
-.profile-settings {
-  padding: 0;
-}
-
-.profile-settings > summary {
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 0 16px;
-  list-style: none;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.profile-settings > summary::-webkit-details-marker {
-  display: none;
-}
-
-.profile-settings > summary::after {
-  content: "+";
-  margin-left: auto;
-  color: var(--quiet);
-  font-family: var(--numeric);
-}
-
-.profile-settings[open] > summary::after {
-  content: "−";
-}
-
-.profile-settings > summary small {
-  color: var(--quiet);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.profile-settings .preset-options {
-  padding: 0 16px 14px;
 }
 
 .atom-display-settings .vector-scale-row {
