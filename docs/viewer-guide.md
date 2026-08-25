@@ -111,8 +111,8 @@ Use command search for **Source coordinates** when the stored coordinates need
 to be shown without display wrapping.
 
 The interactive view uses the locally bundled 3Dmol renderer. If it cannot
-initialize, PQViewer keeps the established Three renderer available as a
-fallback.
+initialize, PQViewer falls back to the publication renderer so the structure
+stays visible. Do not add a second interactive engine.
 
 ## Export
 

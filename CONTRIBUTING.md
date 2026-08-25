@@ -1,7 +1,8 @@
 # Contributing
 
 PQViewer welcomes focused bug fixes, scientific regression cases, documentation,
-and viewer improvements.
+and viewer improvements. What to work on next, and what not to add, is in
+[PRODUCT_DIRECTION.md](PRODUCT_DIRECTION.md).
 
 ## Before changing code
 

@@ -31,11 +31,8 @@ interface PublicationRequest {
   timeout: number;
 }
 
-export function resolveRendererEngine(search?: string): RendererEngineId {
-  const value = new URLSearchParams(
-    search ?? (typeof window === "undefined" ? "" : window.location.search),
-  ).get("renderer");
-  return value === "three" ? "three" : "3dmol";
+export function resolveRendererEngine(_search?: string): RendererEngineId {
+  return "3dmol";
 }
 
 export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>(

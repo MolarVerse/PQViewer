@@ -78,13 +78,15 @@ they are stable enough for the wider ecosystem.
 
 ## Current release scope
 
-The first public release covers:
+The public beta already covers:
 
 - PQ trajectories, inputs, run directories, and declared restart chains
 - optional ASE files, `Atoms`, and indexed trajectories
+- Jupyter `view()` embedding and a static web demo
 - lazy PQ frame access and bounded frontend prefetching
 - PQ-centered orthorhombic and triclinic cells
 - atom, molecule, unwrapped, mirrored, centered, and repeated periodic views
+- local atom and cell edits with EXTXYZ download
 - direct and scoped selection, measurements, saved selections, and comparisons
 - trajectory playback, bookmarks, reference displacement, and atom trails
 - scalar, measurement, pair-distribution, and coordination plots
@@ -92,15 +94,49 @@ The first public release covers:
 - command search, broad keyboard access, and optional Vim navigation
 - publication raster figures, vector plot output, and source-validated recipes
 
-## Next priorities
+Packaging (`MolarVerse-PQViewer` on PyPI) and notebook embedding exist. Do not
+rebuild them. Finish honesty, the PQ run loop, and citable exports.
 
-1. Publish a documented, installable release with stable packaging and examples.
-2. Make unsupported actions explain their data requirements in the interface.
-3. Improve exported scientific metadata for measurement and pair-analysis CSV.
-4. Expand redistributable examples for liquids, crystals, MOFs, and proteins.
-5. Add notebook embedding around the same dataset and renderer contracts.
-6. Define extension contracts for representations and PQAnalysis results after
-   the core API has release experience.
+## Next steps
+
+Work in this order. Do not start later items to look busy.
+
+### 1. Honest disabled actions
+
+Every control that cannot run should say which data it needs: ribbon, polyhedra,
+unwrapped coordinates, pair distribution, coordination, tracking, recipes, and
+missing sidecars. Missing capabilities stay hidden or disabled. They are never
+faked.
+
+### 2. The PQ run as the default path
+
+`pqviewer path/to/run` should be the usual step after a job. Explain restart
+chains, incomplete companions, and growing files in the interface. Keep
+`refresh()` bounded. Do not add a file manager.
+
+### 3. Exports a paper can reuse
+
+Measurement and pair-analysis CSV should record units, frame identity, periodic
+mode, and analysis populations. Figure recipes already validate the source;
+keep them the reproducibility contract.
+
+### 4. Examples people can open
+
+Ship small redistributable liquid, crystal, MOF, and protein fixtures in
+`examples/`, including the sources already used in the docs. Provenance stays
+in `examples/README.md`.
+
+### 5. After 1.0
+
+Harden Jupyter for remote kernels (loopback and port forwarding). Move stable
+`FrameKey`, centered-cell, and pair-result contracts upstream into PQAnalysis
+only after they stop changing.
+
+### Not now
+
+Do not start extension APIs, a second interactive engine, PQEnalyzer embedding,
+or VMD/OVITO plugin parity. Those wait until the core viewer has release
+experience.
 
 ## Quality gates
 
@@ -118,9 +154,11 @@ Every release needs:
 
 - simulation setup or execution
 - cluster and job management
-- coordinate editing or calculator setup
+- calculator setup (ASE calculator results may be read; never trigger `calculate`)
+- growing Edit into molecule building
 - a permanent energy dashboard
 - embedding the PQEnalyzer interface
 - duplicating PQAnalysis calculations in the frontend
-- multiple interactive rendering engines without a clear scientific benefit
+- a second interactive rendering engine (`?renderer=three` is not a product)
 - broad plugin parity with VMD, OVITO, or ChimeraX
+- extension APIs before 1.0
