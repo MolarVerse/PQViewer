@@ -20,6 +20,31 @@ from pqviewer.periodic import (
 )
 
 
+def test_unwrap_restarts_across_a_vacuum_boundary() -> None:
+    previous = np.array([[0.0, 0.0, 0.0]])
+    current = np.array([[4.8, 0.0, 0.0]])
+    shifts = unwrap_image_step(
+        Cell(),
+        previous,
+        Cell(10, 10, 10),
+        current,
+        (True, True, True),
+        np.array([[3, 0, 0]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(shifts, [[0, 0, 0]])
+
+    reverse = reverse_unwrap_image_step(
+        Cell(),
+        previous,
+        (False, False, False),
+        Cell(10, 10, 10),
+        current,
+        (True, True, True),
+        np.array([[2, 0, 0]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(reverse, [[0, 0, 0]])
+
+
 def test_centered_wrap_uses_half_open_bounds_and_partial_pbc() -> None:
     cell = Cell(10, 20, 30)
     fractional = np.array([
