@@ -9,8 +9,10 @@ from typing import Any
 
 import numpy as np
 
+from PQAnalysis.core import Cell
+
 from .data import FrameData, SCHEMA_VERSION
-from .periodic import checked_int32
+from .periodic import centered_image_shifts, checked_int32
 
 
 def encode_frame(frame: FrameData) -> bytes:
@@ -22,8 +24,23 @@ def encode_frame(frame: FrameData) -> bytes:
         if frame.periodic_cell is not None
         else frame.cell
     )
+    positions = frame.positions
+    shifts = frame.centered_image_shifts
+    if (
+        positions is not None
+        and shifts is not None
+        and any(frame.pbc)
+    ):
+        positions_f4 = np.ascontiguousarray(positions, dtype=np.dtype("<f4"))
+        recomputed = _shifts_for_packet_positions(
+            packet_cell, positions_f4, frame.pbc
+        )
+        if recomputed is not None:
+            positions = positions_f4
+            shifts = recomputed
+
     arrays = (
-        ("positions", frame.positions, "float32", np.dtype("<f4")),
+        ("positions", positions, "float32", np.dtype("<f4")),
         ("cell", packet_cell, "float32", np.dtype("<f4")),
         ("forces", frame.forces, "float32", np.dtype("<f4")),
         ("velocities", frame.velocities, "float32", np.dtype("<f4")),
@@ -36,7 +53,7 @@ def encode_frame(frame: FrameData) -> bytes:
         ),
         (
             "centered_image_shifts",
-            frame.centered_image_shifts,
+            shifts,
             "int32",
             np.dtype("<i4"),
         ),
@@ -104,6 +121,26 @@ def encode_frame(frame: FrameData) -> bytes:
         allow_nan=False,
     ).encode("utf-8")
     return struct.pack("<I", len(header_bytes)) + header_bytes + b"".join(payload_parts)
+
+
+def _shifts_for_packet_positions(
+    cell_matrix: np.ndarray | None,
+    positions_f4: np.ndarray,
+    pbc: tuple[bool, bool, bool],
+) -> np.ndarray | None:
+    """Recompute wrap shifts from the float32 positions the packet stores."""
+    if cell_matrix is None:
+        return None
+    matrix = np.asarray(cell_matrix, dtype=np.float64)
+    if matrix.shape != (3, 3) or abs(float(np.linalg.det(matrix))) < 1e-10:
+        return None
+    try:
+        cell = Cell.init_from_box_matrix(matrix.T)
+    except Exception:  # noqa: BLE001 - invalid packet cells stay unshifted
+        return None
+    if cell.is_vacuum:
+        return None
+    return centered_image_shifts(cell, positions_f4, pbc)
 
 
 def _json_scalar(value: Any) -> float | int | bool | None:

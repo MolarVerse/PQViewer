@@ -9,7 +9,7 @@ import pytest
 
 from PQAnalysis.core import Cell
 
-from pqviewer.data import PQTrajectoryDataset
+from pqviewer.data import FrameData, PQTrajectoryDataset
 from pqviewer.packet import encode_frame
 from pqviewer.periodic import (
     apply_image_shifts,
@@ -83,6 +83,35 @@ def test_centered_wrap_preserves_values_adjacent_to_half_cell_bounds() -> None:
         shifts,
         [[0, -1, -1], [1, 0, 0]],
     )
+
+
+def test_encode_frame_recomputes_shifts_after_float32_positions() -> None:
+    cell = Cell(10, 10, 10)
+    x = float(np.nextafter(np.float64(5.0), -1.0))
+    positions = np.array([[x, 0.0, 0.0]], dtype=np.float64)
+    float64_shifts = centered_image_shifts(cell, positions, (True, True, True))
+    assert float64_shifts.tolist() == [[0, 0, 0]]
+    assert float(np.float32(x)) == 5.0
+
+    frame = FrameData(
+        index=0,
+        positions=positions,
+        cell=np.diag([10.0, 10.0, 10.0]),
+        pbc=(True, True, True),
+        centered_image_shifts=float64_shifts,
+    )
+    packet = encode_frame(frame)
+    header_size = struct.unpack_from("<I", packet)[0]
+    header_end = 4 + header_size
+    header = json.loads(packet[4:header_end])
+    arrays = {item["name"]: item for item in header["arrays"]}
+    packet_positions = _packet_array(packet, header_end, arrays["positions"])
+    packet_shifts = _packet_array(
+        packet, header_end, arrays["centered_image_shifts"]
+    )
+
+    np.testing.assert_array_equal(packet_positions, [[5.0, 0.0, 0.0]])
+    np.testing.assert_array_equal(packet_shifts, [[-1, 0, 0]])
 
 
 def test_centered_wrap_respects_a_triclinic_origin() -> None:
