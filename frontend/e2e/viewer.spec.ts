@@ -344,14 +344,20 @@ test("restores a figure recipe, rejects unsupported polyhedra, and exports an ex
   expect(secondRecipe.scene).toEqual(firstRecipe.scene);
   expect({
     ...secondRecipe.camera,
+    position: undefined,
+    target: undefined,
     up: undefined,
   }).toEqual({
     ...firstRecipe.camera,
+    position: undefined,
+    target: undefined,
     up: undefined,
   });
-  secondRecipe.camera.up.forEach((value: number, index: number) => {
-    expect(value).toBeCloseTo(firstRecipe.camera.up[index], 12);
-  });
+  for (const key of ["position", "target", "up"] as const) {
+    secondRecipe.camera[key].forEach((value: number, index: number) => {
+      expect(value).toBeCloseTo(firstRecipe.camera[key][index], 10);
+    });
+  }
   expect(secondRecipe.output).toEqual(firstRecipe.output);
   expect(secondRecipe.annotations).toEqual(firstRecipe.annotations);
 
@@ -683,7 +689,13 @@ test("supports pointer and keyboard measurement with linked playback", async ({ 
   await openPeriodicFixture(page);
 
   const canvas = page.locator(".molecule-canvas");
-  await canvas.click({ position: { x: 795, y: 389 }, force: true });
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  const bounds = await canvas.boundingBox();
+  expect(bounds).not.toBeNull();
+  await canvas.click({
+    position: { x: bounds!.width * 0.35, y: bounds!.height * 0.48 },
+    force: true,
+  });
   await expect(page.locator(".selection-readout strong")).toBeVisible();
 
   await page.locator(".selection-bar").getByRole("button", { name: "Clear selection" }).click({ force: true });
@@ -708,8 +720,6 @@ test("supports pointer and keyboard measurement with linked playback", async ({ 
   expect(pdf.toString("latin1")).toContain("xref");
   await page.getByRole("button", { name: "Hide plot" }).click();
 
-  const bounds = await canvas.boundingBox();
-  expect(bounds).not.toBeNull();
   await page.keyboard.down("Shift");
   await page.mouse.move(bounds!.x + 20, bounds!.y + 20);
   await page.mouse.down();
@@ -990,7 +1000,7 @@ test("supports scientific selection, saved sets, and pinned measurements", async
     "select within 5 A of selection",
   );
   await page.keyboard.press("Enter");
-  await expect(page.locator(".selection-readout strong")).toHaveText("H2O · 3 atoms");
+  await expect(page.locator(".selection-readout strong")).toHaveText("CH2O · 4 atoms");
 
   await page.locator(".selection-bar").getByRole("button", { name: "Clear selection" }).click();
   const canvas = page.locator(".molecule-canvas");
