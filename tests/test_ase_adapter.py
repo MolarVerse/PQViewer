@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import struct
 from typing import Any
 
 from ase import Atoms
@@ -12,6 +14,7 @@ import numpy as np
 import pytest
 
 from pqviewer.ase_adapter import ASEFrameSource
+from pqviewer.packet import encode_frame
 from pqviewer.sources import RunDataset, SourceSegment
 
 
@@ -45,6 +48,14 @@ def test_low_rank_cell_stays_exact_and_unwraps(
     assert abs(np.linalg.det(source_frame.periodic_cell)) > 1e-12
     assert np.all(np.isfinite(unwrapped.unwrapped_positions))
     assert unwrapped.unwrapped_positions[0, 0] == pytest.approx(5.1)
+
+    packet = encode_frame(source_frame)
+    header_size = struct.unpack_from("<I", packet)[0]
+    header_end = 4 + header_size
+    header = json.loads(packet[4:header_end])
+    arrays = {item["name"]: item for item in header["arrays"]}
+    packet_cell = _packet_array(packet, header_end, arrays["cell"]).reshape(3, 3)
+    assert abs(float(np.linalg.det(packet_cell))) > 1e-10
 
 
 def test_trajectory_reader_is_accepted_without_treating_strings_as_readers(
@@ -271,3 +282,16 @@ class _CountingTrajectory:
             positions=[[float(index), 0.0, 0.0]],
             info={"step": index},
         )
+
+
+def _packet_array(
+    packet: bytes,
+    header_end: int,
+    descriptor: dict[str, object],
+) -> np.ndarray:
+    start = header_end + int(descriptor["byte_offset"])
+    stop = start + int(descriptor["byte_length"])
+    dtype = "<i4" if descriptor["dtype"] == "int32" else "<f4"
+    return np.frombuffer(packet[start:stop], dtype=dtype).reshape(
+        descriptor["shape"]
+    )

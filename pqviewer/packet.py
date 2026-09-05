@@ -15,9 +15,16 @@ from .periodic import checked_int32
 
 def encode_frame(frame: FrameData) -> bytes:
     """Encode a frame as a JSON header followed by numeric arrays."""
+    # Prefer a completed periodic cell so the viewer can build a basis and
+    # apply image shifts for low-rank ASE cells.
+    packet_cell = (
+        frame.periodic_cell
+        if frame.periodic_cell is not None
+        else frame.cell
+    )
     arrays = (
         ("positions", frame.positions, "float32", np.dtype("<f4")),
-        ("cell", frame.cell, "float32", np.dtype("<f4")),
+        ("cell", packet_cell, "float32", np.dtype("<f4")),
         ("forces", frame.forces, "float32", np.dtype("<f4")),
         ("velocities", frame.velocities, "float32", np.dtype("<f4")),
         ("charges", frame.charges, "float32", np.dtype("<f4")),
