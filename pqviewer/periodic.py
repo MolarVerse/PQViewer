@@ -109,7 +109,9 @@ def unwrap_image_step(
     if not any(periodic):
         return np.zeros(current.shape, dtype=np.int64)
     if previous_cell.is_vacuum or current_cell.is_vacuum:
-        raise ValueError("periodic coordinates require finite adjacent cells")
+        # Restart unwrap tracking across a vacuum boundary instead of
+        # failing the frame request.
+        return np.zeros(current.shape, dtype=np.int64)
 
     previous_fractional = fractional_coordinates(previous_cell, previous)
     current_fractional = fractional_coordinates(current_cell, current)
@@ -151,7 +153,7 @@ def reverse_unwrap_image_step(
     if not any(current_periodic):
         return np.zeros(previous.shape, dtype=np.int64)
     if previous_cell.is_vacuum or current_cell.is_vacuum:
-        raise ValueError("periodic coordinates require finite adjacent cells")
+        return np.zeros(previous.shape, dtype=np.int64)
 
     previous_fractional = fractional_coordinates(previous_cell, previous)
     current_fractional = fractional_coordinates(current_cell, current)
