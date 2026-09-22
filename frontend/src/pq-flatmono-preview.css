@@ -1,0 +1,611 @@
+/*
+ * LOCAL-ONLY preview: PQSetup flat-mono design language on PQViewer.
+ *
+ * Not committed upstream. Reversible: remove the preview import + light-lock
+ * in main.tsx and delete this file to restore the Inter / rounded viewer.
+ *
+ * Adaptation notes (flat-mono = Carbon Gray 10, mono, square, hairlines):
+ *  - The language is light-only; main.tsx locks appearance to "light" first.
+ *    The [data-appearance="dark"] block below is only a guard.
+ *  - Viewer density is kept (44px header, floating canvas tools); only the
+ *    visual language changes: type, shape, focus, fields, status, buttons.
+ *  - Microcopy is raised to 11px minimum (the language allows nothing below).
+ */
+
+:root {
+  color-scheme: light;
+  /* NOTE: never redeclare a token name on itself
+   * (--accent: var(--accent)) — self-reference is a CSS cycle and computes
+   * to invalid. Colliding names (--surface, --muted, --accent, --accent-soft,
+   * --shadow) already carry the flat-mono values from tokens.css; only the
+   * viewer-specific names are aliased here. */
+  --canvas: var(--background);
+  --material: var(--surface);
+  --surface-soft: var(--surface-subtle);
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --text: var(--ink);
+  --quiet: var(--muted);
+  --disabled: var(--border-strong);
+  --error: var(--danger);
+  --numeric: var(--mono);
+}
+
+/* Guard: nothing may render dark while the preview is active. */
+:root[data-appearance="dark"] {
+  color-scheme: light;
+  --canvas: var(--background);
+  --material: var(--surface);
+  --surface-soft: var(--surface-subtle);
+  --line: var(--border);
+  --line-strong: var(--border-strong);
+  --text: var(--ink);
+  --quiet: var(--muted);
+  --disabled: var(--border-strong);
+  --error: var(--danger);
+  --numeric: var(--mono);
+}
+
+/* ---- type: mono everywhere ------------------------------------------- */
+.workspace,
+.workspace button,
+.workspace select,
+.workspace input,
+.workspace textarea,
+.topbar,
+.inspector,
+.scene-popover,
+.timeline,
+.command-palette,
+.shortcut-panel,
+.customize-sheet {
+  font-family: var(--mono);
+}
+
+/* 11px minimum for microcopy. */
+.scene-status,
+.scene-trigger > span,
+.command-button kbd,
+.more-menu kbd,
+.more-menu button,
+.frame-counter,
+.speed-control select,
+.plot-range,
+.section-heading-row > span,
+.section-heading-row > output,
+.capability-note,
+.cell-origin-note,
+.quiet-copy,
+.shortcut-row,
+.shortcut-groups h3,
+.settings-section h3,
+.settings-section > small,
+.image-axis > span,
+.image-axis select,
+.inline-setting > span,
+.slider-settings label > span,
+.render-size label,
+.vector-readout code,
+.readout-section h3,
+.popover-heading span,
+.sheet-heading span,
+.canvas-hint,
+.notice,
+.frame-error {
+  font-size: 11px;
+}
+
+/* ---- shape: square, flat ---------------------------------------------- */
+.workspace *,
+.workspace *::before,
+.workspace *::after {
+  border-radius: 0 !important;
+}
+
+.topbar,
+.scene-trigger,
+.scene-popover,
+.orientation-control,
+.inspector,
+.timeline,
+.command-palette,
+.shortcut-panel,
+.customize-sheet,
+.more-menu,
+.drop-overlay > div,
+.notice,
+.centered-state button,
+.canvas-hint {
+  box-shadow: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+.scene-popover,
+.inspector,
+.timeline,
+.command-palette,
+.shortcut-panel,
+.customize-sheet,
+.more-menu,
+.canvas-hint {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* ---- focus: 2px accent, inset ------------------------------------------ */
+.workspace button:focus-visible,
+.workspace select:focus-visible,
+.workspace input:focus-visible,
+.workspace svg:focus-visible,
+.molecule-canvas:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: -2px !important;
+}
+
+/* ---- header: Carbon bar ------------------------------------------------- */
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.identity strong {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.identity span:last-child {
+  font-size: 12px;
+}
+
+/* Search: Carbon search field — layer fill, bottom border only. */
+.topbar .command-button {
+  min-width: 200px;
+  height: 32px;
+  border: 0;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.topbar .command-button:hover {
+  background: #e8e8e8;
+  color: var(--text);
+}
+
+.topbar .command-button kbd {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* Task buttons: ghost text; open tool = dark fill (selected). */
+.task-button,
+.tools-button,
+.help-button {
+  height: 32px;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.task-button:hover:not(:disabled),
+.tools-button:hover:not(:disabled),
+.help-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.task-button[aria-expanded="true"],
+.tools-button[aria-expanded="true"] {
+  border-color: var(--selected, #393939);
+  background: var(--selected, #393939);
+  color: #fff;
+}
+
+/* Open: secondary outline. Export: Carbon primary. */
+.open-button {
+  height: 32px;
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.open-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: transparent;
+  color: var(--accent-dark, #0043ce);
+}
+
+.export-button.render-button {
+  height: 32px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.export-button.render-button:hover:not(:disabled) {
+  border-color: var(--accent-dark, #0043ce);
+  background: var(--accent-dark, #0043ce);
+  color: #fff;
+}
+
+.export-button.render-button[aria-expanded="true"] {
+  border-color: var(--selected, #393939);
+  background: var(--selected, #393939);
+  color: #fff;
+}
+
+/* Disabled primary reads as muted outline, never washed-out fill. */
+.export-button.render-button:disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* ---- floating canvas tools: flat panels --------------------------------- */
+.scene-trigger {
+  min-height: 40px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+
+.scene-trigger:hover {
+  border-color: var(--text);
+}
+
+.scene-trigger[aria-expanded="true"] {
+  border-color: var(--selected, #393939);
+  background: var(--selected, #393939);
+  color: #fff;
+}
+
+.scene-trigger[aria-expanded="true"] > span,
+.scene-trigger[aria-expanded="true"] .icon {
+  color: #c6c6c6;
+}
+
+.scene-trigger > strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.orientation-control {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.orientation-control button:hover,
+.orientation-control button.is-active {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+.orientation-control button.is-active {
+  box-shadow: inset 0 2px 0 var(--accent) !important;
+}
+
+/* Section labels read as labelled rules, like the language. */
+.scene-group-label,
+.readout-section h3,
+.settings-section h3,
+.shortcut-groups h3 {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ---- canvas hint: flat notice bar ---------------------------------------- */
+.canvas-hint {
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.canvas-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.canvas-hint button:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
+/* ---- timeline -------------------------------------------------------------- */
+.timeline {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.transport-button,
+.play-button {
+  border: 1px solid transparent;
+  color: var(--muted);
+}
+
+.transport-button:hover:not(:disabled),
+.play-button:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--surface-soft);
+  color: var(--accent-dark, #0043ce);
+}
+
+.play-button {
+  color: var(--text);
+}
+
+.frame-counter {
+  color: var(--text);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrubber: 2px track, square accent thumb. */
+.workspace input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--line-strong);
+}
+
+.workspace input[type="range"]::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 0;
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.workspace input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--line-strong);
+}
+
+.workspace input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 0;
+  background: var(--accent);
+}
+
+/* ---- plots ------------------------------------------------------------------ */
+.plot-grid {
+  stroke: var(--line);
+}
+
+.series-line {
+  stroke: var(--ink-soft, #393939);
+}
+
+.empty-series-line {
+  stroke: var(--line-strong);
+}
+
+.frame-marker {
+  stroke: var(--accent);
+}
+
+.frame-point {
+  fill: var(--surface);
+  stroke: var(--accent);
+}
+
+.plot-label select {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.plot-label small,
+.plot-range {
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+/* ---- switches & segmented: language square controls --------------------------- */
+.toggle-row > button[role="switch"],
+.vim-heading > button[role="switch"] {
+  width: 30px;
+  height: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: transparent;
+}
+
+.toggle-row > button[role="switch"] i,
+.vim-heading > button[role="switch"] i {
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 0;
+  background: var(--line-strong);
+  box-shadow: none;
+}
+
+.toggle-row > button[role="switch"][aria-checked="true"],
+.vim-heading > button[role="switch"][aria-checked="true"] {
+  border-color: var(--accent);
+  background: transparent;
+}
+
+.toggle-row > button[role="switch"][aria-checked="true"] i,
+.vim-heading > button[role="switch"][aria-checked="true"] i {
+  background: var(--accent);
+  transform: translateX(14px);
+}
+
+.mini-segmented,
+.settings-segmented {
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+
+.mini-segmented button,
+.settings-segmented button {
+  font-size: 11px;
+}
+
+.mini-segmented button.is-active,
+.settings-segmented button.is-active {
+  background: var(--selected, #393939);
+  color: #fff;
+  box-shadow: none;
+  font-weight: 500;
+}
+
+/* ---- lists, menus, command palette ---------------------------------------------- */
+.command-palette {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+
+.command-search {
+  border-bottom: 1px solid var(--line);
+}
+
+.command-search input {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.command-results > button:hover,
+.command-results > button.is-active,
+.command-results > button[aria-selected="true"] {
+  background: var(--surface-soft);
+  box-shadow: inset 2px 0 0 var(--accent) !important;
+}
+
+.representation-grid button.is-active,
+.image-presets button.is-active,
+.settings-choice.is-active,
+.render-presets button.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.more-menu {
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.more-menu button:hover {
+  background: var(--surface-soft);
+}
+
+.more-menu hr {
+  background: var(--line);
+}
+
+/* ---- sheets, dialogs ------------------------------------------------------------ */
+.sheet-actions > button.primary,
+.centered-state .primary-action,
+.sheet-actions > button:last-child {
+  font-weight: 500;
+}
+
+.sheet-actions > button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sheet-actions > button.primary:hover {
+  background: var(--accent-dark, #0043ce);
+  color: #fff;
+}
+
+.shortcut-row kbd {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.notice {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.notice.is-error {
+  border-color: var(--error);
+}
+
+/* ---- fields: Carbon layer fill + bottom border ----------------------------------- */
+.render-size input,
+.image-axis select,
+.speed-control select,
+.plot-label select {
+  font-family: var(--mono);
+}
+
+.render-size input {
+  border: 0 !important;
+  border-bottom: 1px solid var(--line-strong) !important;
+  background: var(--surface-soft);
+}
+
+/* ---- misc ------------------------------------------------------------------------ */
+.selection-marquee {
+  border: 1px solid var(--accent);
+  background: transparent;
+}
+
+.vector-readout code {
+  border-left: 2px solid var(--line-strong);
+  font-family: var(--mono);
+}
+
+.readout strong {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.drop-overlay {
+  background: rgb(22 22 22 / 30%);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.drop-overlay > div {
+  border: 1px solid var(--accent);
+  background: var(--surface);
+}
+
+.workspace ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.workspace ::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 2px solid var(--surface);
+}
+
+.workspace ::-webkit-scrollbar-track {
+  background: transparent;
+}
