@@ -81,7 +81,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 The browser bundle also includes:
 
-- `@molarverse/pq-design` 0.1.0: Copyright (c) 2026 MolarVerse.
+- `@molarverse/pq-design` 0.1.1: Copyright (c) 2026 MolarVerse.
 - `react` 19.2.7, `react-dom` 19.2.7, and `scheduler` 0.27.0:
   Copyright (c) Meta Platforms, Inc. and affiliates.
 - `three` 0.179.1: Copyright © 2010-2025 three.js authors.

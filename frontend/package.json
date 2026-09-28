@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
-    "@molarverse/pq-design": "https://github.com/MolarVerse/PQSetup/releases/download/pq-design-v0.1.0/molarverse-pq-design-0.1.0.tgz",
+    "@molarverse/pq-design": "https://github.com/MolarVerse/PQSetup/releases/download/pq-design-v0.1.1/molarverse-pq-design-0.1.1.tgz",
     "3dmol": "2.5.5",
     "lucide-react": "1.27.0",
     "react": "^19.1.1",
