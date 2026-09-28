@@ -611,6 +611,13 @@
 }
 
 @media (max-width: 760px) {
+  .topbar .open-button,
+  .topbar .tools-button,
+  .topbar .help-button,
+  .topbar .export-button.render-button {
+    height: 40px;
+  }
+
   .topbar .command-button {
     width: 44px;
     min-width: 44px;
@@ -624,5 +631,17 @@
   .export-button.render-button {
     gap: 0;
     font-size: 0;
+  }
+}
+
+@media (max-width: 340px) {
+  .tools-button {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+  }
+
+  .tools-button span {
+    display: none;
   }
 }

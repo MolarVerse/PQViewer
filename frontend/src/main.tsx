@@ -13,7 +13,7 @@ import "@fontsource/inter/greek-500.css";
 import "@fontsource/inter/greek-600.css";
 import "@fontsource/inter/greek-700.css";
 import App from "./App";
-import "@molarverse/pq-design/styles.css";
+import "@molarverse/pq-design/tokens.css";
 import "./styles.css";
 import "./pq-flatmono-preview.css";
 
