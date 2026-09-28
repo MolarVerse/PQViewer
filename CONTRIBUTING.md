@@ -30,6 +30,13 @@ cd ..
 python -m playwright install chromium
 ```
 
+The frontend installs `@molarverse/pq-design` from a versioned
+[PQSetup design release](https://github.com/MolarVerse/PQSetup/releases?q=pq-design-v).
+No adjacent PQSetup checkout is needed. To update shared controls or tokens,
+follow the [design package guide](https://molarverse.github.io/PQSetup/design-system.html),
+then update the archive URL in `frontend/package.json` and commit the resulting
+lockfile. Keep viewer-specific layout in this repository.
+
 Run the API and frontend development server in separate terminals:
 
 ```bash

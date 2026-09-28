@@ -52,15 +52,9 @@ jobs:
       run:
         working-directory: PQViewer/frontend
     steps:
-      # MolarVerse checkout layout: the frontend resolves
-      # @molarverse/pq-design through a sibling file: path.
       - uses: actions/checkout@v7
         with:
           path: PQViewer
-      - uses: actions/checkout@v7
-        with:
-          repository: MolarVerse/PQSetup
-          path: PQSetup
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
@@ -84,10 +78,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           path: PQViewer
-      - uses: actions/checkout@v7
-        with:
-          repository: MolarVerse/PQSetup
-          path: PQSetup
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
