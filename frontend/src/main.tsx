@@ -17,7 +17,7 @@ import "@molarverse/pq-design/styles.css";
 import "./styles.css";
 import "./pq-flatmono-preview.css";
 
-// LOCAL-ONLY flat-mono preview: the language is Gray-10 light-only, so the
+// Draft flat-mono preview: the language is Gray-10 light-only, so the
 // preview locks the viewer to its light appearance before first render.
 // Otherwise a dark scene + light chrome mix (the "ugly" state). Revert by
 // deleting this block together with the preview css import above.

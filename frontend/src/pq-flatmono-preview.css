@@ -1,7 +1,7 @@
 /*
- * LOCAL-ONLY preview: PQSetup flat-mono design language on PQViewer.
+ * Draft preview: PQSetup flat-mono design language on PQViewer.
  *
- * Not committed upstream. Reversible: remove the preview import + light-lock
+ * Not merged into main. Reversible: remove the preview import + light-lock
  * in main.tsx and delete this file to restore the Inter / rounded viewer.
  *
  * Adaptation notes (flat-mono = Carbon Gray 10, mono, square, hairlines):
@@ -608,4 +608,21 @@
 
 .workspace ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@media (max-width: 760px) {
+  .topbar .command-button {
+    width: 44px;
+    min-width: 44px;
+    height: 40px;
+    padding: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .open-button,
+  .export-button.render-button {
+    gap: 0;
+    font-size: 0;
+  }
 }
