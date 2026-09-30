@@ -16,7 +16,7 @@ centred periodic cells, measurements, and reproducible figure export.
 [Web demo](https://molarverse.github.io/PQViewer/viewer/) ·
 [Jupyter example](https://github.com/MolarVerse/PQViewer/blob/main/examples/pqviewer-notebook.ipynb)
 
-![PQViewer showing a 100-frame UMCM-9 trajectory](https://raw.githubusercontent.com/MolarVerse/PQViewer/main/docs/assets/screenshots/trajectory-workspace.png)
+![PQViewer showing a SrTiO3 structure with the View inspector open](docs/assets/screenshots/viewer-workspace.png)
 
 PQViewer is in public beta. File and Python interfaces may change before 1.0.
 
@@ -46,8 +46,10 @@ for examples.
 - trajectory playback, measurements, analysis, forces, and collision indicators
 - independent PNG and TIFF figure rendering with reusable recipes
 
-Search atoms, settings, and commands with the central **Search** field,
-`Cmd/Ctrl+K`, or `/`.
+Use **View**, **Edit**, and **Analyze** without leaving the structure. On a
+narrow screen, **Tools** opens the same controls in a sheet; the camera and
+structure remain available. Search atoms, settings, and commands with the
+**Search** control, `Cmd/Ctrl+K`, or `/`.
 
 ## Jupyter
 

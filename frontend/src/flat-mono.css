@@ -1,39 +1,8 @@
-/*
- * Draft preview: PQSetup flat-mono design language on PQViewer.
- *
- * Not merged into main. Reversible: remove the preview import + light-lock
- * in main.tsx and delete this file to restore the Inter / rounded viewer.
- *
- * Adaptation notes (flat-mono = Carbon Gray 10, mono, square, hairlines):
- *  - The language is light-only; main.tsx locks appearance to "light" first.
- *    The [data-appearance="dark"] block below is only a guard.
- *  - Viewer density is kept (44px header, floating canvas tools); only the
- *    visual language changes: type, shape, focus, fields, status, buttons.
- *  - Microcopy is raised to 11px minimum (the language allows nothing below).
- */
+/* PQViewer controls use the shared flat-mono tokens with viewer-specific layout. */
 
 :root {
   color-scheme: light;
-  /* NOTE: never redeclare a token name on itself
-   * (--accent: var(--accent)) — self-reference is a CSS cycle and computes
-   * to invalid. Colliding names (--surface, --muted, --accent, --accent-soft,
-   * --shadow) already carry the flat-mono values from tokens.css; only the
-   * viewer-specific names are aliased here. */
-  --canvas: var(--background);
-  --material: var(--surface);
-  --surface-soft: var(--surface-subtle);
-  --line: var(--border);
-  --line-strong: var(--border-strong);
-  --text: var(--ink);
-  --quiet: var(--muted);
-  --disabled: var(--border-strong);
-  --error: var(--danger);
-  --numeric: var(--mono);
-}
-
-/* Guard: nothing may render dark while the preview is active. */
-:root[data-appearance="dark"] {
-  color-scheme: light;
+  font-family: var(--mono);
   --canvas: var(--background);
   --material: var(--surface);
   --surface-soft: var(--surface-subtle);
@@ -424,17 +393,26 @@
 /* ---- switches & segmented: language square controls --------------------------- */
 .toggle-row > button[role="switch"],
 .vim-heading > button[role="switch"] {
+  width: 44px;
+  height: 44px;
+  border: 0;
+  background: transparent;
+}
+
+.toggle-row > button[role="switch"]::before,
+.vim-heading > button[role="switch"]::before {
+  top: 14px;
+  left: 7px;
   width: 30px;
   height: 16px;
   border: 1px solid var(--line-strong);
-  border-radius: 0;
   background: transparent;
 }
 
 .toggle-row > button[role="switch"] i,
 .vim-heading > button[role="switch"] i {
-  top: 2px;
-  left: 2px;
+  top: 17px;
+  left: 10px;
   width: 10px;
   height: 10px;
   border-radius: 0;
@@ -444,6 +422,11 @@
 
 .toggle-row > button[role="switch"][aria-checked="true"],
 .vim-heading > button[role="switch"][aria-checked="true"] {
+  background: transparent;
+}
+
+.toggle-row > button[role="switch"][aria-checked="true"]::before,
+.vim-heading > button[role="switch"][aria-checked="true"]::before {
   border-color: var(--accent);
   background: transparent;
 }
@@ -610,7 +593,24 @@
   background: transparent;
 }
 
+@media (min-width: 761px) and (max-width: 920px) {
+  .topbar .command-button {
+    width: 44px;
+    min-width: 44px;
+    padding: 0;
+  }
+
+  .topbar .command-button span,
+  .topbar .command-button kbd {
+    display: none;
+  }
+}
+
 @media (max-width: 760px) {
+  .workspace {
+    --mobile-workbench-height: min(44svh, 400px);
+  }
+
   .topbar .open-button,
   .topbar .tools-button,
   .topbar .help-button,

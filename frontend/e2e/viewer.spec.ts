@@ -524,8 +524,6 @@ test("uses one canonical scientific viewer with editable cell and display contro
   }).click();
   await page.getByRole("button", { name: "Spacefill" }).click();
   await expect(canvas).toHaveAttribute("data-representation", "spacefill");
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-appearance", "dark");
 
   await page.setViewportSize({ width: 320, height: 568 });
   const workbenchBox = await page.locator("#workbench").boundingBox();
@@ -1802,6 +1800,46 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   );
   await page.getByRole("button", { name: "Hide plot", exact: true }).click();
   expect(errors).toEqual([]);
+});
+
+test("keeps controls usable in short landscape and portrait viewports", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await page.setViewportSize({ width: 844, height: 390 });
+  const search = await page.getByRole("button", {
+    name: "Search atoms, settings, and commands",
+  }).boundingBox();
+  const open = await page.getByRole("button", { name: "Open", exact: true }).boundingBox();
+  expect(search).not.toBeNull();
+  expect(open).not.toBeNull();
+  expect(search!.x + search!.width).toBeLessThanOrEqual(open!.x);
+
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.getByRole("button", { name: "Open viewer tools" }).click();
+  const camera = await page.getByRole("toolbar", { name: "Camera controls" }).boundingBox();
+  const tools = await page.locator("#workbench").boundingBox();
+  expect(camera).not.toBeNull();
+  expect(tools).not.toBeNull();
+  expect(tools!.y - (camera!.y + camera!.height)).toBeGreaterThanOrEqual(130);
+  const hydrogens = page.locator("#workbench").getByRole("switch", { name: "Hydrogens" });
+  await hydrogens.scrollIntoViewIfNeeded();
+  const switchBox = await hydrogens.boundingBox();
+  expect(switchBox).not.toBeNull();
+  expect(switchBox!.width).toBeGreaterThanOrEqual(44);
+  expect(switchBox!.height).toBeGreaterThanOrEqual(44);
+});
+
+test("explains unavailable representations without changing the scene", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await page.locator(".task-navigation").getByRole("button", { name: "View" }).click();
+  const polyhedra = page.locator("#workbench").getByRole("button", { name: "Polyhedra" });
+  await expect(polyhedra).toHaveAttribute("aria-disabled", "true");
+  await polyhedra.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator(".notice")).toContainText("Polyhedra unavailable");
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute(
+    "data-representation",
+    "ball-stick",
+  );
 });
 
 test("truncates long filenames at 320 px without losing the full name", async ({ page }) => {

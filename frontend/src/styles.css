@@ -21,24 +21,6 @@
   --numeric: "SFMono-Regular", "Roboto Mono", Consolas, monospace;
 }
 
-:root[data-appearance="dark"] {
-  color-scheme: dark;
-  --canvas: #1e2e33;
-  --surface: #26383e;
-  --material: rgba(38, 56, 62, 0.92);
-  --surface-soft: #30454c;
-  --line: #465b61;
-  --line-strong: #5a7076;
-  --text: #f2f6f5;
-  --muted: #c1ced0;
-  --quiet: #9aadb1;
-  --disabled: #718286;
-  --accent: #63c4d8;
-  --accent-soft: #294c58;
-  --error: #f09a8d;
-  --shadow: 0 12px 36px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
 * {
   box-sizing: border-box;
 }
@@ -518,7 +500,7 @@ output {
   cursor: pointer;
 }
 
-.representation-grid button:hover:not(:disabled) {
+.representation-grid button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--surface-soft);
   color: var(--text);
 }
@@ -529,7 +511,7 @@ output {
   color: var(--text);
 }
 
-.representation-grid button:disabled {
+.representation-grid button:is(:disabled, [aria-disabled="true"]) {
   color: var(--disabled);
   cursor: default;
 }
@@ -1249,11 +1231,6 @@ input[type="range"]::-moz-range-thumb {
   display: grid;
   place-items: start center;
   padding: min(14vh, 120px) 16px 24px;
-}
-
-:root[data-appearance="dark"] .command-backdrop,
-:root[data-appearance="dark"] .customize-backdrop {
-  background: rgba(0, 0, 0, 0.34);
 }
 
 .command-palette {
@@ -6601,8 +6578,7 @@ button.measurement-plot__legend-item:hover {
   cursor: default;
 }
 
-.structure-button,
-.appearance-button {
+.structure-button {
   min-width: 36px;
   height: 34px;
   padding: 0 10px;
@@ -6615,15 +6591,13 @@ button.measurement-plot__legend-item:hover {
 }
 
 .structure-button:hover:not(:disabled),
-.structure-button[aria-expanded="true"],
-.appearance-button:hover:not(:disabled) {
+.structure-button[aria-expanded="true"] {
   border-color: var(--line);
   background: var(--surface-soft);
   color: var(--text);
 }
 
-.structure-button:disabled,
-.appearance-button:disabled {
+.structure-button:disabled {
   opacity: 0.45;
   cursor: default;
 }
@@ -6932,7 +6906,7 @@ button.measurement-plot__legend-item:hover {
   font-weight: 700;
 }
 
-.representation-grid button:disabled {
+.representation-grid button:is(:disabled, [aria-disabled="true"]) {
   opacity: 0.38;
   cursor: default;
 }
@@ -7039,16 +7013,6 @@ button.measurement-plot__legend-item:hover {
 
 .atom-editor .primary-panel-action {
   margin-top: 10px;
-}
-
-:root[data-appearance="dark"] .molecule-stage-3dmol {
-  background: var(--canvas);
-}
-
-@media (max-width: 980px) {
-  .appearance-button {
-    display: none;
-  }
 }
 
 @media (max-width: 760px) {
@@ -7256,20 +7220,6 @@ button.measurement-plot__legend-item:hover {
 .edit-target-options button:disabled {
   color: var(--disabled);
   cursor: default;
-}
-
-.appearance-options {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.appearance-options button {
-  min-height: 36px;
-}
-
-.appearance-settings .panel-select-row {
-  margin-top: 10px;
-  border-top: 1px solid var(--line);
 }
 
 .selected-atom-overview {
