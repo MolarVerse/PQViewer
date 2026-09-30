@@ -620,6 +620,12 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
     .toBeFocused();
+  await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
+    .toHaveClass(/is-search-target/);
+  await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
+    .not.toHaveClass(/is-search-target/);
+  await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
+    .toBeFocused();
   await page.locator("#workbench").getByRole("button", {
     name: "Close",
     exact: true,
@@ -1824,8 +1830,10 @@ test("keeps controls usable in short landscape and portrait viewports", async ({
   await hydrogens.scrollIntoViewIfNeeded();
   const switchBox = await hydrogens.boundingBox();
   expect(switchBox).not.toBeNull();
-  expect(switchBox!.width).toBeGreaterThanOrEqual(44);
-  expect(switchBox!.height).toBeGreaterThanOrEqual(44);
+  await expect.poll(async () => (await hydrogens.boundingBox())?.width ?? 0)
+    .toBeGreaterThanOrEqual(44);
+  await expect.poll(async () => (await hydrogens.boundingBox())?.height ?? 0)
+    .toBeGreaterThanOrEqual(44);
 });
 
 test("explains unavailable representations without changing the scene", async ({ page }) => {

@@ -4161,10 +4161,10 @@ function StructurePanel({
       </p>
     </section>
     <CellEditor
-      key={`${cellKey}:${revealCellMode ?? ""}`}
+      key={cellKey}
       frame={frame}
       pbc={pbc}
-      initialMode={revealCellMode}
+      requestedMode={revealCellMode}
       onApply={onCellEdit}
     />
     <section className="workbench-section structure-actions">
@@ -4181,12 +4181,12 @@ function StructurePanel({
 function CellEditor({
   frame,
   pbc,
-  initialMode = "parameters",
+  requestedMode,
   onApply,
 }: {
   frame: FrameData | null;
   pbc: [boolean, boolean, boolean];
-  initialMode?: "parameters" | "vectors";
+  requestedMode?: "parameters" | "vectors";
   onApply: (
     values: readonly number[],
     pbc: readonly boolean[],
@@ -4196,7 +4196,7 @@ function CellEditor({
   const sourceCell = cellMatrix(frame);
   const baseline = sourceCell ?? suggestedCell(frame);
   const baselineParameters = cellParameters(baseline);
-  const [mode, setMode] = useState<"parameters" | "vectors">(initialMode);
+  const [mode, setMode] = useState<"parameters" | "vectors">(requestedMode ?? "parameters");
   const [parameterDraft, setParameterDraft] = useState(
     () => cellParameterValues(baselineParameters),
   );
@@ -4222,6 +4222,9 @@ function CellEditor({
       setError(message(reason));
     }
   };
+  useEffect(() => {
+    if (requestedMode) changeMode(requestedMode);
+  }, [requestedMode]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     try {
