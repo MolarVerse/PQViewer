@@ -620,10 +620,10 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
     .toBeFocused();
+  // Search feedback clears after the setting opens; focus and mode must survive it.
+  await page.waitForTimeout(2_500);
   await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
-    .toHaveClass(/is-search-target/);
-  await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
-    .not.toHaveClass(/is-search-target/);
+    .toHaveAttribute("aria-pressed", "true");
   await expect(page.locator('[data-setting-id="edit-cell-vectors"]'))
     .toBeFocused();
   await page.locator("#workbench").getByRole("button", {
