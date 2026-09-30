@@ -50,27 +50,34 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: frontend
+        working-directory: PQViewer/frontend
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: PQViewer
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: PQViewer/frontend/package-lock.json
       - run: npm ci
       - run: npm run build
       - name: Run frontend tests when available
         run: npm run test --if-present
       - name: Verify bundled frontend
-        working-directory: .
+        working-directory: PQViewer
         run: git diff --exit-code -- pqviewer/static
 
   browser:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: PQViewer
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: PQViewer
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -80,13 +87,13 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - working-directory: frontend
+          cache-dependency-path: PQViewer/frontend/package-lock.json
+      - working-directory: PQViewer/frontend
         run: npm ci
-      - working-directory: frontend
+      - working-directory: PQViewer/frontend
         run: npx playwright install --with-deps chromium
       - run: python -m playwright install chromium
-      - working-directory: frontend
+      - working-directory: PQViewer/frontend
         run: npm run test:e2e
       - name: Smoke-test headless rendering
         env:

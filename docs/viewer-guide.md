@@ -3,7 +3,9 @@
 The interface is one continuous scientific workspace. The structure stays on
 the canvas while **View**, **Edit**, **Analyze**, and **Export** expose one task
 at a time. On narrow screens, **Tools** opens the same View/Edit/Analyze
-inspector as a bottom sheet; its arrow expands the sheet to full height.
+inspector as a scrollable sheet. The canvas remains visible; use the arrow to
+expand the sheet when more room is needed. In short landscape windows, the
+inspector sits beside the canvas.
 
 ## Canvas
 
@@ -70,15 +72,16 @@ Choose **View** or press `V` to open the controls supported by the current
 source.
 
 Representations are explicit: ball-and-stick, spacefill, licorice, lines,
-ribbon, coordination polyhedra, and surface. Atom color, hydrogen visibility,
-and atom and bond size follow in the same inspector, then on/off layers such as
-bonds, water, the cell, forces, and velocities. Periodic wrap, centering, and
+ribbon, coordination polyhedra, and surface. An unavailable representation
+remains discoverable; hover it for the requirement, or select it for a brief
+explanation. Screen readers announce the requirement when it receives focus.
+Atom color, hydrogen visibility, and atom and bond size follow in the same
+inspector, then on/off layers such as bonds, water, the cell, forces, and
+velocities. Periodic wrap, centering, and
 repeats stay in a collapsed **Periodic cell** section when a cell is present.
-Light and dark appearance and interactive quality sit at the end, because they
-change the viewer chrome rather than the scientific display. PQViewer chooses a
-sensible initial display for the loaded data, but every representation and
-layer remains directly controllable; the inspector does not require a
-scientific-system preset.
+**Rendering** controls interactive quality. PQViewer chooses an initial display
+for the loaded data, while supported representations and layers remain directly
+controllable.
 
 Coordination geometry follows the visible bonding topology. Planar ligand
 shells are shown as polygons; non-planar shells are shown as polyhedra. When
@@ -156,7 +159,7 @@ setting or run the selected command. Setting results show their path, such as
 sections, scroll the setting into view, and highlight it briefly.
 
 Natural scientific terms are indexed. Queries such as `bond across cell`,
-`atom color`, `edit lattice vectors`, `distance`, `dark mode`, and
+`atom color`, `edit lattice vectors`, `distance`, `rendering quality`, and
 `transparent image` lead to the relevant control. Search also accepts commands
 such as `select within 3 Å of selection`.
 
@@ -171,7 +174,6 @@ such as `select within 3 Å of selection`.
 | `1` / `2` / `3` / `4` | Perspective / XY / XZ / YZ |
 | `↑` / `↓`, `Enter` | Browse atoms and toggle selection |
 | `E` / `V` | Edit / View tools |
-| `D` | Light or dark appearance |
 | `B` | Toggle lines and ball-and-stick |
 | `C` / `F` / `W` | Toggle cell / forces / water |
 | `Cmd/Ctrl+O` | Open files |

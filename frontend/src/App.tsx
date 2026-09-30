@@ -79,8 +79,12 @@ import {
   resolveVimNavigation,
   shortcutLabelsForPlatform,
 } from "./keyboard";
-import type { ViewerShortcutLabels, VimNavigationAction, VimPrefix } from "./keyboard";
+import type { VimNavigationAction, VimPrefix } from "./keyboard";
 import { Icon } from "./Icon";
+import { CommandPalette, ShortcutSheet } from "./WorkspaceDialogs";
+import type { CommandAction } from "./WorkspaceDialogs";
+import { restoreFocusWhenAvailable, usePanelFocusRestore } from "./workspaceFocus";
+import type { FocusTarget } from "./workspaceFocus";
 import {
   measureAtomSelection,
   updateSceneSelection,
@@ -150,7 +154,6 @@ import {
 } from "./trajectoryTracking";
 import type {
   AtomSelection,
-  Appearance,
   CellOffset,
   DisplaySeries,
   FrameData,
@@ -180,7 +183,6 @@ type RdfPlotContext = {
   referenceLabel: string;
   targetLabel: string;
 };
-type FocusTarget = Element & { focus: (options?: FocusOptions) => void };
 type PinnedMeasurement = {
   id: number;
   selections: AtomSelection[];
@@ -255,7 +257,7 @@ export default function App() {
   const [playbackPulse, setPlaybackPulse] = useState(0);
   const [playbackOptionsOpen, setPlaybackOptionsOpen] = useState(false);
   const [presentation, setPresentation] = useState<ScenePresentation>(initialPresentation);
-  const [appearance, setAppearance] = useState<Appearance>(initialAppearance);
+  const appearance = "light" as const;
   const [profile, setProfile] = useState<SceneProfile>("auto");
   const [selectedAtoms, setSelectedAtoms] = useState<AtomSelection[]>([]);
   const [selectionIntent, setSelectionIntent] = useState<SelectionIntent>("measurement");
@@ -679,18 +681,6 @@ export default function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [revalidateDataset]);
-
-  useEffect(() => {
-    document.documentElement.dataset.appearance = appearance;
-    document.documentElement.style.colorScheme = appearance;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute(
-      "content",
-      appearance === "dark" ? "#1e2e33" : "#f6f8f8",
-    );
-    try {
-      window.localStorage.setItem("pqviewer-appearance", appearance);
-    } catch {}
-  }, [appearance]);
 
   useEffect(() => {
     try {
@@ -2195,6 +2185,13 @@ export default function App() {
   ]);
 
   const updatePresentation = useCallback((change: Partial<ScenePresentation>) => {
+    if (change.mode === "ribbon" && !capabilities?.ribbon) {
+      setNotice({
+        message: `Ribbon unavailable · ${capabilities?.ribbonReason ?? "Backbone unavailable"}`,
+        tone: "status",
+      });
+      return;
+    }
     if (change.mode === "polyhedra" && !capabilities?.polyhedra) {
       setNotice({
         message: `Polyhedra unavailable · ${capabilities?.polyhedraReason ?? POLYHEDRA_REQUIREMENT}`,
@@ -2587,8 +2584,6 @@ export default function App() {
           setEditTarget("cell");
           openWorkbench("edit", true);
         }
-      } else if (event.key.toLowerCase() === "d" && !event.repeat) {
-        setAppearance((current) => current === "dark" ? "light" : "dark");
       } else if (event.key.toLowerCase() === "w" && capabilities?.water && !event.repeat) {
         updatePresentation({ water: presentation.water === "hide" ? "show" : "hide" });
       } else if (event.key.toLowerCase() === "b" && !event.repeat) {
@@ -2631,7 +2626,6 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
     capabilities?.water,
-    appearance,
     canPlay,
     cellAvailable,
     closeWorkbench,
@@ -2813,7 +2807,7 @@ export default function App() {
       { id: "setting-atom-appearance", label: "Atom color and size", keywords: "atom atoms color colour element residue chain structure radius size bond thickness hydrogen", breadcrumb: "View › Atoms", disabled: !capabilities, run: run(() => openSetting("view", "view-atoms")) },
       { id: "setting-bonds", label: "Bond display", keywords: "bond bonds connectivity crossing across through boundary periodic unit cell clip clutter connection", breadcrumb: "View › Layers › Bonds", disabled: !capabilities, run: run(() => openSetting("view", "view-bonds")) },
       { id: "setting-periodic", label: "Periodic images and wrapping", keywords: "unit cell box periodic pbc wrap unwrap reconstruct molecule repeat replicate supercell mirror centered crossing boundary", breadcrumb: "View › Periodic cell", disabled: !cellAvailable, discoverableWhenDisabled: true, run: run(() => openSetting("view", "view-periodic")) },
-      { id: "setting-theme", label: "Light or dark appearance", keywords: "dark mode light theme appearance contrast colors quality tessellation interactive", breadcrumb: "View › Appearance", run: run(() => openSetting("view", "view-appearance")) },
+      { id: "setting-quality", label: "Rendering quality", keywords: "view render quality tessellation interactive high", breadcrumb: "View › Rendering", run: run(() => openSetting("view", "view-rendering")) },
       { id: "setting-cell", label: "Cell lengths and angles", keywords: "edit unit cell lattice parameters lengths angles alpha beta gamma pbc periodic axes", breadcrumb: "Edit › Cell", disabled: !manifest || !frame, run: run(() => {
         setEditTarget("cell");
         openSetting("edit", "edit-cell");
@@ -2835,7 +2829,6 @@ export default function App() {
         keywords: "undo restore atom cell",
         run: run(resetStructureEdits),
       }] : []),
-      { id: "appearance", label: appearance === "dark" ? "Use light appearance" : "Use dark appearance", keywords: "theme colors light dark", detail: "D", run: run(() => setAppearance((current) => current === "dark" ? "light" : "dark")) },
       ...([
         ["molecule", "Molecule"],
         ["protein", "Protein"],
@@ -3062,7 +3055,6 @@ export default function App() {
       },
     }));
   }, [
-    appearance,
     applySceneProfile,
     canPlay,
     canPlotMeasurement,
@@ -3459,7 +3451,6 @@ export default function App() {
             {workbenchTab === "view" && <ScenePanel
               presentation={presentation}
               capabilities={capabilities}
-              appearance={appearance}
               cellAvailable={cellAvailable}
               forceAvailable={forceAvailable}
               velocityAvailable={velocityAvailable}
@@ -3473,7 +3464,6 @@ export default function App() {
               forceScale={forceScale}
               velocityScale={velocityScale}
               onPresentation={updatePresentation}
-              onAppearance={setAppearance}
               onForceScale={setForceScale}
               onVelocityScale={setVelocityScale}
             />}
@@ -3864,17 +3854,6 @@ export default function App() {
   );
 }
 
-interface CommandAction {
-  id: string;
-  label: string;
-  keywords?: string;
-  breadcrumb?: string;
-  detail?: string;
-  disabled?: boolean;
-  discoverableWhenDisabled?: boolean;
-  run: () => void;
-}
-
 export function shouldNormalizePolyhedra(
   mode: RepresentationMode,
   available: boolean | null,
@@ -3897,102 +3876,6 @@ export function filterCommandActions<T extends { label: string; keywords?: strin
     disabled: action.disabled,
   }));
   return searchCommandActions(searchable, query).map(({ action }) => action);
-}
-
-function useModalFocus<T extends HTMLElement>(
-  panelRef: Readonly<{ current: T | null }>,
-  initialRef?: Readonly<{ current: HTMLElement | null }>,
-) {
-  useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return;
-    const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const modalRoot = panel.parentElement;
-    const background = modalRoot?.parentElement
-      ? [...modalRoot.parentElement.children]
-        .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== modalRoot)
-        .map((element) => ({ element, inert: element.inert }))
-      : [];
-    background.forEach(({ element }) => { element.inert = true; });
-
-    const focusable = () => [...panel.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-    )].filter((element) => element.offsetParent !== null);
-    const focusInitial = () => (initialRef?.current ?? focusable()[0] ?? panel).focus();
-    const animation = requestAnimationFrame(focusInitial);
-    const keepFocusInside = (event: FocusEvent) => {
-      if (!panel.contains(event.target as Node)) focusInitial();
-    };
-    const trapTab = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const elements = focusable();
-      if (elements.length === 0) {
-        event.preventDefault();
-        panel.focus();
-        return;
-      }
-      const first = elements[0];
-      const last = elements[elements.length - 1];
-      if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("focusin", keepFocusInside);
-    panel.addEventListener("keydown", trapTab);
-    return () => {
-      cancelAnimationFrame(animation);
-      document.removeEventListener("focusin", keepFocusInside);
-      panel.removeEventListener("keydown", trapTab);
-      background.forEach(({ element, inert }) => { element.inert = inert; });
-      restoreFocusWhenAvailable(restoreFocus);
-    };
-  }, []);
-}
-
-function usePanelFocusRestore<T extends HTMLElement>(
-  panelRef: Readonly<{ current: T | null }>,
-  fallbackRef: Readonly<{ current: HTMLElement | null }>,
-) {
-  useEffect(() => {
-    const panel = panelRef.current;
-    const origin = document.activeElement instanceof HTMLElement
-      && document.activeElement !== document.body
-      ? document.activeElement
-      : null;
-    if (!panel) return;
-    return () => {
-      const active = document.activeElement;
-      if (
-        active === document.body
-        || active === null
-        || panel.contains(active)
-      ) {
-        restoreFocusWhenAvailable(
-          origin?.isConnected ? origin : fallbackRef.current,
-        );
-      }
-    };
-  }, [fallbackRef]);
-}
-
-function restoreFocusWhenAvailable(element: FocusTarget | null) {
-  if (!element?.isConnected) return;
-  if (!element.matches(":disabled")) {
-    element.focus();
-    return;
-  }
-  const observer = new MutationObserver(() => {
-    if (!element.isConnected || element.matches(":disabled")) return;
-    window.clearTimeout(timeout);
-    observer.disconnect();
-    element.focus();
-  });
-  const timeout = window.setTimeout(() => observer.disconnect(), 30_000);
-  observer.observe(element, { attributes: true, attributeFilter: ["disabled"] });
 }
 
 function FigureSheet({
@@ -4231,176 +4114,6 @@ function FigureSheet({
   );
 }
 
-function CommandPalette({
-  actions,
-  contextIds,
-  recentIds,
-  resolveAction,
-  onClose,
-}: {
-  actions: CommandAction[];
-  contextIds: string[];
-  recentIds: string[];
-  resolveAction?: (query: string) => CommandAction | null;
-  onClose: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const panelRef = useRef<HTMLElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const visible = useMemo(() => {
-    const searched = searchCommandActions(actions, query, { contextIds, recentIds });
-    const resolved = resolveAction?.(query) ?? null;
-    return resolved
-      ? [resolved, ...searched.filter((action) => action.id !== resolved.id)]
-      : searched;
-  }, [actions, contextIds, query, recentIds, resolveAction]);
-
-  useModalFocus(panelRef, inputRef);
-  useEffect(() => setActive(0), [visible]);
-  useEffect(() => {
-    optionRefs.current[active]?.scrollIntoView({ block: "nearest" });
-  }, [active, visible]);
-
-  const move = (direction: number) => {
-    if (visible.length === 0) return;
-    setActive((current) => (current + direction + visible.length) % visible.length);
-  };
-
-  return <div className="command-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <section ref={panelRef} className="command-palette" role="dialog" aria-modal="true" aria-label="Search" tabIndex={-1}>
-      <label className="command-search"><Icon name="search" /><input
-        ref={inputRef}
-        value={query}
-        placeholder="Search atoms, settings, and commands"
-        aria-label="Search atoms, settings, and commands"
-        role="combobox"
-        aria-autocomplete="list"
-        aria-controls="command-results"
-        aria-expanded="true"
-        aria-activedescendant={visible[active] ? `command-${visible[active].id}` : undefined}
-        onChange={(event) => setQuery(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") { event.preventDefault(); move(1); }
-          else if (event.key === "ArrowUp") { event.preventDefault(); move(-1); }
-          else if (event.key === "Enter") {
-            event.preventDefault();
-            if (!visible[active]?.disabled) visible[active]?.run();
-          }
-        }}
-      /><kbd>esc</kbd></label>
-      <div className="command-results" id="command-results" role="listbox">
-        {visible.map((action, index) => <button
-          ref={(element) => { optionRefs.current[index] = element; }}
-          key={action.id}
-          id={`command-${action.id}`}
-          type="button"
-          role="option"
-          aria-selected={index === active}
-          aria-disabled={action.disabled || undefined}
-          className={index === active ? "is-active" : ""}
-          onPointerMove={() => setActive(index)}
-          onClick={() => {
-            if (!action.disabled) action.run();
-          }}
-        >
-          <span className="command-result-copy">
-            <span>{action.label}</span>
-            {action.breadcrumb && <small>{action.breadcrumb}</small>}
-          </span>
-          {action.detail && <span className="command-result-detail">{
-            action.disabled
-              ? <small>{action.detail}</small>
-              : <kbd>{action.detail}</kbd>
-          }</span>}
-        </button>)}
-        {visible.length === 0 && <p>No matching atoms, settings, or commands</p>}
-      </div>
-    </section>
-  </div>;
-}
-
-function ShortcutSheet({
-  shortcutLabels,
-  vimMode,
-  onVimMode,
-  onClose,
-}: {
-  shortcutLabels: ViewerShortcutLabels;
-  vimMode: boolean;
-  onVimMode: (enabled: boolean) => void;
-  onClose: () => void;
-}) {
-  const panelRef = useRef<HTMLElement>(null);
-  useModalFocus(panelRef);
-  const groups: Array<{ title: string; items: Array<[string, string]> }> = [
-    {
-      title: "Trajectory",
-      items: [
-        ["← / →", "Previous / next frame"],
-        ["Shift ← / →", "Move ten frames"],
-        ["Home / End", "First / last frame"],
-        ["Space", "Play / pause"],
-        ["M", "Bookmark frame"],
-      ],
-    },
-    {
-      title: "View",
-      items: [
-        ["R", "Fit structure"],
-        ["1 / 2 / 3 / 4", "3D / XY / XZ / YZ"],
-        ["↑ / ↓", "Browse atoms"],
-        ["Enter", "Toggle atom"],
-        ["E / V", "Edit / View tools"],
-        ["D", "Light / dark appearance"],
-        ["B", "Bonds / lines"],
-        ["C / F / W", "Cell / forces / water"],
-      ],
-    },
-    {
-      title: "Workspace",
-      items: [
-        [shortcutLabels.commands, "Search atoms, settings, commands"],
-        [shortcutLabels.open, "Open files"],
-        [shortcutLabels.export, "Export figure"],
-        ["? / Esc", "Shortcuts / close"],
-      ],
-    },
-  ];
-  const vimItems: Array<[string, string]> = [
-    ["l / h", "Next / previous frame"],
-    ["L / H", "Forward / back ten"],
-    ["gg / G", "First / last frame"],
-    [":", "Search atoms, settings, commands"],
-    ["Ctrl [", "Close surface"],
-  ];
-
-  return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <section ref={panelRef} className="shortcut-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabIndex={-1}>
-      <div className="shortcut-heading">
-        <div><strong>Keyboard shortcuts</strong><span>Everything remains available with the mouse.</span></div>
-        <button className="icon-button" type="button" onClick={onClose} aria-label="Close keyboard shortcuts"><Icon name="close" /></button>
-      </div>
-      <div className="shortcut-groups">
-        {groups.map((group) => <section key={group.title}>
-          <h3>{group.title}</h3>
-          {group.items.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
-        </section>)}
-      </div>
-      <section className={vimMode ? "vim-shortcuts is-active" : "vim-shortcuts"}>
-        <div className="vim-heading">
-          <div><strong>Vim navigation</strong><span>Optional; standard shortcuts stay active.</span></div>
-          <button type="button" role="switch" aria-label="Vim navigation" aria-checked={vimMode} onClick={() => onVimMode(!vimMode)}><i /></button>
-        </div>
-        {vimMode && <div className="vim-shortcut-grid">
-          {vimItems.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
-        </div>}
-      </section>
-    </section>
-  </div>;
-}
-
 function StructurePanel({
   manifest,
   frame,
@@ -4448,10 +4161,10 @@ function StructurePanel({
       </p>
     </section>
     <CellEditor
-      key={`${cellKey}:${revealCellMode ?? ""}`}
+      key={cellKey}
       frame={frame}
       pbc={pbc}
-      initialMode={revealCellMode}
+      requestedMode={revealCellMode}
       onApply={onCellEdit}
     />
     <section className="workbench-section structure-actions">
@@ -4468,12 +4181,12 @@ function StructurePanel({
 function CellEditor({
   frame,
   pbc,
-  initialMode = "parameters",
+  requestedMode,
   onApply,
 }: {
   frame: FrameData | null;
   pbc: [boolean, boolean, boolean];
-  initialMode?: "parameters" | "vectors";
+  requestedMode?: "parameters" | "vectors";
   onApply: (
     values: readonly number[],
     pbc: readonly boolean[],
@@ -4483,7 +4196,7 @@ function CellEditor({
   const sourceCell = cellMatrix(frame);
   const baseline = sourceCell ?? suggestedCell(frame);
   const baselineParameters = cellParameters(baseline);
-  const [mode, setMode] = useState<"parameters" | "vectors">(initialMode);
+  const [mode, setMode] = useState<"parameters" | "vectors">(requestedMode ?? "parameters");
   const [parameterDraft, setParameterDraft] = useState(
     () => cellParameterValues(baselineParameters),
   );
@@ -4509,6 +4222,9 @@ function CellEditor({
       setError(message(reason));
     }
   };
+  useEffect(() => {
+    if (requestedMode) changeMode(requestedMode);
+  }, [requestedMode]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     try {
@@ -4625,7 +4341,6 @@ function CellEditor({
 function ScenePanel({
   presentation,
   capabilities,
-  appearance,
   cellAvailable,
   forceAvailable,
   velocityAvailable,
@@ -4639,13 +4354,11 @@ function ScenePanel({
   forceScale,
   velocityScale,
   onPresentation,
-  onAppearance,
   onForceScale,
   onVelocityScale,
 }: {
   presentation: ScenePresentation;
   capabilities: SceneCapabilities;
-  appearance: Appearance;
   cellAvailable: boolean;
   forceAvailable: boolean;
   velocityAvailable: boolean;
@@ -4659,7 +4372,6 @@ function ScenePanel({
   forceScale: number;
   velocityScale: number;
   onPresentation: (change: Partial<ScenePresentation>) => void;
-  onAppearance: (appearance: Appearance) => void;
   onForceScale: (scale: number) => void;
   onVelocityScale: (scale: number) => void;
 }) {
@@ -4735,7 +4447,8 @@ function ScenePanel({
             type="button"
             className={presentation.mode === mode ? "is-active" : ""}
             aria-pressed={presentation.mode === mode}
-            disabled={!available}
+            aria-disabled={!available || undefined}
+            aria-description={!available ? reason : undefined}
             title={!available ? reason : undefined}
             onClick={() => onPresentation({ mode })}
           >{label}</button>)}
@@ -4905,18 +4618,9 @@ function ScenePanel({
         </div>
       </details>}
 
-      <section className="workbench-section appearance-settings" data-setting-id="view-appearance">
+      <section className="workbench-section rendering-settings" data-setting-id="view-rendering">
         <div className="workbench-section-heading">
-          <h3>Appearance</h3>
-        </div>
-        <div className="segmented-options appearance-options" role="group" aria-label="Viewer appearance">
-          {(["light", "dark"] as const).map((option) => <button
-            key={option}
-            type="button"
-            className={appearance === option ? "is-active" : ""}
-            aria-pressed={appearance === option}
-            onClick={() => onAppearance(option)}
-          >{option === "light" ? "Light" : "Dark"}</button>)}
+          <h3>Rendering</h3>
         </div>
         <label className="panel-select-row">
           <span>Quality</span>
@@ -6741,16 +6445,6 @@ function initialVimMode(): boolean {
     return parseVimPreference(window.localStorage.getItem("pqviewer-vim-navigation"));
   } catch {
     return false;
-  }
-}
-
-function initialAppearance(): Appearance {
-  try {
-    const stored = window.localStorage.getItem("pqviewer-appearance");
-    if (stored === "light" || stored === "dark") return stored;
-    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  } catch {
-    return "light";
   }
 }
 

@@ -15,7 +15,7 @@ without a Python server.
 - edited EXTXYZ download
 - PNG and TIFF output through the independent publication renderer
 
-Use the visible **Search** field or press `Cmd/Ctrl+K` or `/`. Search for
+Use **Search** or press `Cmd/Ctrl+K` or `/`. Search for
 **Polyhedra** to inspect complete TiO<sub>6</sub> octahedra, or search for
 `edit lattice vectors` to open the cell matrix.
 

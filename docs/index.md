@@ -47,17 +47,17 @@ The fixed-dataset demo keeps edits in the browser. Install PQViewer to open
 local files, stream trajectories, and run PQAnalysis calculations. See
 [what differs in the web demo](web-demo.md).
 
-## Trajectory workspace
+## Scientific workspace
 
-The timeline provides frame playback and navigation. Selection, measurements,
-periodic display, and figure export remain in the same workspace.
+The structure remains visible while View, Edit, Analyze, and Export open their
+controls. Multi-frame data adds a timeline for playback and navigation.
 
-```{figure} assets/screenshots/trajectory-workspace.png
-:alt: PQViewer showing a 100-frame UMCM-9 trajectory
+```{figure} assets/screenshots/viewer-workspace.png
+:alt: PQViewer showing SrTiO3 polyhedra and the View inspector
 :class: pq-workspace
 :width: 100%
 
-UMCM-9 trajectory, frame 1 of 100.
+SrTiO3 example with the View inspector open.
 ```
 
 ## Documentation

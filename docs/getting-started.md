@@ -103,7 +103,7 @@ pqviewer trajectory.xyz \
 
 1. Drag to rotate, secondary-drag or middle-drag to pan, and scroll to zoom.
 2. Click the first atom, then Shift-click further atoms in measurement order.
-3. Use **View** for representations, vectors, water, appearance, and periodic display.
+3. Use **View** for representations, vectors, water, periodic display, and rendering quality.
 4. Use **Edit** for atom coordinates, identity, and cell data.
 5. Use **Analyze** for atom properties, measurements, and periodic analysis.
 6. Use the timeline for multi-frame data.
