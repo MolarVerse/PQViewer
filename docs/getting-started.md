@@ -69,6 +69,10 @@ special-character handling.
 From a source checkout, `pqviewer examples/water.xyz` opens the included water
 trajectory.
 
+For a server or compute node, start PQViewer there with `--no-open` and open it
+through an SSH tunnel. From home, connect to your institutional VPN first.
+See [Remote access](remote-access.md) for the commands and data flow.
+
 ## Add companion data
 
 Same-stem PQ companions are found automatically. They can also be supplied

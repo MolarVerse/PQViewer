@@ -66,7 +66,9 @@ with view("trajectory.xyz") as viewer:
 
 Local kernels work directly. With a remote Jupyter kernel, the browser also
 needs access to the selected loopback port through the notebook environment or
-an explicit port forward.
+an explicit port forward. The iframe does not set up this route automatically.
+For a separate desktop-browser workflow, use the
+[CLI SSH forwarding guide](remote-access.md).
 
 The complete workflow is in the
 [executable example notebook](../examples/pqviewer-notebook.ipynb).

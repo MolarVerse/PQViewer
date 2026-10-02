@@ -51,6 +51,31 @@ narrow screen, **Tools** opens the same controls in a sheet; the camera and
 structure remain available. Search atoms, settings, and commands with the
 **Search** control, `Cmd/Ctrl+K`, or `/`.
 
+## Remote access
+
+From home, connect to your institutional VPN first and confirm that
+`ssh user@server` works. Start PQViewer on the server that holds the trajectory:
+
+```bash
+pqviewer /path/to/trajectory.xyz --no-open --port 8765
+```
+
+In another terminal on your desktop:
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:8765:127.0.0.1:8765 user@server
+```
+
+Open `http://127.0.0.1:8765` on your desktop. Keep PQViewer and the tunnel
+running; retain the default loopback binding. Source files are read and
+PQAnalysis jobs run on the server. The interface, selected frames, and chart
+data reach your desktop through the encrypted SSH tunnel. **Open** uploads
+desktop files to the server; downloads are saved on your desktop.
+
+See [Remote access](https://molarverse.github.io/PQViewer/remote-access.html)
+for compute nodes, alternate local ports, and VPN troubleshooting.
+
 ## Jupyter
 
 ```bash

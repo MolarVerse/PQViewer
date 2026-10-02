@@ -6,6 +6,7 @@ PQ-centred periodic cells, measurements, and reproducible figure export.
 
 [Open the web demo](https://molarverse.github.io/PQViewer/viewer/) · [Get started](getting-started.md) ·
 [Jupyter](jupyter.md) · [Viewer guide](viewer-guide.md) ·
+[Remote access](remote-access.md) ·
 [Figure guide](figures-and-recipes.md) ·
 [Python API](python-api.md)
 
@@ -202,6 +203,7 @@ examples.
 :caption: Contents
 
 getting-started
+remote-access
 web-demo
 jupyter
 viewer-guide
