@@ -5,8 +5,15 @@ user-visible changes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
 ### Fixed
 
+- Report occupied server ports as a clean CLI error in normal and reload modes
+- Preserve continuous trajectory viewing across vacuum and periodic cell boundaries
+- Encode completed cells for low-rank ASE periodic structures
+- Recompute periodic image shifts from the float32 positions sent to the browser
+- Preserve cell-editor keyboard focus when opening it through command search
 - Reset the display when a new file is opened so crystal and MOF settings do not leak
 - Choose the MOF preset for larger periodic frameworks that do not have coordination polyhedra
 - Allow pair distribution and coordination on a single fully periodic frame
@@ -22,6 +29,9 @@ user-visible changes.
 
 ### Changed
 
+- Use the shared PQ flat mono design, with full-page desktop and portrait layouts
+- Install the shared design package from its versioned release archive
+- Refresh compatible frontend build and test dependencies
 - Capitalize the Python distribution name as `MolarVerse-PQViewer`
 - Put representation, atoms, and layers first in View, with the periodic cell and appearance last
 - Move interactive quality next to light and dark appearance

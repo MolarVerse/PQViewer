@@ -533,6 +533,7 @@ def test_opening_files_clears_initial_recipe(tmp_path: Path) -> None:
 def test_cli_opens_recipe_source_and_passes_recipe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    server_io: None,
 ) -> None:
     source = tmp_path / "run.xyz"
     recipe_path = tmp_path / "view.pqfigure.json"
@@ -548,7 +549,6 @@ def test_cli_opens_recipe_source_and_passes_recipe(
         return SimpleNamespace(state=SimpleNamespace(dataset=dataset))
 
     monkeypatch.setattr(cli, "create_app", fake_create_app)
-    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
 
     cli.main([str(recipe_path), "--no-open"])
 
