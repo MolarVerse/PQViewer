@@ -569,6 +569,7 @@ def test_open_upload_adds_residue_and_bond_metadata(tmp_path):
 def test_reload_cli_uses_factory_and_restores_environment(
     tmp_path,
     monkeypatch,
+    server_io,
 ):
     trajectory = tmp_path / "empty.xyz"
     trajectory.write_text("", encoding="utf-8")
@@ -607,7 +608,7 @@ def test_reload_cli_uses_factory_and_restores_environment(
     assert os.environ[cli.TRAJECTORY_ENV] == previous
 
 
-def test_reload_cli_supports_an_empty_launch(tmp_path, monkeypatch):
+def test_reload_cli_supports_an_empty_launch(tmp_path, monkeypatch, server_io):
     previous = "previous.xyz"
     monkeypatch.setenv(cli.TRAJECTORY_ENV, previous)
     call = {}
@@ -647,7 +648,7 @@ def test_environment_factory_supports_an_empty_launch(monkeypatch):
     assert manifest["frame_count"] == 0
 
 
-def test_cli_passes_companion_paths(tmp_path, monkeypatch):
+def test_cli_passes_companion_paths(tmp_path, monkeypatch, server_io):
     trajectory = tmp_path / "run.xyz"
     forces = tmp_path / "run.force"
     velocities = tmp_path / "run.vel"
@@ -665,7 +666,6 @@ def test_cli_passes_companion_paths(tmp_path, monkeypatch):
         return SimpleNamespace(state=SimpleNamespace(dataset=dataset))
 
     monkeypatch.setattr(cli, "create_app", fake_create_app)
-    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
 
     cli.main(
         [
@@ -695,6 +695,7 @@ def test_cli_passes_companion_paths(tmp_path, monkeypatch):
 def test_cli_passes_a_frame_slice_before_filesystem_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    server_io: None,
 ) -> None:
     trajectory = tmp_path / "run.xyz"
     trajectory.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
@@ -706,7 +707,6 @@ def test_cli_passes_a_frame_slice_before_filesystem_validation(
         return SimpleNamespace(state=SimpleNamespace(dataset=dataset))
 
     monkeypatch.setattr(cli, "create_app", fake_create_app)
-    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
 
     cli.main([f"{trajectory}@1:9:2", "--no-open"])
 

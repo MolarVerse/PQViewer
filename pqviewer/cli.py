@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 import os
 from pathlib import Path
+from socket import AF_INET, AF_INET6, create_server
 import sys
 from threading import Timer
 from typing import Iterator
@@ -138,36 +139,42 @@ def main(argv: list[str] | None = None) -> None:
     except Exception as error:  # pylint: disable=broad-exception-caught
         parser.error(f"Could not open source: {error}")
 
-    if not args.no_open:
-        _open_browser_later(_browser_url(args.host, args.port))
+    url = _browser_url(args.host, args.port)
+    family = AF_INET6 if ":" in args.host else AF_INET
+    try:
+        listener = create_server((args.host, args.port), family=family)
+    except OSError as error:
+        parser.error(f"Could not start PQViewer at {url}: {error}. Choose another --port.")
 
-    if args.reload:
-        with _source_environment(
-            source,
-            args.energy,
-            args.info,
-            args.forces,
-            args.velocities,
-            args.charges,
-            args.moldescriptor,
-            args.topology,
-            recipe_path,
-        ):
-            uvicorn.run(
-                "pqviewer.app:create_app_from_env",
-                factory=True,
-                host=args.host,
-                port=args.port,
-                reload=True,
-            )
-        return
+    with listener:
+        print(f"PQViewer: {url}", flush=True)
+        if not args.no_open:
+            _open_browser_later(url)
 
-    uvicorn.run(
-        application,
-        host=args.host,
-        port=args.port,
-        reload=False,
-    )
+        if args.reload:
+            with _source_environment(
+                source,
+                args.energy,
+                args.info,
+                args.forces,
+                args.velocities,
+                args.charges,
+                args.moldescriptor,
+                args.topology,
+                recipe_path,
+            ):
+                uvicorn.run(
+                    "pqviewer.app:create_app_from_env",
+                    factory=True,
+                    host=args.host,
+                    port=args.port,
+                    fd=listener.fileno(),
+                    reload=True,
+                )
+            return
+
+        config = uvicorn.Config(application, host=args.host, port=args.port)
+        uvicorn.Server(config).run(sockets=[listener])
 
 
 def _require_file(parser: argparse.ArgumentParser, path: Path, label: str) -> None:
