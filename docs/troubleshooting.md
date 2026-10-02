@@ -78,8 +78,11 @@ same data location.
 
 ## Remote access
 
-The default loopback address is intentional. PQViewer has no authentication or
-TLS. Do not bind `--host 0.0.0.0` on an untrusted or publicly reachable network.
+Use the [SSH forwarding guide](remote-access.md) and keep the default loopback
+binding. From home, connect to your institutional VPN and confirm that
+`ssh user@server` works first. If SSH works but the page does not, check the
+server process, destination node, and remote port. After a VPN disconnect,
+reconnect and restart the tunnel.
 
 ## Reporting a problem
 
