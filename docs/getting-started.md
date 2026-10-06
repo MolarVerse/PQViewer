@@ -5,20 +5,10 @@
 Use Python 3.12 or newer and a desktop browser with WebGL 2:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install MolarVerse-PQViewer
 ```
-
-The Python package includes the interface; Node.js is needed only for frontend
-development. The installed command and import package are both `pqviewer`.
-
-| Optional workflow | Install | Guide |
-| --- | --- | --- |
-| ASE formats or Python `Atoms` | `python -m pip install 'MolarVerse-PQViewer[ase]'` | [Data sources](data-and-conventions.md) |
-| Jupyter output cell | `python -m pip install 'MolarVerse-PQViewer[jupyter]'` | [Jupyter](jupyter.md) |
-| Headless figure rendering | `python -m pip install 'MolarVerse-PQViewer[render]'`, then `python -m playwright install chromium` | [Figures and recipes](figures-and-recipes.md) |
-
-The release browser and rendering checks use Chromium on Linux. Other current
-WebGL 2 browsers are outside that release coverage.
 
 ## Open a trajectory
 
@@ -26,33 +16,52 @@ WebGL 2 browsers are outside that release coverage.
 pqviewer trajectory.xyz
 ```
 
-PQViewer starts at `http://127.0.0.1:8765` and opens the default browser.
-Replace the path with your trajectory. To try the repository's synthetic
-three-frame water fixture without a checkout:
+Replace the path with your trajectory. PQViewer opens the default browser at
+`http://127.0.0.1:8765`. The Python package includes the interface; Node.js is
+needed only for frontend development.
+
+For the synthetic three-frame water example shown below:
 
 ```bash
 curl -fsSLo water.xyz https://raw.githubusercontent.com/MolarVerse/PQViewer/main/examples/water.xyz
 pqviewer water.xyz
 ```
 
-Use `--no-open` to open the browser yourself. With no path, `pqviewer` opens an
-empty workspace for **Open** or drag-and-drop.
+With no path, `pqviewer` opens an empty workspace for **Open** or drag-and-drop.
+Use `--no-open` to open the browser yourself. For a server or compute node,
+follow [Remote access](remote-access.md), including institutional VPN and jump hosts.
+
+## Inspect and measure
+
+1. Drag to rotate and scroll to zoom. Press `R` to fit the structure;
+   `C` toggles the cell.
+2. Click an atom to inspect its properties. Shift-drag a box to select a group.
+3. For an ordered measurement, click the first atom. With **Analyze** open,
+   press `Shift+Tab` to return to the canvas, then use `↑` / `↓` and `Enter`
+   to add atoms in order. Two, three, or four atoms measure a distance, angle,
+   or dihedral.
+4. Use the timeline to change frames; **Plot** follows the measurement.
+5. Use **View** for display settings and **Export** to save a figure.
+
+![Water trajectory with an ordered O–H selection and a three-frame distance plot](assets/screenshots/viewer-measurement.png)
+
+The synthetic water example above has its cell hidden. The plot shows
+minimum-image O–H distance in ångströms. See the [viewer guide](viewer-guide.md)
+for selection, editing, and keyboard controls.
+
+## Other sources
 
 | Source | Command |
 | --- | --- |
-| Trajectory | `pqviewer trajectory.xyz` |
 | PQ input | `pqviewer simulation.in` |
 | One run or declared restart chain | `pqviewer path/to/run-directory` |
 | Frames 100–999, every tenth frame | `pqviewer 'trajectory.xyz@100:1000:10'` |
 
 Slices use zero-based Python `start:stop:step` rules; the stop is exclusive.
-Quote a slice in the shell.
+Quote a slice in the shell. Atom count and element order must stay stable;
+see [source identity and periodic conventions](data-and-conventions.md).
 
-For a server or compute node, use `--no-open` and an SSH tunnel. Connect to
-your institutional VPN first when working from home. See
-[Remote access](remote-access.md) for commands, jump hosts, and data flow.
-
-## Attach companion data
+## Companion data
 
 Unambiguous same-stem PQ companions are discovered automatically. Supply other
 paths explicitly:
@@ -64,35 +73,21 @@ pqviewer trajectory.xyz \
   --charges trajectory.chrg
 ```
 
-For molecule, residue, and bond information:
-
-```bash
-pqviewer trajectory.xyz \
-  --moldescriptor moldescriptor.dat \
-  --topology topology
-```
-
-For scalar trajectory properties:
-
-```bash
-pqviewer trajectory.xyz \
-  --energy trajectory.en \
-  --info trajectory.info
-```
+| Companion | Flags |
+| --- | --- |
+| Molecule, residue, and bond information | `--moldescriptor moldescriptor.dat --topology topology` |
+| Scalar trajectory properties | `--energy trajectory.en --info trajectory.info` |
 
 `--info` requires `--energy`. Companion arrays must share the trajectory's
 frame order and atom order; see [alignment and units](data-and-conventions.md).
 
-## Inspect and measure
+## Optional workflows
 
-1. Drag to rotate, secondary-drag or middle-drag to pan, and scroll to zoom.
-2. Click an atom, then Shift-click others in measurement order. Two, three, or
-   four atoms give a distance, angle, or dihedral.
-3. Use the timeline to change frames. **Plot** traces a selected measurement.
-4. Use **View** for representations and periodic display; **Edit** changes the
-   current structure locally.
-5. Choose **Export** to save a figure. Press `?` for shortcuts or
-   `Cmd/Ctrl+K` to find a command.
+| Workflow | Install | Guide |
+| --- | --- | --- |
+| ASE formats or Python `Atoms` | `python -m pip install 'MolarVerse-PQViewer[ase]'` | [Data sources](data-and-conventions.md) |
+| Jupyter output cell | `python -m pip install 'MolarVerse-PQViewer[jupyter]'` | [Jupyter](jupyter.md) |
+| Headless figures | `python -m pip install 'MolarVerse-PQViewer[render]'`, then `python -m playwright install chromium` | [Figures and recipes](figures-and-recipes.md) |
 
-Continue with [periodic conventions](data-and-conventions.md),
-[viewer controls](viewer-guide.md), and [trajectory analysis](trajectory-analysis.md).
+Release browser and rendering checks use Chromium on Linux. Other WebGL 2
+browsers are outside that release coverage.
