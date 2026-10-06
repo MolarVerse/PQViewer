@@ -1,83 +1,117 @@
 # Trajectory analysis
 
-PQViewer keeps trajectory inspection next to the molecular view. Pair
-distribution and coordination calculations run through PQAnalysis; interactive
-selection geometry and measurements are evaluated in the viewer.
+Interactive measurements are evaluated in the viewer. Pair-distribution and
+coordination calculations use PQAnalysis on the server.
 
-## Measurements over time
+## Measurements over frames
 
-Select two, three, or four atoms in order, then choose **Plot**. The resulting
-distance, angle, or dihedral curve loads incrementally and follows the displayed
-frame.
+Select two, three, or four atoms in order, then choose **Plot** for a distance,
+angle, or dihedral. The curve loads incrementally; its cursor follows the
+displayed frame, and selecting a point changes frames.
 
-Exports are available after the curve is complete:
+Periodic measurements use minimum-image geometry by default. A curve keeps the
+mode chosen when it was created. Choose **Pin** to retain a measurement and
+compare compatible pinned curves: distances together, or angular measurements
+together.
 
-- CSV for numeric values
-- SVG for an editable vector plot
-- PDF for a vector publication plot
+Complete curves export as CSV, SVG, or vector PDF. Frame index is not physical
+time unless the source supplies time and its unit.
 
-Choose **Pin** to retain a measurement. Two or more compatible pinned
-measurements can be compared in one plot. Distance measurements compare with
-distance measurements; angular measurements compare together.
+## Reference frames and trails
 
-Periodic measurements use minimum-image geometry by default. A plot preserves
-the measurement mode used when it was created.
+| Action | Result |
+| --- | --- |
+| Timeline menu or `M` | Bookmark the current source/frame identity |
+| **Set as reference**, then **Show displacement** | Compare selected atoms with a saved frame |
+| **Track** | Show selected atom paths over the previous 50 frames and current position |
 
-## Bookmarks and reference frames
-
-Use the timeline menu or `M` to bookmark a frame. A bookmark retains stable
-source, segment, step, and time identity when available.
-
-Choose **Set as reference** to compare the current structure with another
-frame. Select atoms and choose **Show displacement** to draw their motion from
-the reference. If the source changes and the saved frame identity no longer
-matches, the stale reference is cleared.
-
-## Atom trails
-
-Select atoms and choose **Track** to draw their positions over the previous 50
-frames plus the current position. Tracking uses unwrapped motion where available
-and is limited to sixteen selected atom images.
+Tracking uses unwrapped motion when available and allows sixteen selected atom
+images. A reference whose saved source identity no longer matches is cleared.
+See [vacuum and unwrapping limits](data-and-conventions.md#partial-cells-and-vacuum).
 
 ## Scalar properties
 
 Numeric frame properties from trajectory metadata or energy/info companions
-appear under **Plot** in the timeline menu. Opening one does not change the
-structural display. The plot cursor follows playback, and selecting a point
-navigates to that frame.
+appear under **Plot** in the timeline menu. Their cursor follows playback;
+selecting a point navigates to its frame. Units come from the source.
 
 ## Pair distribution and coordination
 
-Pair analysis requires a file-backed structure or trajectory with a full
-three-dimensional periodic cell. A single periodic frame is enough; extra
-frames are averaged when they are present.
+Use a file-backed structure or trajectory with all three axes periodic and a
+finite cell volume. A single frame is sufficient. Every sampled frame must
+meet the periodic-cell requirement.
 
 Open **Pair distribution** or **Coordination** from the timeline menu, selection
-bar, or command search. In the setup:
+bar, or command search.
 
-- **From** is the reference population around which neighbors are counted.
-- **To** is the target population being counted.
-- **Frames** selects all frames, the last 100, or the last 1,000 when available.
-  **All** samples automatically when the trajectory exceeds 10,000 frames.
-- **Bins** controls radial resolution.
-- **r max · Å** sets the maximum radius; leave it automatic to use the safe
-  periodic range.
+| Setting | Meaning |
+| --- | --- |
+| **From** | Reference atoms, population A |
+| **To** | Target atoms counted around A, population B |
+| **Frames** | All, last 100, or last 1,000 when available |
+| **Bins** | Number of equal-width radial shells |
+| **r max · Å** | Upper radius in Å; blank uses the backend default |
 
-The result switches between `g(r)` and integrated coordination `N(r)`. It
-exports CSV, SVG, and vector PDF.
+**All** applies a uniform stride when there are more than 10,000 frames.
+For another interval or stride, open a slice first:
 
-The calculation is intentionally bounded:
+```bash
+pqviewer 'trajectory.xyz@100:1000:10'
+```
 
-- at most 4,096 atoms in each population
-- at most 10,000 sampled frames
-- 20–2,000 bins in the interface
-- at most 50 million frame/reference/target pair evaluations
-- at most 5 million reconstructed atom-frames for sliced, ASE, and other
-  non-native sources
+Results average the sampled frames and are independent of the current playback
+cursor. They export as CSV, SVG, and vector PDF.
 
-Choose a shorter frame preset or smaller populations if the requested
-calculation exceeds a work limit. Pair-analysis curves aggregate the selected
-frames and do not follow one current-frame cursor.
+### Quantities and normalization
 
-For a custom interval or stride, open a sliced source such as
-`trajectory.xyz@100:1000:10` before starting the analysis.
+Let `F` be the sampled frame count, `N_A` and `N_B` the population sizes, and
+`H_k` the total ordered A-to-B pair count in radial shell `k` across those
+frames. Self-pairs are excluded; intramolecular pairs are included.
+
+For shell edges `r_k` and `r_(k+1)`, PQAnalysis uses:
+
+```{math}
+\Delta V_k = \frac{4\pi}{3}\left(r_{k+1}^3-r_k^3\right),\qquad
+\rho_B = \frac{N_B}{\langle V\rangle},
+```
+
+```{math}
+g_k = \frac{H_k}{F N_A\rho_B\Delta V_k},\qquad
+N(r_{k+1}) = \frac{\sum_{j=0}^{k} H_j}{F N_A}.
+```
+
+| Curve | Radius | Unit |
+| --- | --- | --- |
+| `g(r)` | Shell centre | Dimensionless |
+| Coordination `N(r)` | Shell's outer edge | Neighbors per reference atom |
+
+`<V>` is the arithmetic mean of sampled cell volumes. For changing volumes,
+this normalizes the accumulated histogram using one mean density; it is not an
+average of separately normalized per-frame curves.
+
+The target density uses `N_B` even when A and B overlap. For identical
+populations in a fixed-volume ideal gas, the finite-population baseline is
+`(N_B - 1) / N_B` because self-pairs are excluded. No uncertainty estimate is
+supplied; correlated frames do not provide independent samples.
+
+### Radius and work limits
+
+The backend chooses at most half the shortest supplied lattice-vector length
+across the sampled cells and clamps larger requested radii to that value. This
+rule alone does not ensure complete spherical shells in a strongly skewed
+cell; choose a radius within half of every perpendicular cell-face separation.
+PQAnalysis images pair displacements by centering fractional components, so
+this radius restriction matters even when interactive measurements find the
+shortest Cartesian image.
+
+| Bound | Maximum |
+| --- | --- |
+| Atoms in each population | 4,096 |
+| Sampled frames | 10,000 |
+| Bins in the interface | 2,000, with a minimum of 20 |
+| Frame/reference/target pair evaluations | 50 million |
+| Reconstructed atom-frames for sliced, ASE, or other non-native sources | 5 million |
+
+Use a shorter frame preset or smaller populations when a work limit is reached.
+Three-dimensional shell normalization is unavailable for vacuum, slab, or wire
+boundary conditions.

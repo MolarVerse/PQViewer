@@ -1,82 +1,61 @@
 # Getting started
 
-## Requirements
-
-- Python 3.12 or newer
-- A current desktop browser with WebGL 2
-- Node.js only when changing the frontend
-
-The automated browser and render release suite uses Chromium on Linux. Other
-current WebGL 2 browsers are intended to work but are not yet part of the
-release suite.
-
 ## Install
+
+Use Python 3.12 or newer and a desktop browser with WebGL 2:
 
 ```bash
 python -m pip install MolarVerse-PQViewer
 ```
 
-PQViewer includes its compiled interface in the Python package.
-The distribution is named `MolarVerse-PQViewer`; the import package and command
-remain `pqviewer`.
+The Python package includes the interface; Node.js is needed only for frontend
+development. The installed command and import package are both `pqviewer`.
 
-Optional ASE file and object support:
+| Optional workflow | Install | Guide |
+| --- | --- | --- |
+| ASE formats or Python `Atoms` | `python -m pip install 'MolarVerse-PQViewer[ase]'` | [Data sources](data-and-conventions.md) |
+| Jupyter output cell | `python -m pip install 'MolarVerse-PQViewer[jupyter]'` | [Jupyter](jupyter.md) |
+| Headless figure rendering | `python -m pip install 'MolarVerse-PQViewer[render]'`, then `python -m playwright install chromium` | [Figures and recipes](figures-and-recipes.md) |
 
-```bash
-python -m pip install 'MolarVerse-PQViewer[ase]'
-```
+The release browser and rendering checks use Chromium on Linux. Other current
+WebGL 2 browsers are outside that release coverage.
 
-Optional Jupyter display support:
-
-```bash
-python -m pip install 'MolarVerse-PQViewer[jupyter,ase]'
-```
-
-Optional headless figure rendering:
-
-```bash
-python -m pip install 'MolarVerse-PQViewer[render]'
-python -m playwright install chromium
-```
-
-## Open data
-
-Open an empty workspace, then use **Open** or drop a structure onto the canvas:
-
-```bash
-pqviewer
-```
-
-PQViewer starts a local server at `http://127.0.0.1:8765` and opens the default
-browser. Use `--no-open` when opening the browser yourself:
-
-```bash
-pqviewer examples/water.xyz --no-open
-```
-
-The command accepts four main source forms:
+## Open a trajectory
 
 ```bash
 pqviewer trajectory.xyz
-pqviewer simulation.in
-pqviewer path/to/run-directory
-pqviewer 'trajectory.xyz@100:1000:10'
 ```
 
-The slice uses Python's `start:stop:step` rules. Quote it in the shell to avoid
-special-character handling.
+PQViewer starts at `http://127.0.0.1:8765` and opens the default browser.
+Replace the path with your trajectory. To try the repository's synthetic
+three-frame water fixture without a checkout:
 
-From a source checkout, `pqviewer examples/water.xyz` opens the included water
-trajectory.
+```bash
+curl -fsSLo water.xyz https://raw.githubusercontent.com/MolarVerse/PQViewer/main/examples/water.xyz
+pqviewer water.xyz
+```
 
-For a server or compute node, start PQViewer there with `--no-open` and open it
-through an SSH tunnel. From home, connect to your institutional VPN first.
-See [Remote access](remote-access.md) for the commands and data flow.
+Use `--no-open` to open the browser yourself. With no path, `pqviewer` opens an
+empty workspace for **Open** or drag-and-drop.
 
-## Add companion data
+| Source | Command |
+| --- | --- |
+| Trajectory | `pqviewer trajectory.xyz` |
+| PQ input | `pqviewer simulation.in` |
+| One run or declared restart chain | `pqviewer path/to/run-directory` |
+| Frames 100–999, every tenth frame | `pqviewer 'trajectory.xyz@100:1000:10'` |
 
-Same-stem PQ companions are found automatically. They can also be supplied
-explicitly:
+Slices use zero-based Python `start:stop:step` rules; the stop is exclusive.
+Quote a slice in the shell.
+
+For a server or compute node, use `--no-open` and an SSH tunnel. Connect to
+your institutional VPN first when working from home. See
+[Remote access](remote-access.md) for commands, jump hosts, and data flow.
+
+## Attach companion data
+
+Unambiguous same-stem PQ companions are discovered automatically. Supply other
+paths explicitly:
 
 ```bash
 pqviewer trajectory.xyz \
@@ -85,7 +64,7 @@ pqviewer trajectory.xyz \
   --charges trajectory.chrg
 ```
 
-Semantic molecule, residue, and bond information can be added when available:
+For molecule, residue, and bond information:
 
 ```bash
 pqviewer trajectory.xyz \
@@ -93,7 +72,7 @@ pqviewer trajectory.xyz \
   --topology topology
 ```
 
-Energy and info files can supply scalar trajectory properties:
+For scalar trajectory properties:
 
 ```bash
 pqviewer trajectory.xyz \
@@ -101,20 +80,19 @@ pqviewer trajectory.xyz \
   --info trajectory.info
 ```
 
-`--info` requires `--energy`.
+`--info` requires `--energy`. Companion arrays must share the trajectory's
+frame order and atom order; see [alignment and units](data-and-conventions.md).
 
-## First inspection
+## Inspect and measure
 
 1. Drag to rotate, secondary-drag or middle-drag to pan, and scroll to zoom.
-2. Click the first atom, then Shift-click further atoms in measurement order.
-3. Use **View** for representations, vectors, water, periodic display, and rendering quality.
-4. Use **Edit** for atom coordinates, identity, and cell data.
-5. Use **Analyze** for atom properties, measurements, and periodic analysis.
-6. Use the timeline for multi-frame data.
-7. Press `Cmd/Ctrl+K` or `/` to search atoms, settings, and commands.
-8. Press `?` or choose **Help** for the shortcut sheet.
-9. Choose **Export** for a publication-ready figure of the current view.
+2. Click an atom, then Shift-click others in measurement order. Two, three, or
+   four atoms give a distance, angle, or dihedral.
+3. Use the timeline to change frames. **Plot** traces a selected measurement.
+4. Use **View** for representations and periodic display; **Edit** changes the
+   current structure locally.
+5. Choose **Export** to save a figure. Press `?` for shortcuts or
+   `Cmd/Ctrl+K` to find a command.
 
-Continue with the [viewer guide](viewer-guide.md) and
-[data conventions](data-and-conventions.md). For notebook workflows, continue
-with the [Jupyter guide](jupyter.md).
+Continue with [periodic conventions](data-and-conventions.md),
+[viewer controls](viewer-guide.md), and [trajectory analysis](trajectory-analysis.md).

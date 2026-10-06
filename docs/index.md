@@ -1,201 +1,68 @@
 # PQViewer
 
-PQViewer opens molecular structures and trajectories from PQ in a local
-browser, with optional ASE format support. It provides indexed playback,
-PQ-centred periodic cells, measurements, and reproducible figure export.
+Inspect molecular structures and trajectories, measure periodic geometry,
+calculate pair distributions, and export figures.
 
-[Open the web demo](https://molarverse.github.io/PQViewer/viewer/) · [Get started](getting-started.md) ·
-[Jupyter](jupyter.md) · [Viewer guide](viewer-guide.md) ·
-[Remote access](remote-access.md) ·
-[Figure guide](figures-and-recipes.md) ·
-[Python API](python-api.md)
+## Start here
 
-:::{note}
-PQViewer is in public beta. File and Python interfaces may change before 1.0.
-:::
-
-## Quick start
-
-PQViewer requires Python 3.12 or newer.
-
-```bash
-python -m pip install MolarVerse-PQViewer
-pqviewer
-```
-
-The interface is bundled with the Python package. Node.js is not required to
-install or run the viewer.
-
-## Web demo
-
-<div class="pq-demo-shell">
-  <div class="pq-demo-heading">
-    <div>
-      <strong>Interactive SrTiO<sub>3</sub> perovskite</strong>
-      <span>Drag to rotate. Use Search for Polyhedra.</span>
-    </div>
-    <a href="viewer/">Open full screen</a>
-  </div>
-  <iframe
-    src="viewer/"
-    title="Interactive PQViewer perovskite demo"
-    loading="lazy"
-    allowfullscreen
-  ></iframe>
-</div>
-
-The fixed-dataset demo keeps edits in the browser. Install PQViewer to open
-local files, stream trajectories, and run PQAnalysis calculations. See
-[what differs in the web demo](web-demo.md).
-
-## Scientific workspace
-
-The structure remains visible while View, Edit, Analyze, and Export open their
-controls. Multi-frame data adds a timeline for playback and navigation.
+[Install and open your first trajectory](getting-started.md). For a browser-only
+example, [open the SrTiO3 demo](https://molarverse.github.io/PQViewer/viewer/) and read its [limits](web-demo.md).
 
 ```{figure} assets/screenshots/viewer-workspace.png
-:alt: PQViewer showing SrTiO3 polyhedra and the View inspector
+:alt: SrTiO3 coordination polyhedra with the View inspector open
 :class: pq-workspace
 :width: 100%
 
-SrTiO3 example with the View inspector open.
+SrTiO3 in a centred periodic cell. Polyhedra show the visible coordination
+geometry.
 ```
 
-## Documentation
+## Manual
 
-::::{grid} 1 2 3 3
-:gutter: 2
+| Task | Read |
+| --- | --- |
+| Install, open PQ runs, and attach companions | [Getting started](getting-started.md) |
+| Check source identity, units, and periodic conventions | [Data and conventions](data-and-conventions.md) |
+| Navigate, select, measure, and edit | [Viewer guide](viewer-guide.md) |
+| Plot trajectories, `g(r)`, and coordination | [Trajectory analysis](trajectory-analysis.md) |
+| Save figures and source-validated recipes | [Figures and recipes](figures-and-recipes.md) |
+| Work on a server, compute node, or home VPN | [Remote access](remote-access.md) |
+| Use a notebook or Python dataset | [Jupyter](jupyter.md), [Python API](python-api.md) |
+| Resolve file, browser, and rendering problems | [Troubleshooting](troubleshooting.md) |
 
-:::{grid-item-card} Interactive web demo
-:link: web-demo
-:link-type: doc
+## Scientific examples
 
-Use the fixed-dataset viewer and understand its limits.
-:::
+The repository includes small fixtures for periodic geometry and trajectory
+inspection. Run these commands from a
+[source checkout](https://github.com/MolarVerse/PQViewer):
 
-:::{grid-item-card} Jupyter
-:link: jupyter
-:link-type: doc
+| Example | Inspect | Command |
+| --- | --- | --- |
+| Water | Three-frame trajectory | `pqviewer examples/water.xyz` |
+| Periodic crossing | Wrapped and unwrapped motion | `pqviewer examples/periodic-crossing.extxyz` |
+| SrTiO3 | Centred cell and TiO6 coordination geometry | `pqviewer examples/strontium-titanate.extxyz` |
+| ACOF | Triclinic framework | `pqviewer examples/acof-triclinic.xyz` |
 
-Embed PQViewer in a notebook cell.
-:::
+Synthetic fixtures are covered by the repository's MIT License. The ACOF
+trajectory comes from PQAnalysis; see the
+[example provenance](https://github.com/MolarVerse/PQViewer/blob/main/examples/README.md).
 
-:::{grid-item-card} Getting started
-:link: getting-started
-:link-type: doc
+```{figure} assets/renders/acof-framework.png
+:alt: ACOF framework viewed in a triclinic cell
+:width: 85%
 
-Installation, optional integrations, and the first trajectory.
-:::
+ACOF rendered with PQViewer. A skewed cell requires distinguishing centred
+wrapping from shortest-image measurements; see [periodic conventions](data-and-conventions.md#centered-periodic-cells).
+```
 
-:::{grid-item-card} Viewer guide
-:link: viewer-guide
-:link-type: doc
+Example figure recipes are available for
+{download}`periodic water <assets/recipes/water-box.pqfigure.json>` and
+{download}`SrTiO3 <assets/recipes/strontium-titanate.pqfigure.json>`.
+In a checkout, keep the sibling `assets/sources/` directory with the recipes.
+Downloading a recipe alone omits its coordinates; see
+[Figures and recipes](figures-and-recipes.md).
 
-Navigation, selection, representations, measurements, and shortcuts.
-:::
-
-:::{grid-item-card} Data and conventions
-:link: data-and-conventions
-:link-type: doc
-
-PQ runs, ASE sources, companions, units, and centred periodic cells.
-:::
-
-:::{grid-item-card} Trajectory analysis
-:link: trajectory-analysis
-:link-type: doc
-
-Measurements, tracking, reference frames, and pair analysis.
-:::
-
-:::{grid-item-card} Figures and recipes
-:link: figures-and-recipes
-:link-type: doc
-
-Publication output and reproducible headless rendering.
-:::
-
-:::{grid-item-card} Python API
-:link: python-api
-:link-type: doc
-
-Open datasets, pass ASE objects, and create an application.
-:::
-
-:::{grid-item-card} Troubleshooting
-:link: troubleshooting
-:link-type: doc
-
-Resolve browser, file, notebook, and figure-rendering problems.
-:::
-::::
-
-## Scientific systems
-
-The same viewer and export path cover proteins, isolated molecules, periodic
-water, crystals, covalent frameworks, and metal-organic frameworks.
-
-::::{grid} 1 2 3 3
-:gutter: 2
-
-:::{grid-item-card} Protein — Crambin
-:img-top: assets/renders/crambin.png
-:img-alt: Crambin protein shown as a molecular cartoon
-
-PDB 1CRN · 46 residues
-
-+++
-{download}`Figure recipe <assets/recipes/crambin.pqfigure.json>`
-:::
-
-:::{grid-item-card} Molecule — C<sub>60</sub>
-:img-top: assets/renders/c60.png
-:img-alt: C₆₀ fullerene rendered as a ball-and-stick molecule
-
-Isolated fullerene · 60 atoms
-
-+++
-{download}`Figure recipe <assets/recipes/c60.pqfigure.json>`
-:::
-
-:::{grid-item-card} MOF — UMCM-9
-:img-top: assets/renders/umcm-9.png
-:img-alt: UMCM-9 metal-organic framework
-
-Metal-organic framework · 809 atoms
-:::
-
-:::{grid-item-card} Periodic water
-:img-top: assets/renders/water-box.png
-:img-alt: Periodic box containing 27 water molecules
-
-Centred cell · 27 molecules
-
-+++
-{download}`Figure recipe <assets/recipes/water-box.pqfigure.json>`
-:::
-
-:::{grid-item-card} Crystal — SrTiO<sub>3</sub>
-:img-top: assets/renders/strontium-titanate.png
-:img-alt: Strontium titanate perovskite with complete titanium oxygen octahedra
-
-2 × 2 × 2 perovskite · contained TiO<sub>6</sub> octahedra
-
-+++
-{download}`Figure recipe <assets/recipes/strontium-titanate.pqfigure.json>`
-:::
-
-:::{grid-item-card} COF — ACOF
-:img-top: assets/renders/acof-framework.png
-:img-alt: Triclinic ACOF covalent organic framework
-
-Triclinic covalent organic framework
-:::
-::::
-
-Gallery images were rendered with PQViewer. Crambin coordinates are from
-[PDB 1CRN](https://www.rcsb.org/structure/1CRN). ACOF and UMCM-9 are PQAnalysis
-examples.
+PQViewer is in public beta. File and Python interfaces may change before 1.0.
 
 ```{toctree}
 :hidden:
@@ -203,13 +70,13 @@ examples.
 :caption: Contents
 
 getting-started
-remote-access
-web-demo
-jupyter
-viewer-guide
 data-and-conventions
+viewer-guide
 trajectory-analysis
 figures-and-recipes
+remote-access
+jupyter
 python-api
+web-demo
 troubleshooting
 ```

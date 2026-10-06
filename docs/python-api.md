@@ -1,28 +1,55 @@
 # Python API
 
-The Python API uses the same indexed dataset contract as the command line.
+The Python API opens the same indexed datasets as the CLI. File examples use
+`water.xyz` from [Getting started](getting-started.md#open-a-trajectory);
+replace it with your own source.
 
-## Open a dataset
+## Read indexed frames
 
 ```python
 from pqviewer import open_run_dataset
 
-dataset = open_run_dataset(
-    "trajectory.xyz",
-    frame_slice=slice(None, None, 10),
-)
-
+dataset = open_run_dataset("water.xyz")
 manifest = dataset.manifest()
 frame = dataset.get_frame(0)
-unwrapped = dataset.get_frame(0, coordinates="unwrapped")
-added_frames = dataset.refresh()
+
+print(dataset.frame_count)
+print(frame.positions.shape, frame.units["positions"])
+print(frame.frame_key)
 ```
 
-`manifest()` describes topology, properties, series, source provenance, and
-frame count. `get_frame()` reads one requested frame. `refresh()` discovers
-complete frames appended to a growing source.
+| API | Result |
+| --- | --- |
+| `manifest()` | Topology, properties, scalar series, provenance, and frame count |
+| `get_frame(index)` | One `FrameData` with Cartesian arrays and a `FrameKey` |
+| `get_frame(index, coordinates="unwrapped")` | Source arrays plus `unwrapped_positions` and image shifts |
+| `refresh()` | Number of newly discovered complete frames in a growing source |
 
-Sidecars use the same names as the CLI:
+Frame indices are zero-based. `frame.positions` has shape `(atoms, 3)`;
+`frame.cell` has row lattice vectors and shape `(3, 3)`. Inspect `frame.pbc`
+and `frame.units` before calculations. Low-rank ASE cells also expose a
+completed `periodic_cell` basis for periodic calculations.
+
+Request motion coordinates explicitly:
+
+```python
+motion = dataset.get_frame(1, coordinates="unwrapped")
+positions = motion.unwrapped_positions
+```
+
+`motion.positions` still contains the source coordinates. Unwrapping follows
+the [periodic and vacuum conventions](data-and-conventions.md#partial-cells-and-vacuum).
+
+For a sliced dataset:
+
+```python
+dataset = open_run_dataset("water.xyz", frame_slice=slice(None, None, 2))
+```
+
+A sliced dataset's frame index refers to the slice; its `FrameKey` preserves
+the source index.
+
+## Attach companions
 
 ```python
 dataset = open_run_dataset(
@@ -33,9 +60,13 @@ dataset = open_run_dataset(
 )
 ```
 
-## ASE objects
+Replace these paths with aligned files; see
+[companion alignment and units](data-and-conventions.md#companion-alignment).
 
-Install the `ase` extra, then pass an `Atoms` object or indexed sequence:
+## Open an ASE object
+
+Install `MolarVerse-PQViewer[ase]`, then pass an `Atoms` object or an indexed
+sequence:
 
 ```python
 from ase import Atoms
@@ -46,63 +77,33 @@ atoms = Atoms(symbols=["O", "H", "H"], positions=[
     [0.7586, 0.0, 0.5043],
     [-0.7586, 0.0, 0.5043],
 ])
-
 dataset = open_run_dataset(atoms)
 frame = dataset.get_frame(0)
 ```
 
-## Create an application
+ASE positions are in Å. Source calculator results are read when available;
+opening the dataset does not run a calculator.
 
-`create_app` returns the FastAPI application used by the CLI:
+## Serve an application
+
+Save this as `viewer_app.py` beside your trajectory:
 
 ```python
 from pqviewer import create_app, open_run_dataset
 
-dataset = open_run_dataset("trajectory.xyz")
+dataset = open_run_dataset("water.xyz")
 app = create_app(dataset=dataset)
 ```
 
-Run the module containing `app` with Uvicorn when embedding the viewer in a
-local Python workflow.
+Run from that directory:
 
-## Display in Jupyter
-
-`view` starts the same local FastAPI application on an available loopback port
-and returns an object with an iframe representation:
-
-```python
-from pqviewer import view
-
-viewer = view(
-    "trajectory.xyz",
-    forces_path="trajectory.force",
-    height=620,
-)
-viewer
+```bash
+python -m uvicorn viewer_app:app --host 127.0.0.1 --port 8765
 ```
 
-The server stays alive while `viewer` is in use. Stop it explicitly when a
-notebook no longer needs it:
+Open `http://127.0.0.1:8765`. `create_app` returns the FastAPI application used
+by the CLI. For notebook embedding and server lifetime, use
+[`view` and `NotebookViewer`](jupyter.md).
 
-```python
-viewer.close()
-```
-
-See the [Jupyter guide](jupyter.md) and
-[executable example](../examples/pqviewer-notebook.ipynb).
-
-The public package currently exports:
-
-- `FrameData`
-- `FrameKey`
-- `IndexedFrameSource`
-- `NotebookViewer`
-- `PQTrajectoryDataset`
-- `RunDataset`
-- `create_app`
-- `encode_frame`
-- `open_run_dataset`
-- `view`
-
-The project is pre-1.0. Treat the HTTP transport and frontend state as internal;
-the documented Python names may still evolve with release notes.
+The file and Python interfaces may evolve before 1.0; consult the release notes
+when upgrading. HTTP transport and frontend state are internal interfaces.

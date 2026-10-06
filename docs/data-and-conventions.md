@@ -2,38 +2,30 @@
 
 ## Source types
 
-The core installation opens:
+| Source | Behavior | Installation |
+| --- | --- | --- |
+| PQ `.xyz`, `.extxyz`, `.extended.xyz` | Indexed structure or trajectory | Core |
+| PQ `.in` | Outputs resolved relative to the input | Core |
+| Run directory | One unambiguous run or declared restart chain | Core |
+| `path@start:stop:step` | Lazy view using zero-based Python slice rules | Core |
+| `.pqfigure.json`, `.pqv.json` | Source-validated figure recipe | Core |
+| ASE `Atoms`, indexed sequences, `.traj`, and detected formats | Optional file and Python adapter | `ase` extra |
 
-| Source | Behavior |
-| --- | --- |
-| PQ `.xyz`, `.extxyz`, `.extended.xyz` | Indexed structure or trajectory |
-| PQ `.in` | Resolves declared outputs relative to the input |
-| Run directory | Opens one unambiguous run or declared restart chain |
-| `path@start:stop:step` | Lazy view using Python slice rules |
-| `.pqfigure.json`, `.pqv.json` | Reopens a source-validated figure recipe |
+A directory containing unrelated runs is rejected; open the intended input or
+trajectory directly. ASE `.traj` and indexed Python sequences retain indexed
+access. Other ASE formats may need an initial metadata scan. Format support
+depends on the installed ASE version.
 
-A directory with unrelated runs is rejected. Open the intended PQ input or
-trajectory directly.
+Install the adapter with `python -m pip install 'MolarVerse-PQViewer[ase]'`.
 
-Install the `ase` extra to open ASE `Atoms`, indexed sequences of `Atoms`,
-`.traj`, and file types detected by ASE:
+The browser picker accepts XYZ variants, ASE trajectory, CIF, PDB,
+VASP/POSCAR/CONTCAR, CUBE, PQ inputs, and companions. Formats handled by ASE need
+the extra. Each open operation accepts at most eight files, 2 GiB per file, and
+4 GiB in total. Use the CLI for large or multi-file runs.
 
-```bash
-python -m pip install 'MolarVerse-PQViewer[ase]'
-```
+## Companion alignment
 
-ASE `.traj` files and indexed Python sequences retain indexed access. Other ASE
-formats may require an initial metadata scan. Format support follows the
-installed ASE version.
-
-The browser file picker supports XYZ variants, ASE trajectory, CIF, PDB,
-VASP/POSCAR/CONTCAR, CUBE, PQ inputs, and PQ companions. The CLI is the clearer
-path for large or multi-file runs. One browser-open operation accepts up to
-eight files, 2 GiB per file, and 4 GiB in total.
-
-## PQ companions
-
-PQViewer discovers a same-stem companion when exactly one candidate exists:
+A same-stem PQ companion is discovered when exactly one candidate exists:
 
 | Property | Suffixes |
 | --- | --- |
@@ -45,59 +37,92 @@ PQViewer discovers a same-stem companion when exactly one candidate exists:
 | Restart | `.rst` |
 
 `moldescriptor.dat` in the trajectory directory is also discovered. PQ input
-files and `file_prefix` declarations take precedence. Explicit CLI options can
-override discovered companions.
+paths and `file_prefix` declarations take precedence; explicit CLI options
+override discovery.
 
-Companion arrays align by frame index and must match the trajectory's atom
-order. The viewer reports partial companions rather than extending their last
-value.
+Arrays align by frame index and atom order. A partial companion remains partial;
+its last value is never extended to later frames.
 
-## Stable topology and frame identity
+## Topology and frame identity
 
-A dataset has one stable atom topology. A frame with a different atom count or
-element order is rejected instead of silently remapping selections and bonds.
+Atom count and element order must stay constant within a dataset. Frames that
+change either are rejected, preserving selection and bond identity.
 
-Each frame carries:
+| Identity field | Meaning |
+| --- | --- |
+| Source | File or restart segment |
+| Local source index | Frame within that source |
+| Viewer index | Frame within the opened dataset or slice |
+| Step and time | Source values, with time units when declared |
 
-- source identity
-- restart segment and local source index
-- viewer frame index
-- simulation step when present
-- physical time and its unit when present
-
-For in-memory ASE objects, source identity is stable only within the opened
-dataset.
+Python and source indices are zero-based; timeline frame numbers start at one.
+In-memory ASE identity lasts only within the opened dataset. Do not infer
+physical time from frame index or playback rate.
 
 ## Units
 
-Positions and cells use ångström in the viewer contract. PQAnalysis supplies PQ
-properties and declared metadata units. The ASE adapter exposes ASE positions in
-ångström, forces in eV/Å, velocities in Å/fs, and charges in elementary charge.
+Use Cartesian positions and lattice vectors in Å. PQ numeric values and
+declared metadata are retained; declaring a unit does not perform a conversion.
 
-The interface shows a unit only when the source declares or defines it. It does
-not infer unknown scalar-property units.
+Coordinates and cell vectors sent to the browser use 32-bit floats;
+interactive measurements inherit that precision.
+
+| Quantity | PQ source convention | ASE adapter |
+| --- | --- | --- |
+| Positions and cell | Expected in Å | Å |
+| Force | PQ-format companions: kcal/(mol Å) | eV/Å |
+| Velocity | PQ-format companions: Å/s | Å/fs |
+| Charge | PQ-format companions: elementary charge, `e` | Elementary charge, `e` |
+| Energy and other scalars | Source-declared unit | Energy/free energy in eV; other scalars as declared |
+| Time | Source-declared unit | Source-declared unit |
+
+Properties embedded in XYZ metadata use declared units; missing property units
+remain unknown in the interface. Verify units before comparing sources, in
+particular PQ and ASE force or velocity values.
 
 ## Centered periodic cells
 
-PQ uses the centered fractional interval `[-0.5, 0.5)`. The displayed primary
-cell therefore extends half a lattice vector on either side of its selected
-origin, rather than from fractional `0` to `1`.
+PQViewer wraps enabled periodic axes into the half-open fractional interval
+`[-0.5, 0.5)` about the selected cell origin. For row lattice vectors
+`A = [a; b; c]`, Cartesian coordinates satisfy `r = o + f A`.
 
-This convention applies to orthorhombic and triclinic cells. Wrapping and
-minimum-image measurements operate in fractional coordinates, then transform
-back to Cartesian coordinates.
+```{math}
+f_i^{\mathrm{wrap}} = f_i - \left\lfloor f_i + \tfrac12 \right\rfloor
+```
 
-The periodic display modes are non-destructive:
+This applies to orthorhombic and triclinic cells. Non-periodic axes retain their
+coordinates. The upper face maps to the lower face.
 
-- **Atoms** wraps each atom independently into the displayed cell.
-- **Molecules** wraps known connected molecules as whole units.
-- **Unwrapped** follows continuous motion between frames.
-- **Source coordinates**, available through search, shows stored positions.
-- **Center cell** moves the displayed cell origin to PQ, the structure, or the
-  selection.
-- **Mirror** reflects the Cartesian display along a distance-preserving axis
-  derived from `a`, `b`, or `c`.
-- **Repeat** adds bounded neighboring images.
+Interactive minimum-image measurements find the shortest Cartesian
+displacement over enabled lattice translations. In a skewed cell, independently
+centering fractional components alone does not necessarily give that shortest
+displacement. **Displayed images** measures the replicas actually selected.
 
-None of these operations rewrites the trajectory. A figure recipe records the
+| Display mode | Effect |
+| --- | --- |
+| Atoms | Wrap each atom into the displayed cell |
+| Molecules | Wrap known connected molecules as whole units |
+| Unwrapped | Accumulate image shifts between consecutive frames |
+| Source coordinates | Show stored positions; available through search |
+| Center cell | Place the displayed origin at PQ, the structure, or the selection |
+| Mirror | Reflect along a distance-preserving Cartesian axis derived from `a`, `b`, or `c` |
+| Repeat | Add bounded neighboring images |
+
+Display operations preserve source coordinates. Figure recipes record the
 chosen display state.
+
+## Partial cells and vacuum
+
+ASE sources may be periodic along one or two axes. Each enabled axis requires
+a nonzero lattice vector, and present vectors must be independent. Missing
+non-periodic vectors are completed into a computational basis; completion does
+not add physical periodicity or define a slab's vacuum thickness.
+
+Without a finite cell, the viewer uses vacuum coordinates. Unwrapped image
+tracking resets when either side of a frame transition is vacuum; continuity
+is not carried across that transition. Unwrapping also requires sufficiently
+frequent frames to resolve periodic crossings from consecutive displacements.
+
+[Pair distribution](trajectory-analysis.md#pair-distribution-and-coordination)
+requires all three periodic axes and a finite cell volume, even when a partial
+cell is sufficient for viewing and measurements.

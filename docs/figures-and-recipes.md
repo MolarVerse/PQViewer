@@ -5,8 +5,8 @@
 Press `Cmd/Ctrl+Shift+S` to export the current view immediately as a 2400 ×
 1800 px, 300 DPI, white-background PNG.
 
-The export uses the current orientation, a fitted camera, publication lighting,
-explicit sRGB output, and cell-clipped periodic geometry. Repeated-cell views
+The export uses the current orientation, a fitted camera, sRGB output, and
+cell-clipped periodic geometry. Repeated-cell views
 retain continuity between displayed neighbors. Detail and supersampling adapt
 to output size and graphics support.
 
@@ -80,10 +80,8 @@ pqviewer render view.pqfigure.json \
 The output suffix must be `.png`, `.tif`, or `.tiff`. If `--format` is supplied,
 it must agree with the suffix.
 
-Interactive viewing and publication export use separate rendering paths. The
-interactive renderer prioritizes responsive inspection, while figure and
-headless export use the publication renderer at the requested output size.
-Saved recipes keep the view reproducible and validate their source, but graphics
-drivers, Chromium versions, and operating systems can produce small pixel
-differences. Interactive molecular surfaces are not currently available through
-the publication renderer; choose another preset before exporting a figure.
+Figure and headless export use a separate renderer at the requested output
+size. A validated recipe restores view settings and matching source data;
+graphics drivers, Chromium versions, and operating systems can still produce
+pixel differences. Interactive molecular surfaces are unavailable in figure
+export; choose another representation before exporting.
