@@ -1,11 +1,9 @@
 # Viewer guide
 
-The interface is one continuous scientific workspace. The structure stays on
-the canvas while **View**, **Edit**, **Analyze**, and **Export** expose one task
-at a time. On narrow screens, **Tools** opens the same View/Edit/Analyze
-inspector as a scrollable sheet. The canvas remains visible; use the arrow to
-expand the sheet when more room is needed. In short landscape windows, the
-inspector sits beside the canvas.
+Use **View**, **Edit**, **Analyze**, and **Export** beside the molecular canvas.
+On narrow screens, **Tools** opens a scrollable inspector sheet; its arrow
+expands the sheet. In short landscape windows, the inspector sits beside the
+canvas.
 
 ## Canvas
 
@@ -42,11 +40,10 @@ edited structure as EXTXYZ, including lattice and periodic-axis information.
 
 ## Analyze
 
-Analyze is always available. With no selection it explains the selection
-gestures. One selected atom shows its identity, position, charge, force, and
-velocity values without exposing accidental edits. Ordered selections of two,
-three, or four atoms show a distance, angle, or dihedral. Larger selections
-show their formula, centroid, extent, and unique-atom count.
+With no selection, **Analyze** shows selection gestures. One atom shows its
+identity, position, and available charge, force, and velocity values. Ordered
+selections of two, three, or four atoms show a distance, angle, or dihedral.
+Larger selections show formula, centroid, extent, and unique-atom count.
 
 The selection bar exposes actions that apply to the current selection:
 
@@ -94,36 +91,20 @@ omitted, and dense structures show a deterministic subset.
 A single visible unit cell does not draw minimum-image bonds through its
 boundary. Repeated-cell views retain bonds between neighboring displayed cells.
 
-**Overlays**
-
-- Show or hide water
-- Show or hide the periodic cell
-- Display force and velocity vectors with adjustable scale
-
-**Periodic**
-
-- Atom coordinates: wrap each atom into the displayed cell
-- Molecule coordinates: keep known molecules whole while wrapping
-- Unwrapped coordinates: follow continuous motion across frames
-- Center the displayed cell at the PQ origin, structure, or selection
-- Mirror the display along `a`, `b`, or `c`
-- Repeat periodic images along each available axis
-
-These controls change the display only. They do not rewrite source coordinates.
-Use command search for **Source coordinates** when the stored coordinates need
-to be shown without display wrapping.
+Periodic display preserves source coordinates. Use command search for
+**Source coordinates** to show stored positions; see
+[wrapping modes and cell conventions](data-and-conventions.md#centered-periodic-cells).
 
 The interactive view uses the locally bundled 3Dmol renderer. If it cannot
 initialize, PQViewer falls back to the publication renderer so the structure
-stays visible. Do not add a second interactive engine.
+stays visible.
 
 ## Export
 
-**Export** opens one figure inspector for size, DPI, PNG or TIFF, white or
-transparent background, projection, labels, legend, scale bar, and reproducible
-figure recipes. The interactive 3Dmol canvas is not treated as publication
-output: figures use the independent high-quality renderer. Press
-`Cmd/Ctrl+Shift+S` for a quick 2400 × 1800 PNG with publication defaults.
+**Export** sets pixel dimensions, DPI metadata, format, background, projection,
+and annotations. Figures use a separate renderer from the interactive canvas.
+Press `Cmd/Ctrl+Shift+S` for a 2400 × 1800 PNG, or save a source-validated recipe;
+see [Figures and recipes](figures-and-recipes.md).
 
 ## Trajectory
 
@@ -158,7 +139,7 @@ setting or run the selected command. Setting results show their path, such as
 **View › Layers › Bonds** or **Edit › Cell › Vectors**, then open collapsed
 sections, scroll the setting into view, and highlight it briefly.
 
-Natural scientific terms are indexed. Queries such as `bond across cell`,
+Queries such as `bond across cell`,
 `atom color`, `edit lattice vectors`, `distance`, `rendering quality`, and
 `transparent image` lead to the relevant control. Search also accepts commands
 such as `select within 3 Å of selection`.

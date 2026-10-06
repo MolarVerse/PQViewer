@@ -32,8 +32,12 @@ def test_docs_page_local_references_exist() -> None:
 
 def test_docs_page_images_have_alt_text() -> None:
     source = INDEX.read_text(encoding="utf-8")
-    assert source.count(":alt:") == 1
-    assert source.count(":img-alt:") == 6
+    figures = re.findall(r"```\{figure\}[^\n]*\n(.*?)\n```", source, re.DOTALL)
+    assert figures, "The overview should include a scientific figure."
+    for figure in figures:
+        assert re.search(r"^:alt:[ \t]+\S", figure, re.MULTILINE), (
+            "Each figure needs a nonempty text description."
+        )
 
 
 def test_docs_page_heading_order_is_consistent() -> None:

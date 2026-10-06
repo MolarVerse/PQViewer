@@ -50,7 +50,7 @@ remains available without it.
 
 Pair distribution and coordination require:
 
-- more than one frame
+- at least one frame
 - a file-backed source
 - a full periodic cell along `a`, `b`, and `c`
 

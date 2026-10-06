@@ -1,64 +1,10 @@
-/* Hallmark · component: sidebar brand · genre: modern-minimal · tone: scientific · anchor: blue · fingerprint: horizontal lockup */
-/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 · contrast: pass · mobile: pass · slop: pass */
-
-.sd-card {
-  box-shadow: none;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.sd-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
-}
-
-.content p code.literal,
-.content li code.literal {
-  background: var(--color-code-background);
-  border-radius: 0.2em;
-}
-
-.sidebar-brand {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.75rem;
-  padding-block: 0.75rem;
-}
-
-.sidebar-logo-container {
-  display: flex;
-  flex: 0 0 4.5rem;
-  align-items: center;
-  margin: 0;
-}
-
-.sidebar-logo {
-  width: 4.5rem;
-  margin: 0;
-}
-
-.sidebar-brand-text {
-  margin: 0;
-  font-size: 1.35rem;
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-}
-
-.pq-workspace {
-  margin: 1.5rem 0 0;
-}
-
-.pq-workspace img {
-  width: 100%;
-  border: 1px solid var(--color-foreground-border);
-  border-radius: 0.35rem;
-}
+/* PQViewer embedded-demo layout. */
 
 .pq-demo-shell {
   margin: 1.5rem 0 2rem;
   overflow: hidden;
   border: 1px solid var(--color-background-border);
-  border-radius: 0.55rem;
+  border-radius: var(--radius);
   background: var(--color-background-secondary);
 }
 
@@ -92,7 +38,7 @@
   height: min(72vh, 690px);
   min-height: 420px;
   border: 0;
-  background: #f6f8f8;
+  background: var(--color-background-secondary);
 }
 
 .sd-card-img-top {

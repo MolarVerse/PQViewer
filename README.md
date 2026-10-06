@@ -1,106 +1,63 @@
-<img src="https://raw.githubusercontent.com/MolarVerse/PQViewer/main/frontend/public/pq-logo.png" alt="PQViewer logo" width="200">
-
 # PQViewer
 
-[![CI](https://github.com/MolarVerse/PQViewer/actions/workflows/ci.yml/badge.svg)](https://github.com/MolarVerse/PQViewer/actions/workflows/ci.yml)
-[![Documentation](https://github.com/MolarVerse/PQViewer/actions/workflows/pages.yml/badge.svg)](https://molarverse.github.io/PQViewer/)
-[![PyPI](https://img.shields.io/pypi/v/molarverse-pqviewer.svg)](https://pypi.org/project/molarverse-pqviewer/)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://github.com/MolarVerse/PQViewer/blob/main/pyproject.toml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-2f718f.svg)](https://github.com/MolarVerse/PQViewer/blob/main/LICENSE)
+Inspect PQ molecular structures and trajectories in a desktop browser. Optional
+ASE support adds other file formats and Python objects.
 
-PQViewer opens molecular structures and trajectories from PQ in a local
-browser, with optional ASE format support. It provides indexed playback,
-centred periodic cells, measurements, and reproducible figure export.
+## Install and open a trajectory
 
-[Documentation](https://molarverse.github.io/PQViewer/) ·
-[Web demo](https://molarverse.github.io/PQViewer/viewer/) ·
-[Jupyter example](https://github.com/MolarVerse/PQViewer/blob/main/examples/pqviewer-notebook.ipynb)
-
-![PQViewer showing a SrTiO3 structure with the View inspector open](docs/assets/screenshots/viewer-workspace.png)
-
-PQViewer is in public beta. File and Python interfaces may change before 1.0.
-
-## Install
-
-PQViewer requires Python 3.12 or newer.
-The distribution is named `MolarVerse-PQViewer`; the application, import
-package, and command remain `PQViewer`, `pqviewer`, and `pqviewer`.
+Use Python 3.12 or newer and a browser with WebGL 2. The interface is included
+in the Python package.
 
 ```bash
 python -m pip install MolarVerse-PQViewer
-pqviewer
+pqviewer trajectory.xyz
 ```
 
-Node.js is not required. Optional ASE format support is installed with
-`python -m pip install 'MolarVerse-PQViewer[ase]'`.
-
-The CLI also accepts PQ inputs, run directories, ASE sources, and frame slices.
-See [Getting started](https://molarverse.github.io/PQViewer/getting-started.html)
-for examples.
-
-## Viewer
-
-- 3Dmol.js atoms, bonds, protein cartoons, surfaces, cells, and selections
-- centred orthorhombic and triclinic cells, wrapping, and molecule reconstruction
-- atom and cell editing with EXTXYZ download
-- trajectory playback, measurements, analysis, forces, and collision indicators
-- independent PNG and TIFF figure rendering with reusable recipes
-
-Use **View**, **Edit**, and **Analyze** without leaving the structure. On a
-narrow screen, **Tools** opens the same controls in a sheet; the camera and
-structure remain available. Search atoms, settings, and commands with the
-**Search** control, `Cmd/Ctrl+K`, or `/`.
-
-## Remote access
-
-From home, connect to your institutional VPN first and confirm that
-`ssh user@server` works. Start PQViewer on the server that holds the trajectory:
+Replace `trajectory.xyz` with your file. To try a small synthetic trajectory:
 
 ```bash
-pqviewer /path/to/trajectory.xyz --no-open --port 8765
+cat > water.xyz <<'XYZ'
+3
+Frame 1
+O  0.0000  0.0000  0.0000
+H  0.7586  0.0000  0.5043
+H -0.7586  0.0000  0.5043
+3
+Frame 2
+O  0.0000  0.0000  0.0200
+H  0.7690  0.0000  0.4870
+H -0.7690  0.0000  0.4870
+XYZ
+pqviewer water.xyz
 ```
 
-In another terminal on your desktop:
+Drag to rotate; click an atom, then Shift-click others in measurement order.
+The timeline changes frames. **Search** (`Cmd/Ctrl+K` or `/`) finds commands.
 
-```bash
-ssh -N -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:8765:127.0.0.1:8765 user@server
-```
+![SrTiO3 structure with coordination polyhedra and the View inspector](docs/assets/screenshots/viewer-workspace.png)
 
-Open `http://127.0.0.1:8765` on your desktop. Keep PQViewer and the tunnel
-running; retain the default loopback binding. Source files are read and
-PQAnalysis jobs run on the server. The interface, selected frames, and chart
-data reach your desktop through the encrypted SSH tunnel. **Open** uploads
-desktop files to the server; downloads are saved on your desktop.
+## Scientific use
 
-See [Remote access](https://molarverse.github.io/PQViewer/remote-access.html)
-for compute nodes, alternate local ports, and VPN troubleshooting.
+| Task | Convention or requirement | Manual |
+| --- | --- | --- |
+| Inspect structures and trajectories | Stable atom count and element order; optional ASE support | [Open data](https://molarverse.github.io/PQViewer/getting-started.html) |
+| Display periodic images | Centred fractional cell `[-0.5, 0.5)`; enabled periodic axes only | [Data and conventions](https://molarverse.github.io/PQViewer/data-and-conventions.html) |
+| Measure distances, angles, and dihedrals | Ordered selections; minimum-image geometry by default | [Viewer guide](https://molarverse.github.io/PQViewer/viewer-guide.html) |
+| Calculate `g(r)` and coordination | File-backed data with a full three-dimensional periodic cell | [Trajectory analysis](https://molarverse.github.io/PQViewer/trajectory-analysis.html) |
+| Export figures and curves | PNG/TIFF figures; CSV/SVG/PDF plots; recipes validate source data | [Figures and recipes](https://molarverse.github.io/PQViewer/figures-and-recipes.html) |
 
-## Jupyter
+For cluster use, keep the server on loopback and follow
+[Remote access](https://molarverse.github.io/PQViewer/remote-access.html), including
+institutional VPN and jump-host access. Source reading and analysis run on the
+server; the browser receives frame and chart data. PQViewer has no HTTP
+authentication.
 
-```bash
-python -m pip install 'MolarVerse-PQViewer[jupyter,ase]'
-```
+Use the [Jupyter guide](https://molarverse.github.io/PQViewer/jupyter.html) or
+[Python API](https://molarverse.github.io/PQViewer/python-api.html) for Python
+workflows. The [web demo](https://molarverse.github.io/PQViewer/viewer/) uses a
+fixed SrTiO3 dataset.
 
-```python
-from pqviewer import view
-
-viewer = view("trajectory.xyz", height=620)
-viewer
-```
-
-The notebook cell embeds the local viewer. Call `viewer.close()` when finished.
-See the [Jupyter guide](https://molarverse.github.io/PQViewer/jupyter.html) for
-files, ASE objects, companion data, and remote kernels.
-
-## Project
-
-[Contributing](https://github.com/MolarVerse/PQViewer/blob/main/CONTRIBUTING.md) ·
-[Citation](https://github.com/MolarVerse/PQViewer/blob/main/CITATION.cff) ·
-[Security](https://github.com/MolarVerse/PQViewer/blob/main/SECURITY.md) ·
-[Changelog](https://github.com/MolarVerse/PQViewer/blob/main/CHANGELOG.md) ·
-[License](https://github.com/MolarVerse/PQViewer/blob/main/LICENSE) ·
-[Third-party notices](https://github.com/MolarVerse/PQViewer/blob/main/THIRD_PARTY_NOTICES.md)
-
-PQViewer binds to `127.0.0.1` by default and does not provide authentication.
-Do not expose the local server to an untrusted network.
+PQViewer is in public beta; file and Python interfaces may change before 1.0.
+See [release notes](CHANGELOG.md), [citation](CITATION.cff), and
+[contributing](CONTRIBUTING.md). Licensed under [MIT](LICENSE), with
+[third-party notices](THIRD_PARTY_NOTICES.md).

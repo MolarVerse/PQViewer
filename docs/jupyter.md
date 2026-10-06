@@ -1,25 +1,22 @@
 # Jupyter
 
-PQViewer can embed the local application in a Jupyter output cell. The iframe
-retains 3Dmol.js, structure and cell editing, representations, selection,
-command search, trajectories, and figure export.
+Embed PQViewer in a Jupyter output cell.
 
 ## Install
 
-From a checkout:
-
 ```bash
-python -m pip install 'MolarVerse-PQViewer[jupyter,ase]'
+python -m pip install 'MolarVerse-PQViewer[jupyter]'
 ```
 
-The `ase` extra is only required for ASE objects and formats handled by ASE.
-
 ## Display a file
+
+Use `water.xyz` from [Getting started](getting-started.md#open-a-trajectory),
+or replace the path with your trajectory:
 
 ```python
 from pqviewer import view
 
-viewer = view("trajectory.xyz", height=620)
+viewer = view("water.xyz", height=620)
 viewer
 ```
 
@@ -42,6 +39,12 @@ viewer
 
 ## Display an ASE object
 
+Add the optional adapter:
+
+```bash
+python -m pip install 'MolarVerse-PQViewer[ase]'
+```
+
 ```python
 from ase.build import molecule
 from pqviewer import view
@@ -56,11 +59,10 @@ viewer
 viewer.close()
 ```
 
-`close` is safe to call more than once. A context manager is also available
-for code that performs checks without retaining the cell:
+`close` is safe to call more than once. For a bounded server lifetime:
 
 ```python
-with view("trajectory.xyz") as viewer:
+with view("water.xyz") as viewer:
     print(viewer.url)
 ```
 

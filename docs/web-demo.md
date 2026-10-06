@@ -1,38 +1,22 @@
 # Web demo
 
-The [hosted viewer](https://molarverse.github.io/PQViewer/viewer/) packages the
-PQViewer frontend and a SrTiO<sub>3</sub> perovskite dataset as static files. It runs
-without a Python server.
+The [hosted viewer](https://molarverse.github.io/PQViewer/viewer/) opens a fixed
+SrTiO3 dataset without a Python server.
 
-## Available in the demo
+| Task | Try |
+| --- | --- |
+| Inspect geometry | Rotate, zoom, select atoms, and inspect cell parameters |
+| Show coordination polyhedra | Open **Search** (`Cmd/Ctrl+K` or `/`) and search for `Polyhedra` |
+| Edit lattice vectors | Search for `edit lattice vectors` |
+| Save the current result | Download edited EXTXYZ or export a PNG/TIFF figure |
 
-- rotation, zoom, selection, and keyboard navigation
-- atom coordinates, element identity, cell parameters, vectors, and periodic
-  axes
-- atoms, inferred bonds, cell, polyhedra, and surfaces
-- View, Edit, and Analyze tools
-- atom, setting, and command search
-- edited EXTXYZ download
-- PNG and TIFF output through the independent publication renderer
+Polyhedra depict visible coordination geometry. Pair-distribution and
+coordination curves require a local PQAnalysis process and are unavailable in
+the static demo.
 
-Use **Search** or press `Cmd/Ctrl+K` or `/`. Search for
-**Polyhedra** to inspect complete TiO<sub>6</sub> octahedra, or search for
-`edit lattice vectors` to open the cell matrix.
+Edits remain in the browser and reset on reload. The demo does not upload a
+structure, open arbitrary local files, follow growing trajectories, or join
+restart runs.
 
-Edits remain in the browser and reset when the page reloads. No structure is
-uploaded by the static demo.
-
-## Local-only features
-
-GitHub Pages has no Python process. The demo cannot open arbitrary local files,
-follow a growing trajectory, join PQ restart runs, or calculate pair
-distribution and coordination curves through PQAnalysis.
-
-Follow [Getting started](getting-started.md) to run PQViewer locally with those
-features. The local server binds to `127.0.0.1` by default.
-
-## Deployment
-
-The Pages workflow builds this documentation and the fixed-dataset viewer as
-one artifact. Pushes to `main` publish it through the repository's GitHub Pages
-environment.
+To use your data, follow [Getting started](getting-started.md). For cluster data,
+use [Remote access](remote-access.md).
