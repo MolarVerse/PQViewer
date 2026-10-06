@@ -61,6 +61,11 @@ jobs:
           cache: npm
           cache-dependency-path: PQViewer/frontend/package-lock.json
       - run: npm ci
+      - name: Verify shared terminal source and tokens
+        working-directory: PQViewer
+        run: |
+          cmp frontend/node_modules/@molarverse/pq-design/python/pq_terminal.py pqviewer/_design_terminal.py
+          cmp frontend/node_modules/@molarverse/pq-design/tokens.json pqviewer/_design_tokens.json
       - run: npm run build
       - name: Run frontend tests when available
         run: npm run test --if-present

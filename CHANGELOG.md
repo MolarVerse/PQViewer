@@ -5,6 +5,22 @@ user-visible changes.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-06
+
+### Changed
+
+- Share terminal wordmarks, help, colors, and startup presentation through PQDesign
+- Show source and dataset size after successful startup, with configurable lifecycle, upload, refresh, and RDF events
+- Keep polling quiet at the default log level and preserve settings in reload workers
+- Put real GUI figures and selection steps first in the manual, with scientific conventions and remote VPN access linked
+
+### Fixed
+
+- Stop normal startup with Ctrl+C without a KeyboardInterrupt traceback
+- Keep browser opening and startup presentation after application startup succeeds
+- Respect `--log-level error` for server warnings as well as application events
+- Update the build-time source-map-js dependency to 1.2.2 for GHSA-68fv-2mgg-jv7q
+
 ## [0.2.0] - 2026-10-02
 
 ### Fixed

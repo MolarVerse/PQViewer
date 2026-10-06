@@ -20,6 +20,11 @@ Replace the path with your trajectory. PQViewer opens the default browser at
 `http://127.0.0.1:8765`. The Python package includes the interface; Node.js is
 needed only for frontend development.
 
+The terminal shows the browser address and dataset size after startup. Press
+`Ctrl+C` to stop. `--log-level` defaults to `info` for data and analysis events;
+use `debug` for request logs, or `warning` / `error` for less output.
+`pqviewer --help` lists the options; `pqviewer --version` prints the installed version.
+
 For the synthetic three-frame water example shown below:
 
 ```bash

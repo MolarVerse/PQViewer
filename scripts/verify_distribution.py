@@ -24,6 +24,8 @@ def verify_wheel(path: Path) -> None:
             raise SystemExit(f"unexpected distribution name: {metadata['Name']}")
 
         required = (
+            "pqviewer/_design_terminal.py",
+            "pqviewer/_design_tokens.json",
             "pqviewer/static/index.html",
             "pqviewer/static/fonts/Inter-LICENSE.txt",
         )

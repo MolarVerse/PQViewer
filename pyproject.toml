@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "MolarVerse-PQViewer"
-version = "0.2.0"
+version = "0.2.1"
 description = "Interactive molecular structure and trajectory viewing for PQ."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -21,6 +21,8 @@ dependencies = [
     "numpy>=2,<3",
     "PQAnalysis>=1.4.0",
     "python-multipart>=0.0.20,<1",
+    "rich>=13.9,<16",
+    "rich-argparse>=1.7,<2",
     "uvicorn>=0.30,<1",
 ]
 
@@ -63,7 +65,7 @@ Issues = "https://github.com/MolarVerse/PQViewer/issues"
 include = ["pqviewer*"]
 
 [tool.setuptools.package-data]
-pqviewer = ["static/*", "static/**/*"]
+pqviewer = ["_design_tokens.json", "static/*", "static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

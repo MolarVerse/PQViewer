@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .data import FrameData, FrameKey, PQTrajectoryDataset
+from ._terminal import event_log
 from .sources import RunDataset, open_run_dataset
 
 
@@ -211,13 +212,20 @@ def register_analysis_routes(application: FastAPI) -> None:
 
     @application.post("/api/analysis/rdf", response_model=RDFResult)
     async def rdf(payload: RDFRequest, request: Request) -> dict[str, Any]:
-        with application.state.dataset_lock:
-            _require_generation(application, payload.dataset_generation)
-            prepared = _prepare_rdf_request(
-                application.state.dataset,
-                payload,
-            )
+        log = event_log(application)
+        try:
+            with application.state.dataset_lock:
+                _require_generation(application, payload.dataset_generation)
+                prepared = _prepare_rdf_request(
+                    application.state.dataset,
+                    payload,
+                )
+        except HTTPException as error:
+            log.warning("RDF unavailable: %s", error.detail)
+            raise
 
+        parameters = prepared["worker_request"]
+        log.info("RDF started (%s frames, %s bins)", parameters["frame_count"], parameters["n_bins"])
         try:
             result = await _run_rdf_process(
                 application,
@@ -226,16 +234,28 @@ def register_analysis_routes(application: FastAPI) -> None:
                 prepared["descriptor"],
                 prepared["worker_request"],
             )
+            with application.state.dataset_lock:
+                _require_generation(application, payload.dataset_generation)
         except AnalysisSourceChangedError as error:
+            log.warning("RDF cancelled: source changed")
             raise HTTPException(
                 status_code=409,
                 detail=STALE_DATASET_DETAIL,
             ) from error
         except AnalysisInputError as error:
+            log.warning("RDF failed: %s", error)
             raise HTTPException(status_code=422, detail=str(error)) from error
+        except HTTPException as error:
+            log.info("RDF cancelled: %s", error.detail)
+            raise
+        except asyncio.CancelledError:
+            log.info("RDF cancelled")
+            raise
+        except Exception as error:
+            log.error("RDF failed: %s", error)
+            raise
 
-        with application.state.dataset_lock:
-            _require_generation(application, payload.dataset_generation)
+        log.info("RDF completed (%.3f s)", result["elapsed_seconds"])
         return {
             **result,
             "dataset_generation": payload.dataset_generation,

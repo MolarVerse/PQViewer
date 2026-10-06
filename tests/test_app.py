@@ -599,7 +599,7 @@ def test_reload_cli_uses_factory_and_restores_environment(
         "--no-open",
     ])
 
-    assert call["application"] == "pqviewer.app:create_app_from_env"
+    assert call["application"] == "pqviewer.cli:create_app_from_env"
     assert call["kwargs"]["factory"] is True
     assert call["kwargs"]["port"] == 8765
     assert call["trajectory"] == str(trajectory.resolve())
@@ -622,7 +622,7 @@ def test_reload_cli_supports_an_empty_launch(tmp_path, monkeypatch, server_io):
     cli.main(["--reload", "--no-open"])
 
     assert call == {
-        "application": "pqviewer.app:create_app_from_env",
+        "application": "pqviewer.cli:create_app_from_env",
         "factory": True,
         "trajectory": None,
     }

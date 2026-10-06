@@ -100,7 +100,10 @@ jobs:
           npm test
           npm run build
       - name: Verify bundled interface
-        run: git diff --exit-code -- pqviewer/static
+        run: |
+          cmp frontend/node_modules/@molarverse/pq-design/python/pq_terminal.py pqviewer/_design_terminal.py
+          cmp frontend/node_modules/@molarverse/pq-design/tokens.json pqviewer/_design_tokens.json
+          git diff --exit-code -- pqviewer/static
       - name: Build Python distributions
         run: |
           python -m build
