@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 
 from .analysis import register_analysis_routes
+from ._terminal import event_log
 from .data import EmptyTrajectoryDataset
 from .packet import encode_frame
 from .recipe import recipe_copy
@@ -251,20 +252,35 @@ def create_app(
 
     @application.post("/api/refresh")
     def refresh(response: Response) -> dict[str, Any]:
-        with application.state.dataset_lock:
-            current = application.state.dataset
-            added_frames = current.refresh()
-            application.state.dataset_generation = _new_dataset_generation()
-            refreshed_manifest = _manifest_with_generation(
-                current.manifest(),
-                application.state.dataset_generation,
+        log = event_log(application)
+        try:
+            with application.state.dataset_lock:
+                current = application.state.dataset
+                added_frames = current.refresh()
+                application.state.dataset_generation = _new_dataset_generation()
+                refreshed_manifest = _manifest_with_generation(
+                    current.manifest(),
+                    application.state.dataset_generation,
+                )
+        except Exception as error:
+            log.error("Refresh failed: %s", error)
+            raise
+        if added_frames:
+            log.info(
+                "Added %s frame%s (%s total)",
+                added_frames,
+                "" if added_frames == 1 else "s",
+                refreshed_manifest["frame_count"],
             )
+        else:
+            log.debug("No new frames")
         refreshed_manifest["added_frames"] = added_frames
         response.headers["Cache-Control"] = "no-store"
         return refreshed_manifest
 
     @application.post("/api/open")
     async def open_dataset(request: Request, response: Response) -> dict[str, Any]:
+        log = event_log(application)
         with application.state.dataset_lock:
             application.state.open_generation += 1
             generation = application.state.open_generation
@@ -292,14 +308,19 @@ def create_app(
                 temporary.cleanup()
                 raise
         except _UploadLimitExceeded as error:
+            log.warning("Upload rejected: %s", error.message)
             raise HTTPException(status_code=413, detail=error.message) from error
         except MultiPartException as error:
+            log.warning("Upload rejected: %s", error.message)
             raise HTTPException(status_code=400, detail=error.message) from error
-        except HTTPException:
+        except HTTPException as error:
+            log.warning("Upload rejected: %s", error.detail)
             raise
         except ValueError as error:
+            log.warning("Upload rejected: %s", error)
             raise HTTPException(status_code=400, detail=str(error)) from error
         except Exception as error:
+            log.warning("Could not open files: %s", error)
             raise HTTPException(
                 status_code=400,
                 detail=f"Could not open files: {error}",
@@ -311,6 +332,7 @@ def create_app(
         with application.state.dataset_lock:
             if generation != application.state.open_generation:
                 temporary.cleanup()
+                log.debug("Upload superseded by a newer open request")
                 raise HTTPException(
                     status_code=409,
                     detail="A newer open request superseded this one.",
@@ -326,6 +348,12 @@ def create_app(
             )
         if previous_temp is not None:
             previous_temp.cleanup()
+        log.info(
+            "Opened %s (atoms: %s, frames: %s)",
+            opened_manifest["name"],
+            opened_manifest.get("topology", {}).get("atom_count", 0),
+            opened_manifest["frame_count"],
+        )
         response.headers["Cache-Control"] = "no-store"
         return opened_manifest
 

@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If PQViewer supports published work, please cite the software."
 type: software
 title: PQViewer
-version: 0.2.0
-date-released: "2026-10-02"
+version: 0.2.1
+date-released: "2026-10-06"
 authors:
   - given-names: Josef M.
     family-names: Gallmetzer

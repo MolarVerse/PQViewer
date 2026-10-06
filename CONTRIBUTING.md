@@ -40,6 +40,12 @@ shared controls or tokens, follow the
 then update the archive URL in `frontend/package.json` and commit the resulting
 lockfile. Keep viewer-specific layout in this repository.
 
+The browser CLI vendors `python/pq_terminal.py` from that same archive as
+`pqviewer/_design_terminal.py`, alongside `tokens.json` as
+`pqviewer/_design_tokens.json`. Copy both unchanged when updating PQDesign;
+CI compares them with the installed archive. The wheel includes the terminal
+helper and its colors, so no sibling checkout is required.
+
 Run the API and frontend development server in separate terminals:
 
 ```bash

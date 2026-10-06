@@ -13,6 +13,7 @@ from typing import Any
 import uvicorn
 
 from .app import create_app
+from ._terminal import make_terminal
 from .recipe import open_figure_recipe_dataset
 
 
@@ -24,10 +25,12 @@ _OUTPUT_FORMATS = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    terminal = make_terminal()
+    parser = terminal.argument_parser(
         prog="pqviewer render",
         description="Render a saved PQViewer figure recipe.",
     )
+    parser.add_argument("--version", action="version", version=terminal.version)
     parser.add_argument("recipe", type=Path, help="Figure recipe to render.")
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--width", type=int)
