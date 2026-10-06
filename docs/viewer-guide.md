@@ -1,175 +1,134 @@
 # Viewer guide
 
-Use **View**, **Edit**, **Analyze**, and **Export** beside the molecular canvas.
-On narrow screens, **Tools** opens a scrollable inspector sheet; its arrow
-expands the sheet. In short landscape windows, the inspector sits beside the
-canvas.
+![SrTiO3 coordination polyhedra with View controls beside the molecular canvas](assets/screenshots/viewer-workspace.png)
 
-## Canvas
+## Find a control
 
-- Drag to rotate.
-- Secondary-drag or middle-drag to pan.
-- Scroll or pinch to zoom.
-- Click an atom to select it.
-- Shift-click to extend or reduce the selection.
-- Shift-drag empty space for box selection.
-- Click empty space to clear the selection.
+| Control | Use |
+| --- | --- |
+| **Open** | Load a file from your desktop |
+| **View** | Representation, layers, atom size, and periodic display |
+| **Edit** | Atom coordinates, elements, and cell |
+| **Analyze** | Atom properties, measurements, and trajectory analysis |
+| **Export** | Figure dimensions, format, and recipes |
+| **Search** | Find atoms, settings, and commands |
 
-The small canvas controls fit the structure and select perspective, XY, XZ, or
-YZ views. Camera orientation and selection stay stable while frames change.
+On narrow screens, **Tools** opens the inspector sheet; its arrow expands it.
+In short landscape windows, the inspector sits beside the canvas.
 
-## Edit
+## Navigate and select
 
-Choose **Edit** or press `E` for source-data changes. **Cell + structure**
-shows the formula, atom and frame counts, and boundary conditions. The cell
-editor accepts either lengths and angles or the full 3 × 3 lattice vectors.
-Each periodic axis can be enabled separately. By default, changing the cell
-keeps Cartesian atom positions fixed; enable **Keep fractional positions**
-when atoms should scale with the lattice.
+| Gesture | Action |
+| --- | --- |
+| Drag | Rotate |
+| Secondary-drag or middle-drag | Pan |
+| Scroll or pinch | Zoom |
+| Click an atom | Select it and open its details |
+| Shift-drag a box | Add a group of atoms |
+| Click empty space | Clear selection |
 
-Molecules without a source cell receive a centered orthorhombic suggestion
-based on their coordinate extent. Applying it creates a cell; nothing is added
-automatically.
+**Fit**, **3D**, **XY**, **XZ**, and **YZ** sit above the canvas. Camera orientation
+and selection stay stable while frames change. Box selection creates a group;
+use an ordered selection for geometric measurements.
 
-Clicking an atom opens its read-only scientific details in **Analyze**. Choose
-**Edit atom** there, or choose **Selected atom** while Edit is open, to change
-element identity and Cartesian coordinates. Element changes apply to the whole
-structure, while coordinates apply to the displayed frame. Edits are local,
-reversible, and used by figure export. **Download current frame** writes the
-edited structure as EXTXYZ, including lattice and periodic-axis information.
+## Measure in order
 
-## Analyze
+1. Click the first atom.
+2. With **Analyze** open, press `Shift+Tab` to focus the molecular canvas.
+3. Use `↑` / `↓` to browse atoms, then `Enter` to add each atom in order.
+   Pressing `Enter` on a selected atom removes it.
+4. Choose **Plot** to follow the measurement through the trajectory, or **Pin**
+   to keep it for recall.
 
-With no selection, **Analyze** shows selection gestures. One atom shows its
-identity, position, and available charge, force, and velocity values. Ordered
-selections of two, three, or four atoms show a distance, angle, or dihedral.
-Larger selections show formula, centroid, extent, and unique-atom count.
+| Ordered atoms | Measurement |
+| --- | --- |
+| 2 | Distance (Å) |
+| 3 | Angle (°) |
+| 4 | Dihedral (°) |
 
-The selection bar exposes actions that apply to the current selection:
+![Water with an ordered O–H selection, a live distance, and a three-frame measurement plot](assets/screenshots/viewer-measurement.png)
 
-- **Select** expands the selection to an element, molecule, residue, connected
-  component, or atoms within a distance.
-- **Plot** follows a distance, angle, or dihedral across the trajectory.
-- **Pin** keeps a measurement for recall or comparison.
-- **Track** shows the selected atoms' recent paths.
-- **Analyze** opens pair-distribution setup for suitable periodic data.
-- **Details** inspects a single atom.
-- **Summary** reports formula, center, extent, and atom count for larger
-  selections.
+This synthetic water trajectory has the cell hidden. Periodic measurements use
+the exact minimum image by default; switch to displayed images to measure a
+chosen replica. Plot cursors follow the displayed frame; clicking a plot point
+returns to that frame. See [trajectory analysis](trajectory-analysis.md) for
+pair distributions, coordination, and normalization.
 
-Periodic measurements use the exact minimum image by default. Switch to
-displayed images when measuring a chosen replica.
+One selected atom shows its position and available charge, force, and velocity.
+Groups show formula, centroid, extent, and unique-atom count. The selection bar
+offers **Select** for element, molecule, residue, connected-component, or
+distance-based groups, and **Track** for recent atom paths.
 
-Saved selections and pinned measurements last for the current workspace and
-dataset. Reloading the browser clears them.
+## Change the display
 
-## View
+**View** offers the representations and layers supported by the source.
+Unavailable representations explain their requirements on hover, focus, or
+selection. **Periodic cell** contains wrapping, centering, and repeats;
+**Rendering** controls interactive quality.
 
-Choose **View** or press `V` to open the controls supported by the current
-source.
+Coordination polyhedra depict visible bonding topology, using the nearest
+distance shell when bonds are inferred. Planar shells become polygons;
+transition-metal sites are preferred when several metal types are present.
+Polyhedra protruding outside one displayed cell are omitted; dense structures
+show a deterministic subset. This display is not a coordination-number analysis.
 
-Representations are explicit: ball-and-stick, spacefill, licorice, lines,
-ribbon, coordination polyhedra, and surface. An unavailable representation
-remains discoverable; hover it for the requirement, or select it for a brief
-explanation. Screen readers announce the requirement when it receives focus.
-Atom color, hydrogen visibility, and atom and bond size follow in the same
-inspector, then on/off layers such as bonds, water, the cell, forces, and
-velocities. Periodic wrap, centering, and
-repeats stay in a collapsed **Periodic cell** section when a cell is present.
-**Rendering** controls interactive quality. PQViewer chooses an initial display
-for the loaded data, while supported representations and layers remain directly
-controllable.
+A single displayed cell omits minimum-image bonds through its boundary.
+Repeats retain bonds between neighboring displayed cells. Display operations
+preserve source coordinates; **Search → Source coordinates** shows stored
+positions. See [cell and wrapping conventions](data-and-conventions.md#centered-periodic-cells)
+for centred, low-rank, and vacuum cells.
 
-Coordination geometry follows the visible bonding topology. Planar ligand
-shells are shown as polygons; non-planar shells are shown as polyhedra. When
-bonds are inferred, PQViewer uses the nearest distance shell so longer contacts
-do not inflate coordination. If several metal sites are available, transition
-metal coordination is preferred; this keeps perovskites focused on their
-octahedral network. Polyhedra that protrude outside a displayed single cell are
-omitted, and dense structures show a deterministic subset.
+The interactive view uses bundled 3Dmol; if initialization fails, it falls back
+to the publication renderer. [Figure export](figures-and-recipes.md) uses a
+separate renderer.
 
-A single visible unit cell does not draw minimum-image bonds through its
-boundary. Repeated-cell views retain bonds between neighboring displayed cells.
+## Edit the structure
 
-Periodic display preserves source coordinates. Use command search for
-**Source coordinates** to show stored positions; see
-[wrapping modes and cell conventions](data-and-conventions.md#centered-periodic-cells).
+Open **Edit** or press `E`.
 
-The interactive view uses the locally bundled 3Dmol renderer. If it cannot
-initialize, PQViewer falls back to the publication renderer so the structure
-stays visible.
+| Edit | Scope |
+| --- | --- |
+| Element identity | Whole structure |
+| Cartesian coordinates | Displayed frame |
+| Cell lengths/angles or 3 × 3 vectors | Cartesian positions stay fixed by default |
+| **Keep fractional positions** | Scale atoms with the edited lattice |
+| Periodic axes | Enable each axis separately |
 
-## Export
+For a molecule without a source cell, the editor suggests a centred
+orthorhombic cell from its coordinate extent. Apply it explicitly to create a
+cell. Changes are local and reversible. **Download current frame** writes
+EXTXYZ with lattice and periodic-axis information.
 
-**Export** sets pixel dimensions, DPI metadata, format, background, projection,
-and annotations. Figures use a separate renderer from the interactive canvas.
-Press `Cmd/Ctrl+Shift+S` for a 2400 × 1800 PNG, or save a source-validated recipe;
-see [Figures and recipes](figures-and-recipes.md).
+## Follow a trajectory
 
-## Trajectory
+The timeline provides stepping, playback, scrubbing, and the current frame.
+Its menu holds playback settings, bookmarks, a reference frame, supplied scalar
+plots, displacement vectors, and supported pair-distribution analysis.
+**Track** displays the current atom positions and up to 50 previous frames.
 
-The timeline appears for multi-frame data. It provides first, previous,
-play/pause, next, last, scrubbing, and the current frame. Its menu contains:
+Selections, pins, bookmarks, and references belong to the current workspace.
+Opening another dataset resets them; reloading the browser also clears them.
+Up to eight measurements, twelve bookmarks, and sixteen atom-image selections
+can be tracked at once.
 
-- playback rate, stride, and once, loop, or rock mode
-- frame bookmarks
-- one reference frame
-- supplied scalar-property plots
-- displacement vectors after a reference frame is set
-- pair-distribution and coordination analysis when supported
+Measurement and scalar plots follow the current frame. Pair-distribution and
+coordination plots aggregate frames; see [trajectory analysis](trajectory-analysis.md).
 
-Property and measurement plot cursors follow the displayed frame. Selecting a
-point in those plots navigates back to its frame. Pair-distribution and
-coordination plots aggregate frames and are not linked to one current frame.
+## Search and shortcuts
 
-Start selected-atom trails with **Track** in the selection bar or command search.
-Trails show the current position and up to 50 previous frames. The
-reference-frame menu controls displacement vectors.
-
-Selections, pins, bookmarks, and references belong to the current workspace and
-reset when a new dataset is opened. Up to eight measurements, twelve bookmarks,
-and sixteen atom-image selections can be tracked at once.
-
-## Search and keyboard
-
-The central **Search** control finds atoms, settings, and commands. Press `⌘K`
-on macOS, `Ctrl+K` on Linux and Windows, or `/` on any platform. Type to filter,
-use `↑` and `↓` to move through results, and press `Enter` to open the selected
-setting or run the selected command. Setting results show their path, such as
-**View › Layers › Bonds** or **Edit › Cell › Vectors**, then open collapsed
-sections, scroll the setting into view, and highlight it briefly.
-
-Queries such as `bond across cell`,
-`atom color`, `edit lattice vectors`, `distance`, `rendering quality`, and
-`transparent image` lead to the relevant control. Search also accepts commands
-such as `select within 3 Å of selection`.
+Press `Cmd/Ctrl+K` or `/` to search. Type, use `↑` / `↓`, then `Enter`.
+Settings results show their location, open the inspector, and highlight the
+control. Try `atom color`, `edit lattice vectors`, or `transparent image`.
 
 | Keys | Action |
 | --- | --- |
-| `←` / `→` | Previous or next frame |
-| `Shift` + `←` / `→` | Move ten frames |
-| `Home` / `End` | First or last frame |
-| `Space` | Play or pause |
-| `M` | Bookmark the current frame |
-| `R` | Fit the structure |
-| `1` / `2` / `3` / `4` | Perspective / XY / XZ / YZ |
-| `↑` / `↓`, `Enter` | Browse atoms and toggle selection |
-| `E` / `V` | Edit / View tools |
-| `B` | Toggle lines and ball-and-stick |
-| `C` / `F` / `W` | Toggle cell / forces / water |
-| `Cmd/Ctrl+O` | Open files |
-| `Cmd/Ctrl+Shift+S` | Export a figure |
-| `?` | Shortcut sheet |
-| `Escape` | Close the active surface or clear selection |
+| `←` / `→` | Previous / next frame |
+| `Shift+←` / `Shift+→` | Back / forward ten frames |
+| `Space` | Play / pause |
+| `R` | Fit structure |
+| `1` / `2` / `3` / `4` | 3D / XY / XZ / YZ |
+| `E` / `V` | Edit / View |
+| `C` | Toggle cell |
+| `?` | Full shortcut sheet and optional Vim navigation |
 
-Optional Vim navigation is enabled in the shortcut sheet:
-
-| Keys | Action |
-| --- | --- |
-| `h` / `l` | Previous / next frame |
-| `H` / `L` | Back / forward ten frames |
-| `gg` / `G` | First / last frame |
-| `:` | Search atoms, settings, and commands |
-| `Ctrl+[` | Close the active surface |
-
-Pointer controls remain available when Vim navigation is enabled.
+For exports, see [Figures and recipes](figures-and-recipes.md).
