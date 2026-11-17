@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Reject energy and info files that report more QM atoms than the trajectory has, keeping the current dataset open
+
 ## [0.2.1] - 2026-10-06
 
 ### Changed

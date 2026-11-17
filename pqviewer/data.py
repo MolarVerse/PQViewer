@@ -565,6 +565,7 @@ class PQTrajectoryDataset:
         self._unwrapped_cache_bytes = 0
         self._unwrapped_lock = RLock()
         self._sidecar_series: list[dict[str, Any]] = []
+        self._energy_qm_atoms: tuple[int, float] | None = None
         self._companions: dict[str, _CompanionFile | None] = {}
         self._explicit_companions = {
             key for key, value in requested_companions.items() if value is not None
@@ -681,6 +682,7 @@ class PQTrajectoryDataset:
             system.topology = self._topology
         elif system.n_atoms != self._topology.n_atoms:
             raise ValueError("trajectory topology changed")
+        self._check_energy_atoms(system.n_atoms)
 
         if system.cell.is_vacuum:
             source = span.cell_source
@@ -1360,6 +1362,7 @@ class PQTrajectoryDataset:
 
     def _load_energy_series(self) -> None:
         self._sidecar_series = []
+        self._energy_qm_atoms = None
         if self.energy_path is None:
             return
         if not self._energy_has_data():
@@ -1384,6 +1387,27 @@ class PQTrajectoryDataset:
                     np.asarray(energy.data[column]).reshape(-1),
                     unit,
                 )
+            )
+
+        column = energy.info.get("N(QM-ATOMS)") if energy.info_given else None
+        if column is not None:
+            counts = np.asarray(energy.data[column], dtype=np.float64).reshape(-1)
+            finite = np.where(np.isfinite(counts), counts, -np.inf)
+            if finite.size:
+                row = int(np.argmax(finite))
+                self._energy_qm_atoms = (row, float(finite[row]))
+        self._check_energy_atoms(
+            self._topology.n_atoms if self._topology is not None else None
+        )
+
+    def _check_energy_atoms(self, atom_count: int | None) -> None:
+        if atom_count is None or self._energy_qm_atoms is None:
+            return
+        row, qm_atoms = self._energy_qm_atoms
+        if qm_atoms > atom_count + 1e-6:
+            raise ValueError(
+                f"energy row {row} has {qm_atoms:g} QM atoms; "
+                f"trajectory has {atom_count}"
             )
 
     def _energy_has_data(self) -> bool:
