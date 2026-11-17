@@ -395,10 +395,11 @@ def test_energy_sidecar_preserves_labels_and_units(tmp_path: Path) -> None:
     )
     series = dataset.manifest()["series"]
 
+    # No timestep metadata: PQAnalysis reports the saved step numbers.
     assert series[0] == {
         "name": "simulation_time",
         "label": "SIMULATION-TIME",
-        "unit": "ps",
+        "unit": "step",
         "values": [0.0, 1.0],
     }
     assert series[1] == {

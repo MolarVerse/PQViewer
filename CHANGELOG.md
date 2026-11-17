@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Changed
+
+- Require PQAnalysis 1.9.0, so simulation time without timestep metadata is shown in steps instead of mislabelled as ps
+
 ## [0.2.1] - 2026-10-06
 
 ### Changed
