@@ -411,6 +411,68 @@ def test_energy_sidecar_preserves_labels_and_units(tmp_path: Path) -> None:
     assert dataset.get_frame(1).scalars["e_tot"] == -1.0
 
 
+QM_INFO = """--------------------------------
+| PQ info file |
+--------------------------------
+| SIMULATION-TIME 0.0 ps N(QM-ATOMS) 2.0 - |
+--------------------------------
+
+"""
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ("0 2\n1 2\n", None),
+        ("0 2\n1 21\n", "energy row 1 has 21 QM atoms; trajectory has 2"),
+    ],
+)
+def test_energy_sidecar_validates_qm_atom_count(
+    tmp_path: Path,
+    rows: str,
+    message: str | None,
+) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text(XYZ, encoding="utf-8")
+    energy = tmp_path / "water.en"
+    energy.write_text(rows, encoding="utf-8")
+    info = tmp_path / "water.info"
+    info.write_text(QM_INFO, encoding="utf-8")
+
+    def open_dataset() -> dict:
+        return PQTrajectoryDataset(
+            trajectory,
+            energy_path=energy,
+            info_path=info,
+        ).manifest()
+
+    if message is None:
+        series = open_dataset()["series"]
+        assert series[1]["name"] == "n_qm_atoms"
+        assert series[1]["values"] == [2.0, 2.0]
+    else:
+        with pytest.raises(ValueError, match=message):
+            open_dataset()
+
+
+def test_energy_sidecar_qm_atom_count_waits_for_first_frame(
+    tmp_path: Path,
+) -> None:
+    trajectory = tmp_path / "water.xyz"
+    trajectory.write_text("", encoding="utf-8")
+    energy = tmp_path / "water.en"
+    energy.write_text("0 21\n", encoding="utf-8")
+    info = tmp_path / "water.info"
+    info.write_text(QM_INFO, encoding="utf-8")
+    dataset = PQTrajectoryDataset(trajectory, energy_path=energy, info_path=info)
+
+    assert dataset.manifest()["frame_count"] == 0
+    trajectory.write_text(XYZ, encoding="utf-8")
+    dataset.refresh()
+    with pytest.raises(ValueError, match="has 21 QM atoms; trajectory has 2"):
+        dataset.get_frame(0)
+
+
 def test_empty_file_can_grow_into_extxyz(tmp_path: Path) -> None:
     path = tmp_path / "growing.xyz"
     path.write_text("", encoding="utf-8")

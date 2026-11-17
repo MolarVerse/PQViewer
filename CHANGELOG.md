@@ -9,6 +9,10 @@ user-visible changes.
 
 - Require PQAnalysis 1.9.0, so simulation time without timestep metadata is shown in steps instead of mislabelled as ps
 
+### Fixed
+
+- Reject energy and info files that report more QM atoms than the trajectory has, keeping the current dataset open
+
 ## [0.2.1] - 2026-10-06
 
 ### Changed

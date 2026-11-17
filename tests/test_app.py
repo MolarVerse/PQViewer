@@ -466,6 +466,37 @@ def test_open_upload_keeps_current_dataset_after_validation_error(tmp_path):
         assert application.state.dataset is original
 
 
+def test_open_upload_rejects_energy_file_with_more_qm_atoms(tmp_path):
+    trajectory = tmp_path / "initial.xyz"
+    trajectory.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
+    application = create_app(trajectory)
+    original = application.state.dataset
+    info = (
+        "--------------------------------\n"
+        "| PQ info file |\n"
+        "--------------------------------\n"
+        "| SIMULATION-TIME 0.0 ps N(QM-ATOMS) 21.0 - |\n"
+        "--------------------------------\n"
+    )
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/open",
+            files=[
+                ("files", ("fresh.xyz", "1\n\nH 1 0 0\n", "text/plain")),
+                ("files", ("fresh.en", "1 21\n", "text/plain")),
+                ("files", ("fresh.info", info, "text/plain")),
+            ],
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "energy row 0 has 21 QM atoms; trajectory has 1"
+        )
+        assert application.state.dataset is original
+        assert application.state.upload_temp is None
+
+
 def test_open_upload_keeps_current_dataset_when_candidate_is_invalid(tmp_path):
     trajectory = tmp_path / "initial.xyz"
     trajectory.write_text("1\n\nH 0 0 0\n", encoding="utf-8")
