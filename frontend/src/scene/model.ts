@@ -59,6 +59,7 @@ export interface PreparedScene {
   displayTransform: THREE.Matrix3;
   pbc: Pbc;
   bonds: Array<[number, number]>;
+  metalLinkerBonds?: ReadonlySet<readonly [number, number]>;
   waterAtoms: Set<number>;
   visibleAtoms: number[];
   images: CellOffset[];
@@ -72,6 +73,7 @@ export interface PreparedTopology {
   count: number;
   atomicNumbers: number[];
   bonds: Array<[number, number]>;
+  metalLinkerBonds?: ReadonlySet<readonly [number, number]>;
   waterAtoms: Set<number>;
   moleculeGroups: Array<[number, number[]]>;
 }
@@ -175,6 +177,7 @@ export function prepareScene(
     displayTransform,
     pbc,
     bonds,
+    metalLinkerBonds: topology.metalLinkerBonds,
     waterAtoms,
     visibleAtoms,
     images,
@@ -204,6 +207,7 @@ export function prepareTopology(manifest: Manifest, frame: FrameData | null): Pr
     count,
     atomicNumbers,
     bonds,
+    metalLinkerBonds: identifyMetalLinkerBonds(atomicNumbers, bonds),
     waterAtoms: detectWaterAtoms(manifest, frame, bonds),
     moleculeGroups: moleculeGroups(manifest, count, bonds),
   };
@@ -478,6 +482,32 @@ export function sameFrameGeometryLayout(left: FrameGeometryLayout, right: FrameG
     && left.velocityCount === right.velocityCount;
 }
 
+const metalRanges = [[3, 4], [11, 13], [19, 31], [37, 50], [55, 83], [87, 116]];
+
+function identifyMetalLinkerBonds(numbers: number[], bonds: Array<[number, number]>) {
+  const organicAtoms = new Set<number>();
+  const linkerElements = new Set([6, 7, 8, 15, 16, 34]);
+  for (const [a, b] of bonds) {
+    if (numbers[a] === 6 && linkerElements.has(numbers[b])) organicAtoms.add(b);
+    if (numbers[b] === 6 && linkerElements.has(numbers[a])) organicAtoms.add(a);
+    if (numbers[a] === 6 && numbers[b] === 1) organicAtoms.add(a);
+    if (numbers[b] === 6 && numbers[a] === 1) organicAtoms.add(b);
+  }
+  const isMetal = (atom: number) => metalRanges.some(([min, max]) => (
+    numbers[atom] >= min && numbers[atom] <= max
+  ));
+  return new Set(bonds.filter(([a, b]) => (
+    (isMetal(a) && organicAtoms.has(b)) || (isMetal(b) && organicAtoms.has(a))
+  )));
+}
+
+export function displayedBondPairs(model: PreparedScene, presentation: ScenePresentation) {
+  const hidden = model.metalLinkerBonds;
+  return presentation.metalLinkerBonds || !hidden?.size
+    ? model.bonds
+    : model.bonds.filter((bond) => !hidden.has(bond));
+}
+
 export function sceneBondSegments(
   model: PreparedScene,
   presentation: ScenePresentation,
@@ -492,9 +522,10 @@ export function sceneBondSegments(
   const periodicCoordinates = presentation.wrap === "atom" || presentation.wrap === "unwrapped";
   const includedImages = new Set(model.images.map(cellOffsetKey));
   const segments: Segment[] = [];
+  const bonds = displayedBondPairs(model, presentation);
   for (const image of model.images) {
     const shift = imageTranslation(image, model.basis);
-    for (const [a, b] of model.bonds) {
+    for (const [a, b] of bonds) {
       if (!visible.has(a) || !visible.has(b)) continue;
       if (periodicCoordinates) {
         const bondShift = minimumImageBondShift(
@@ -554,7 +585,7 @@ export function publicationBondGeometry(
   const includedImages = new Set(model.images.map(cellOffsetKey));
   const contextAtoms = new Map<string, PublicationContextAtom>();
   const segments = new Map<string, PublicationBondSegment>();
-  const bonds = model.bonds
+  const bonds = displayedBondPairs(model, presentation)
     .filter(([a, b]) => visible.has(a) && visible.has(b))
     .map(([a, b]) => ({
       a,
