@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Changed
+
+- Show PQ atom velocities in Å/fs and include declared time units next to trajectory frames
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed

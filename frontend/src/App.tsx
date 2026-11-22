@@ -5229,6 +5229,7 @@ function Inspector({
   const symbol = atom !== null ? atomSymbol(manifest, atom) : null;
   const forceUnit = arrayUnit(frame, manifest, "forces");
   const velocityUnit = arrayUnit(frame, manifest, "velocities");
+  const velocityInSeconds = velocityUnit === "Å/s";
   const chargeUnit = arrayUnit(frame, manifest, "charges");
   const residueIndex = atom === null ? -1 : manifest.topology.atom_residue_index?.[atom] ?? -1;
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
@@ -5265,7 +5266,8 @@ function Inspector({
         />
       )}
       {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} unit={forceUnit} />}
-      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3} unit={velocityUnit} />}
+      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3}
+        unit={velocityInSeconds ? "Å/fs" : velocityUnit} scale={velocityInSeconds ? 1e-15 : 1} />}
       {charges && charges[atom] !== undefined && <Readout label="Charge" value={withUnit(formatNumber(charges[atom]), chargeUnit)} />}
       </section>
     </>}
@@ -5488,7 +5490,7 @@ function Timeline({
             <span className="frame-counter-full">{frameLabel}</span>
             <span className="frame-counter-compact" aria-hidden="true">{compactFrameLabel}</span>
           </output>}
-        {metadata && <span className="frame-metadata">{metadata}</span>}
+        {metadata && <span className="frame-metadata" title={metadata}>{metadata}</span>}
         {frameError && <span className="frame-error" title={frameError} aria-label="Frame unavailable">
           <span className="frame-error-full">Frame error</span>
           <span className="frame-error-compact" aria-hidden="true">Error</span>
@@ -5576,7 +5578,8 @@ export function frameMetadata(frame: FrameData | null): string {
   const stepValue = numericFrameMetadata(frame, "step");
   const timeValue = numericFrameMetadata(frame, "time");
   const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
-  const time = timeValue === null ? "" : `t ${formatNumber(timeValue)}`;
+  const timeUnit = displayUnit(frame?.header.frame_key?.time_unit ?? frame?.header.scalar_units?.time);
+  const time = timeValue === null ? "" : `t ${withUnit(formatNumber(timeValue), timeUnit)}`;
   return [step, time].filter(Boolean).join(" · ");
 }
 
@@ -5852,7 +5855,7 @@ function selectedPosition(positions: Float64Array | null, index: number): Float6
 function numericFrameMetadata(frame: FrameData | null, key: "step" | "time"): number | null {
   const primary = frame?.header[key];
   if (typeof primary === "number" && Number.isFinite(primary)) return primary;
-  const scalar = frame?.header.scalars?.[key];
+  const scalar = frame?.header.scalars?.[key] ?? frame?.header.frame_key?.[key];
   return typeof scalar === "number" && Number.isFinite(scalar) ? scalar : null;
 }
 
@@ -5861,14 +5864,14 @@ function Readout({ label, value }: { label: string; value: string }) {
   return <div className="readout"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function VectorReadout({ label, values, offset, unit }: { label: string; values: ArrayLike<number>; offset: number; unit?: string }) {
+function VectorReadout({ label, values, offset, unit, scale = 1 }: { label: string; values: ArrayLike<number>; offset: number; unit?: string; scale?: number }) {
   return (
     <div className="vector-readout">
       <span>{label}</span>
       <code>
-        <i>x</i>{formatNumber(values[offset])}
-        <i>y</i>{formatNumber(values[offset + 1])}
-        <i>z</i>{formatNumber(values[offset + 2])}
+        <i>x</i>{formatNumber(values[offset] * scale)}
+        <i>y</i>{formatNumber(values[offset + 1] * scale)}
+        <i>z</i>{formatNumber(values[offset + 2] * scale)}
         {unit && <b>{unit}</b>}
       </code>
     </div>
