@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep camera controls clear of the inspector in landscape and wrap formulas between elements
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed

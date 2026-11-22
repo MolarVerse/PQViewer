@@ -2137,3 +2137,22 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("keeps camera and timeline controls outside the inspector", async ({ page }) => {
+  for (const [width, height] of [[1280, 800], [660, 420]]) {
+    await page.setViewportSize({ width, height });
+    await openPeriodicFixture(page);
+    await page.keyboard.press("v");
+    await expect(page.locator("#workbench")).toBeVisible();
+    await expect.poll(async () => {
+      const inspector = (await page.locator("#workbench").boundingBox())!;
+      const camera = (await page.getByRole("toolbar", { name: "Camera controls" }).boundingBox())!;
+      return camera.x + camera.width - inspector.x;
+    }).toBeLessThanOrEqual(1);
+    await expect.poll(async () => {
+      const inspector = (await page.locator("#workbench").boundingBox())!;
+      const counter = (await page.locator(".frame-counter").boundingBox())!;
+      return counter.x + counter.width <= inspector.x + 1 || counter.y >= inspector.y + inspector.height - 1;
+    }).toBe(true);
+  }
+});
