@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Select annotated protein and monatomic ion groups from command search and explain which files support ribbons
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed

@@ -2137,3 +2137,12 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("selects annotated protein from command search", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await openFixture(page, proteinFixture, "1CRN.pdb");
+  await page.getByRole("button", { name: "Search atoms, settings, and commands" }).click();
+  await page.getByRole("combobox").fill("select protein");
+  await page.getByRole("option", { name: "Select protein" }).click();
+  await expect(page.locator(".selection-readout strong")).toContainText("atoms");
+});
