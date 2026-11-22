@@ -815,9 +815,14 @@ test("links frame marks, atom tracking, and PQAnalysis pair plots", async ({ pag
     name: /Pair distribution .* trajectory plot/,
   });
   await expect(rdfPlot).toBeVisible();
+  const radius = rdfPlot.getByRole("slider", { name: /radius$/ });
+  await radius.press("End");
+  await expect(radius).toHaveAttribute("aria-valuetext", /Radius .*Å; g\(r\) /);
+  await radius.hover({ position: { x: 60, y: 36 } });
+  await expect(radius).toHaveAttribute("aria-valuenow", "0");
   await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("2 frames");
   await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("Δr");
-  await expect(rdfPlot.getByRole("img", { name: /Pair distribution/ })).toBeVisible();
+  await expect(rdfPlot.getByRole("slider", { name: /Pair distribution.*radius/ })).toBeVisible();
   await rdfPlot.getByRole("button", { name: "N(r)", exact: true }).click();
   const coordinationPlot = page.getByRole("region", {
     name: /Coordination .* trajectory plot/,
