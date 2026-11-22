@@ -2137,3 +2137,37 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("adds an atom with Shift-click without starting a selection box", async ({ page }) => {
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "pick.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from("2\nPicking fixture\nO -1 0 0\nCl 1 0 0\n"),
+  });
+  const scene = page.locator(".molecule-canvas");
+  await expect(scene).toHaveAttribute("data-rendered-manifest", "pick.xyz");
+  await page.getByRole("button", { name: "XY", exact: true }).click();
+  for (const channel of [0, 1]) {
+    await expect.poll(async () => Math.round((await scene.boundingBox())!.width)).toBe(channel === 0 ? 1280 : 976);
+    const pixels = PNG.sync.read(await sceneScreenshot(page, scene));
+    const bounds = (await scene.boundingBox())!;
+    let count = 0;
+    let x = 0;
+    let y = 0;
+    for (let index = 0; index < pixels.width * pixels.height; index += 1) {
+      const [r, g, b] = pixels.data.subarray(index * 4, index * 4 + 3);
+      if (!(channel === 0 ? r > g * 1.4 && r > b * 1.4 : g > r * 1.35 && g > b * 1.35)) continue;
+      count += 1;
+      x += index % pixels.width;
+      y += Math.floor(index / pixels.width);
+    }
+    expect(count).toBeGreaterThan(10);
+    if (channel === 1) await page.keyboard.down("Shift");
+    await page.mouse.click(Math.floor(bounds.x) + x / count, Math.floor(bounds.y) + y / count);
+    if (channel === 1) await page.keyboard.up("Shift");
+  }
+  await expect(page.locator(".selection-readout")).toContainText("Distance");
+});

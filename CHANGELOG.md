@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Make small atoms easier to pick, show a clearer selection marker, and distinguish Shift-click from box selection
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
