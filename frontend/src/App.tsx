@@ -6034,11 +6034,14 @@ export function selectedProfilePresentation(
   capabilities: SceneCapabilities,
 ): ScenePresentation {
   const resolved = selectedProfile === "auto"
-    ? cellAvailable && capabilities.water
+    ? cellAvailable && capabilities.water && !capabilities.ribbon
       ? "liquid"
       : autoProfile(capabilities, forceAvailable, hasSeries)
     : selectedProfile;
-  return profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  const view = profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  return selectedProfile === "auto" && resolved === "mof"
+    ? { ...view, mode: "ball-stick", atomScale: 1, bondScale: 1 }
+    : view;
 }
 
 export function profilePresentation(

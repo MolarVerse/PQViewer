@@ -880,9 +880,12 @@ test("does not leak crystal display onto a periodic framework", async ({ page })
     { timeout: 30_000 },
   );
 
+  await openFixture(page, path.join(repositoryRoot, "docs/assets/sources/nacl.extxyz"), "nacl.extxyz");
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute("data-representation", "ball-stick");
+
   await openFixture(page, acofFixture, "acof-triclinic.xyz");
   const canvas = page.locator(".molecule-canvas");
-  await expect(canvas).toHaveAttribute("data-representation", "lines");
+  await expect(canvas).toHaveAttribute("data-representation", "ball-stick");
   await expect.poll(
     async () => Number(await canvas.getAttribute("data-bond-count")),
   ).toBeGreaterThan(0);
@@ -890,7 +893,7 @@ test("does not leak crystal display onto a periodic framework", async ({ page })
     name: "View",
     exact: true,
   }).click();
-  await expect(page.getByRole("button", { name: "Lines", exact: true }))
+  await expect(page.getByRole("button", { name: "Ball + stick", exact: true }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("switch", { name: "Bonds" }))
     .toHaveAttribute("aria-checked", "true");

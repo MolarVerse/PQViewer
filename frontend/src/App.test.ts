@@ -255,7 +255,7 @@ describe("scene profiles", () => {
       false,
       capabilities,
     )).toMatchObject({
-      mode: "lines",
+      mode: "ball-stick",
       bonds: true,
       wrap: "atom",
       cell: true,
