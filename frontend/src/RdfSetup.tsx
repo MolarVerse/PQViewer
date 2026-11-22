@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 export const MAX_RDF_FRAMES = 10_000;
+const MAX_RDF_PAIR_EVALUATIONS = 50_000_000;
+
+function rdfFrameBudget(reference: AnalysisSelectionOption, target: AnalysisSelectionOption): number {
+  const pairs = reference.atomIndices.length * target.atomIndices.length;
+  return Math.min(MAX_RDF_FRAMES, Math.floor(MAX_RDF_PAIR_EVALUATIONS / Math.max(1, pairs)));
+}
 
 export interface AnalysisSelectionOption {
   id: string;
@@ -65,7 +71,10 @@ export function RdfSetup({
     return () => cancelAnimationFrame(animation);
   }, [open]);
 
-  const allFrameStep = Math.max(1, Math.ceil(frameCount / MAX_RDF_FRAMES));
+  const reference = optionById(options, referenceId);
+  const target = optionById(options, targetId);
+  const budget = reference && target ? rdfFrameBudget(reference, target) : MAX_RDF_FRAMES;
+  const allFrameStep = Math.max(1, Math.ceil(frameCount / Math.max(1, budget)));
   const sampledFrameCount = Math.ceil(frameCount / allFrameStep);
   const frameChoices = useMemo(() => [
     {
@@ -74,17 +83,16 @@ export function RdfSetup({
         ? `All · ${frameCount.toLocaleString()}`
         : `All · ${sampledFrameCount.toLocaleString()} sampled`,
     },
-    ...(frameCount > 100 ? [{ value: "last-100", label: "Last 100" }] : []),
-    ...(frameCount > 1_000 ? [{ value: "last-1000", label: "Last 1,000" }] : []),
-  ], [allFrameStep, frameCount, sampledFrameCount]);
+    ...(frameCount > 100 ? [{ value: "last-100", label: budget < 100 ? "Last 100 · sampled" : "Last 100" }] : []),
+    ...(frameCount > 1_000 ? [{ value: "last-1000", label: budget < 1_000 ? "Last 1,000 · sampled" : "Last 1,000" }] : []),
+  ], [allFrameStep, budget, frameCount, sampledFrameCount]);
   if (!open) return null;
-  const reference = optionById(options, referenceId);
-  const target = optionById(options, targetId);
   const parsedBins = Number(bins);
   const parsedRMax = rMax.trim() ? Number(rMax) : undefined;
   const valid = Boolean(
     reference
     && target
+    && budget > 0
     && Number.isSafeInteger(parsedBins)
     && parsedBins >= 20
     && parsedBins <= 2_000
@@ -196,9 +204,8 @@ export function buildRdfSetupValue({
   const requested = frames === "last-100"
     ? 100
     : frames === "last-1000" ? 1_000 : frameCount;
-  const frameStep = frames === "all"
-    ? Math.max(1, Math.ceil(frameCount / MAX_RDF_FRAMES))
-    : 1;
+  const budget = rdfFrameBudget(reference, target);
+  const frameStep = Math.max(1, Math.ceil(Math.min(requested, frameCount) / Math.max(1, budget)));
   return {
     reference,
     target,

@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Show when RDF frame sampling is needed to stay within the pair-count limit
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
