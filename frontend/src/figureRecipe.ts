@@ -418,6 +418,7 @@ function parsePresentation(value: unknown): ScenePresentation {
     "images",
     "cell",
     "bonds",
+    "metalLinkerBonds",
     "forces",
     "velocities",
     "atomScale",
@@ -456,6 +457,9 @@ function parsePresentation(value: unknown): ScenePresentation {
     bonds: presentation.bonds === undefined
       ? true
       : boolean(presentation.bonds, "Figure presentation bonds"),
+    metalLinkerBonds: presentation.metalLinkerBonds === undefined
+      ? true
+      : boolean(presentation.metalLinkerBonds, "Figure presentation metal–linker bonds"),
     forces: boolean(presentation.forces, "Figure presentation forces"),
     velocities: boolean(presentation.velocities, "Figure presentation velocities"),
     atomScale: positiveNumber(presentation.atomScale, "Figure presentation atomScale"),

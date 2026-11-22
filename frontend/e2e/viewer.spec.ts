@@ -2207,3 +2207,25 @@ test("keeps a many-element key compact and opens the full list", async ({ page }
   await expect(page.locator("#workbench").getByRole("list", { name: "Visible element colors" })
     .getByRole("listitem")).toHaveCount(9);
 });
+
+test("keeps organic and metal clusters visible while metal–linker rods are off", async ({ page }) => {
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "metal-linker.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from("4\nMetal-linker fixture\nZn 0 0 0\nZn -2.4 0 0\nN 2 0 0\nC 3.4 0 0\n"),
+  });
+  const scene = page.locator(".molecule-canvas");
+  await expect(scene).toHaveAttribute("data-rendered-manifest", "metal-linker.xyz");
+  await expect(scene).toHaveAttribute("data-atom-count", "4");
+  await expect(scene).toHaveAttribute("data-bond-count", "2");
+  await page.keyboard.press("v");
+  const toggle = page.getByRole("switch", { name: "Metal–linker bonds" });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(scene).toHaveAttribute("data-bond-count", "3");
+  await toggle.click();
+  await expect(scene).toHaveAttribute("data-bond-count", "2");
+});

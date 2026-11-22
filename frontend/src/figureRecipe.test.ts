@@ -57,6 +57,7 @@ function completeRecipe(): FigureRecipe {
         images: { min: [-1, 0, -2], max: [1, 0, 2] },
         cell: true,
         bonds: true,
+        metalLinkerBonds: false,
         forces: true,
         velocities: true,
         atomScale: 1.2,

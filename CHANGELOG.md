@@ -14,6 +14,7 @@ user-visible changes.
 
 ### Changed
 
+- Hide metal–linker bonds by default; turn them on in View → Layers
 - Show PQ atom velocities in Å/fs and include declared time units next to trajectory frames
 - Start alkali halides and frameworks in an atom-based view and favor protein ribbons over solvent presets
 

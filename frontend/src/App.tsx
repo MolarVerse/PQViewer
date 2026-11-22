@@ -222,6 +222,7 @@ const defaultFigureOutput: FigureOutput = {
 };
 
 const defaultPresentation: ScenePresentation = {
+  metalLinkerBonds: false,
   mode: "ball-stick",
   water: "show",
   hydrogens: true,
@@ -3511,6 +3512,7 @@ export default function App() {
             {workbenchTab === "view" && <ScenePanel
               presentation={presentation}
               capabilities={capabilities}
+              hasMetalLinkerBonds={Boolean(sceneTopology?.value?.metalLinkerBonds?.size)}
               cellAvailable={cellAvailable}
               forceAvailable={forceAvailable}
               velocityAvailable={velocityAvailable}
@@ -4404,6 +4406,7 @@ function CellEditor({
 function ScenePanel({
   presentation,
   capabilities,
+  hasMetalLinkerBonds,
   cellAvailable,
   forceAvailable,
   velocityAvailable,
@@ -4425,6 +4428,7 @@ function ScenePanel({
 }: {
   presentation: ScenePresentation;
   capabilities: SceneCapabilities;
+  hasMetalLinkerBonds: boolean;
   cellAvailable: boolean;
   forceAvailable: boolean;
   velocityAvailable: boolean;
@@ -4581,6 +4585,11 @@ function ScenePanel({
           title={bondCapable ? undefined : "Not used by the current representation"}
           onChange={(bonds) => onPresentation({ bonds })}
         />
+        {hasMetalLinkerBonds && bondCapable && presentation.bonds && <Toggle
+          label="Metal–linker bonds"
+          checked={Boolean(presentation.metalLinkerBonds)}
+          onChange={(metalLinkerBonds) => onPresentation({ metalLinkerBonds })}
+        />}
         {capabilities.water && <Toggle label="Water" checked={presentation.water !== "hide"} onChange={(shown) => onPresentation({ water: shown ? "show" : "hide" })} />}
         {cellAvailable && <Toggle label="Cell" checked={presentation.cell} onChange={(cell) => onPresentation({ cell })} />}
         {forceAvailable && <Toggle label="Forces" checked={presentation.forces} onChange={(forces) => onPresentation({ forces })} />}
