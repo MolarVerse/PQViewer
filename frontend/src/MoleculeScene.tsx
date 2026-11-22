@@ -434,6 +434,12 @@ function buildSceneCapabilities(
   polyhedra: boolean,
   periodic: boolean,
 ): SceneCapabilities {
+  const alkalis = new Set(["Li", "Na", "K", "Rb", "Cs"]);
+  const halogens = new Set(["F", "Cl", "Br", "I"]);
+  const elements = new Set(manifest.topology.symbols);
+  const alkaliHalide = elements.size === 2
+    && [...elements].some((symbol) => alkalis.has(symbol))
+    && [...elements].some((symbol) => halogens.has(symbol));
   let ribbonReason = "Backbone available";
   if (!ribbon) {
     ribbonReason = manifest.topology.residues?.length && manifest.topology.atom_names?.length
@@ -450,11 +456,13 @@ function buildSceneCapabilities(
       : POLYHEDRA_REQUIREMENT,
     suggestedProfile: ribbon
       ? "protein"
-      : polyhedra
-        ? "crystal"
-        : periodic && !water && manifest.topology.atom_count >= MIN_AUTO_MOF_ATOMS
-          ? "mof"
-          : "molecule",
+      : alkaliHalide
+        ? "molecule"
+        : polyhedra
+          ? "crystal"
+          : periodic && !water && manifest.topology.atom_count >= MIN_AUTO_MOF_ATOMS
+            ? "mof"
+            : "molecule",
   };
 }
 

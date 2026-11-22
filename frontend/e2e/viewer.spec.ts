@@ -815,9 +815,14 @@ test("links frame marks, atom tracking, and PQAnalysis pair plots", async ({ pag
     name: /Pair distribution .* trajectory plot/,
   });
   await expect(rdfPlot).toBeVisible();
+  const radius = rdfPlot.getByRole("slider", { name: /radius$/ });
+  await radius.press("End");
+  await expect(radius).toHaveAttribute("aria-valuetext", /Radius .*Å; g\(r\) /);
+  await radius.hover({ position: { x: 60, y: 36 } });
+  await expect(radius).toHaveAttribute("aria-valuenow", "0");
   await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("2 frames");
   await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("Δr");
-  await expect(rdfPlot.getByRole("img", { name: /Pair distribution/ })).toBeVisible();
+  await expect(rdfPlot.getByRole("slider", { name: /Pair distribution.*radius/ })).toBeVisible();
   await rdfPlot.getByRole("button", { name: "N(r)", exact: true }).click();
   const coordinationPlot = page.getByRole("region", {
     name: /Coordination .* trajectory plot/,
@@ -880,9 +885,12 @@ test("does not leak crystal display onto a periodic framework", async ({ page })
     { timeout: 30_000 },
   );
 
+  await openFixture(page, path.join(repositoryRoot, "docs/assets/sources/nacl.extxyz"), "nacl.extxyz");
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute("data-representation", "ball-stick");
+
   await openFixture(page, acofFixture, "acof-triclinic.xyz");
   const canvas = page.locator(".molecule-canvas");
-  await expect(canvas).toHaveAttribute("data-representation", "lines");
+  await expect(canvas).toHaveAttribute("data-representation", "ball-stick");
   await expect.poll(
     async () => Number(await canvas.getAttribute("data-bond-count")),
   ).toBeGreaterThan(0);
@@ -890,7 +898,7 @@ test("does not leak crystal display onto a periodic framework", async ({ page })
     name: "View",
     exact: true,
   }).click();
-  await expect(page.getByRole("button", { name: "Lines", exact: true }))
+  await expect(page.getByRole("button", { name: "Ball + stick", exact: true }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("switch", { name: "Bonds" }))
     .toHaveAttribute("aria-checked", "true");
@@ -2136,6 +2144,20 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
     panelBox!.y + panelBox!.height,
   );
   expect(errors).toEqual([]);
+});
+
+test("changes only the displayed timeline time unit", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await page.getByRole("button", { name: "Next frame" }).click();
+  const metadata = page.locator(".frame-metadata");
+  await expect(metadata).toHaveText("step 10 · t 0.5 fs");
+  await page.locator('summary[aria-label="Playback options"]').click();
+  const selector = page.getByLabel("Time unit", { exact: true });
+  await selector.selectOption("ps");
+  await expect(metadata).toHaveText("step 10 · t 5.000e-4 ps");
+  await expect(page.locator(".frame-counter")).toHaveAttribute("aria-label", "Frame 2 of 2");
+  await selector.selectOption("source");
+  await expect(metadata).toHaveText("step 10 · t 0.5 fs");
 });
 
 test("selects annotated protein from command search", async ({ page }) => {
