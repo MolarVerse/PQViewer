@@ -2137,3 +2137,16 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("shows first steps and keyboard shortcuts on desktop and narrow screens", async ({ page }) => {
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto("/");
+    await page.getByRole("button", { name: "Help and keyboard shortcuts" }).click();
+    const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await expect(help.getByRole("heading", { name: "First steps" })).toBeVisible();
+    await expect(help.getByRole("link", { name: "Read the viewer guide" })).toBeVisible();
+    await expect(help.getByRole("heading", { name: "Keyboard shortcuts" })).toBeVisible();
+    expect(await help.evaluate((panel) => panel.scrollWidth - panel.clientWidth)).toBeLessThanOrEqual(1);
+  }
+});

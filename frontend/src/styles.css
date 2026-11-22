@@ -1386,6 +1386,32 @@ input[type="range"]::-moz-range-thumb {
   font-size: 10px;
 }
 
+.viewer-first-steps {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.viewer-first-steps h3,
+.viewer-shortcut-title {
+  margin: 0;
+  font-size: 13px;
+}
+
+.viewer-shortcut-title {
+  padding: 12px 18px 0;
+}
+
+.viewer-first-steps ol {
+  padding-left: 1.5em;
+}
+
+.viewer-first-steps a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 .shortcut-groups {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 13.5em), 1fr));

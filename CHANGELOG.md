@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Add first steps and a guide link to the viewer help, alongside keyboard shortcuts
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed

@@ -162,9 +162,23 @@ export function ShortcutSheet({
   return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
     <section ref={panelRef} className="shortcut-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabIndex={-1}>
       <div className="shortcut-heading">
-        <div><strong>Keyboard shortcuts</strong><span>Everything remains available with the mouse.</span></div>
+        <div><strong>Viewer help</strong></div>
         <button className="icon-button" type="button" onClick={onClose} aria-label="Close keyboard shortcuts"><Icon name="close" /></button>
       </div>
+      <section className="viewer-first-steps" aria-labelledby="viewer-first-steps">
+        <h3 id="viewer-first-steps">First steps</h3>
+        <ol>
+          <li>Choose Open or drop a structure or trajectory into the viewer.</li>
+          <li>Drag to rotate, scroll to zoom, and click an atom to inspect it.</li>
+          <li>Open Analyze to measure distances, angles, or dihedrals.</li>
+        </ol>
+        <p>PQ-centred shows periodic positions within a cell centred on the origin.
+          It changes the view, not the saved coordinates.</p>
+        <a href="https://molarverse.github.io/PQViewer/viewer-guide.html" target="_blank" rel="noreferrer">
+          Read the viewer guide
+        </a>
+      </section>
+      <h3 className="viewer-shortcut-title">Keyboard shortcuts</h3>
       <div className="shortcut-groups">
         {groups.map((group) => <section key={group.title}>
           <h3>{group.title}</h3>
