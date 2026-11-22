@@ -638,6 +638,35 @@ def open_run_dataset(
             frame_slice=selected_slice,
             provenance={"kind": "pq-run-input", "path": str(path)},
         )
+    if path.suffix.lower() == ".rst":
+        from ase import Atoms, units
+        from ase.calculators.singlepoint import SinglePointCalculator
+        from PQAnalysis.io.restart_file import RestartFileReader
+        from .ase_adapter import ASEFrameSource
+
+        moldescriptor = overrides["moldescriptor"]
+        system = RestartFileReader(
+            str(path),
+            moldescriptor_filename=str(moldescriptor) if moldescriptor else None,
+        ).read()
+        periodic = not system.cell.is_vacuum
+        atoms = Atoms(
+            numbers=[atom.atomic_number for atom in system.topology.atoms],
+            positions=system.pos,
+            cell=system.cell.box_matrix.T if periodic else None,
+            pbc=periodic,
+        )
+        if system.has_vel:
+            atoms.set_velocities(system.vel * (1e-15 / units.fs))
+        if system.has_forces:
+            atoms.calc = SinglePointCalculator(atoms, forces=system.forces * units.kcal / units.mol)
+        restart = ASEFrameSource(atoms, name=path.name)
+        return RunDataset(
+            [SourceSegment(str(path), restart, "pq-restart", path=path)],
+            name=path.name,
+            frame_slice=selected_slice,
+            provenance={"kind": "pq-restart", "path": str(path)},
+        )
     if _is_xyz(path) and not _is_ase_extxyz(path, overrides):
         files = _discovered_pq_files(path)
         files.update({key: value for key, value in overrides.items() if value})

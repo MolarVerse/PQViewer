@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Open PQ restart files as a single frame from the CLI or browser
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
