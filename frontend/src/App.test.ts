@@ -351,6 +351,13 @@ describe("view control availability", () => {
 });
 
 describe("frame metadata", () => {
+  it("shows the declared unit without assuming that unknown time is in ps", () => {
+    const frame = frameWithHeader({
+      frame_key: { source_id: "trajectory", source_index: 1, segment_index: 0, step: 40, time: 1.25, time_unit: "ps" },
+    });
+    expect(frameMetadata(frame)).toBe("step 40 · t 1.25 ps");
+  });
+
   it("reads canonical header values without dropping scalar compatibility", () => {
     const frame = frameWithHeader({
       step: 40,
