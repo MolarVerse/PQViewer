@@ -5229,6 +5229,7 @@ function Inspector({
   const symbol = atom !== null ? atomSymbol(manifest, atom) : null;
   const forceUnit = arrayUnit(frame, manifest, "forces");
   const velocityUnit = arrayUnit(frame, manifest, "velocities");
+  const velocityInSeconds = velocityUnit === "Å/s";
   const chargeUnit = arrayUnit(frame, manifest, "charges");
   const residueIndex = atom === null ? -1 : manifest.topology.atom_residue_index?.[atom] ?? -1;
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
@@ -5265,7 +5266,8 @@ function Inspector({
         />
       )}
       {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} unit={forceUnit} />}
-      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3} unit={velocityUnit} />}
+      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3}
+        unit={velocityInSeconds ? "Å/fs" : velocityUnit} scale={velocityInSeconds ? 1e-15 : 1} />}
       {charges && charges[atom] !== undefined && <Readout label="Charge" value={withUnit(formatNumber(charges[atom]), chargeUnit)} />}
       </section>
     </>}
@@ -5348,6 +5350,18 @@ function AtomEditor({
   </form>;
 }
 
+const timeDisplayUnits = ["source", "fs", "ps", "ns"] as const;
+type TimeDisplayUnit = typeof timeDisplayUnits[number];
+
+const secondsPerUnit = new Map([
+  ["s", 1], ["ms", 1e-3], ["µs", 1e-6], ["us", 1e-6],
+  ["ns", 1e-9], ["ps", 1e-12], ["fs", 1e-15],
+]);
+
+function frameTimeUnit(frame: FrameData | null): string | undefined {
+  return displayUnit(frame?.header.frame_key?.time_unit ?? frame?.header.scalar_units?.time)?.trim();
+}
+
 function Timeline({
   busy,
   frameCount,
@@ -5423,7 +5437,11 @@ function Timeline({
   const compactFrameLabel = displayedFrameIndex === frameIndex
     ? `${compactFrameNumber(displayedFrameIndex + 1)} / ${compactFrameNumber(frameCount)}`
     : `${compactFrameNumber(displayedFrameIndex + 1)} → ${compactFrameNumber(frameIndex + 1)}`;
-  const metadata = frameMetadata(frame);
+  const [timeDisplayUnit, setTimeDisplayUnit] = useState<TimeDisplayUnit>("source");
+  const timeUnit = frameTimeUnit(frame);
+  const canConvertTime = timeUnit !== undefined && secondsPerUnit.has(timeUnit)
+    && numericFrameMetadata(frame, "time") !== null;
+  const metadata = frameMetadata(frame, timeDisplayUnit);
 
   return (
     <section className={`timeline is-compact${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
@@ -5488,7 +5506,7 @@ function Timeline({
             <span className="frame-counter-full">{frameLabel}</span>
             <span className="frame-counter-compact" aria-hidden="true">{compactFrameLabel}</span>
           </output>}
-        {metadata && <span className="frame-metadata">{metadata}</span>}
+        {metadata && <span className="frame-metadata" title={metadata}>{metadata}</span>}
         {frameError && <span className="frame-error" title={frameError} aria-label="Frame unavailable">
           <span className="frame-error-full">Frame error</span>
           <span className="frame-error-compact" aria-hidden="true">Error</span>
@@ -5552,6 +5570,16 @@ function Timeline({
             <label><span>Stride</span><select value={stride} onChange={(event) => onStride(Number(event.target.value))}>
               {[1, 2, 5, 10].map((value) => <option key={value} value={value}>{value} frame{value === 1 ? "" : "s"}</option>)}
             </select></label>
+            {canConvertTime && <label><span>Time unit</span>
+              <select aria-label="Time unit" value={timeDisplayUnit} onChange={(event) => {
+                const unit = timeDisplayUnits.find((value) => value === event.target.value);
+                if (unit) setTimeDisplayUnit(unit);
+              }}>
+                {timeDisplayUnits.map((unit) => <option key={unit} value={unit}>
+                  {unit === "source" ? `Source (${timeUnit})` : unit}
+                </option>)}
+              </select>
+            </label>}
             <div className="segmented-options">
               {([
                 ["once", "Once"],
@@ -5572,11 +5600,24 @@ function Timeline({
   );
 }
 
-export function frameMetadata(frame: FrameData | null): string {
+export function frameMetadata(frame: FrameData | null, displayTimeUnit: TimeDisplayUnit = "source"): string {
   const stepValue = numericFrameMetadata(frame, "step");
   const timeValue = numericFrameMetadata(frame, "time");
   const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
-  const time = timeValue === null ? "" : `t ${formatNumber(timeValue)}`;
+  let timeUnit = frameTimeUnit(frame);
+  let displayedTime = timeValue;
+  if (timeValue !== null && timeUnit && displayTimeUnit !== "source" && displayTimeUnit !== timeUnit) {
+    const sourceScale = secondsPerUnit.get(timeUnit);
+    const targetScale = secondsPerUnit.get(displayTimeUnit);
+    if (sourceScale && targetScale) {
+      const converted = timeValue * (sourceScale / targetScale);
+      if (Number.isFinite(converted)) {
+        displayedTime = converted;
+        timeUnit = displayTimeUnit;
+      }
+    }
+  }
+  const time = displayedTime === null ? "" : `t ${withUnit(formatNumber(displayedTime), timeUnit)}`;
   return [step, time].filter(Boolean).join(" · ");
 }
 
@@ -5852,7 +5893,7 @@ function selectedPosition(positions: Float64Array | null, index: number): Float6
 function numericFrameMetadata(frame: FrameData | null, key: "step" | "time"): number | null {
   const primary = frame?.header[key];
   if (typeof primary === "number" && Number.isFinite(primary)) return primary;
-  const scalar = frame?.header.scalars?.[key];
+  const scalar = frame?.header.scalars?.[key] ?? frame?.header.frame_key?.[key];
   return typeof scalar === "number" && Number.isFinite(scalar) ? scalar : null;
 }
 
@@ -5861,14 +5902,14 @@ function Readout({ label, value }: { label: string; value: string }) {
   return <div className="readout"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function VectorReadout({ label, values, offset, unit }: { label: string; values: ArrayLike<number>; offset: number; unit?: string }) {
+function VectorReadout({ label, values, offset, unit, scale = 1 }: { label: string; values: ArrayLike<number>; offset: number; unit?: string; scale?: number }) {
   return (
     <div className="vector-readout">
       <span>{label}</span>
       <code>
-        <i>x</i>{formatNumber(values[offset])}
-        <i>y</i>{formatNumber(values[offset + 1])}
-        <i>z</i>{formatNumber(values[offset + 2])}
+        <i>x</i>{formatNumber(values[offset] * scale)}
+        <i>y</i>{formatNumber(values[offset + 1] * scale)}
+        <i>z</i>{formatNumber(values[offset + 2] * scale)}
         {unit && <b>{unit}</b>}
       </code>
     </div>
@@ -6034,11 +6075,14 @@ export function selectedProfilePresentation(
   capabilities: SceneCapabilities,
 ): ScenePresentation {
   const resolved = selectedProfile === "auto"
-    ? cellAvailable && capabilities.water
+    ? cellAvailable && capabilities.water && !capabilities.ribbon
       ? "liquid"
       : autoProfile(capabilities, forceAvailable, hasSeries)
     : selectedProfile;
-  return profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  const view = profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  return selectedProfile === "auto" && resolved === "mof"
+    ? { ...view, mode: "ball-stick", atomScale: 1, bondScale: 1 }
+    : view;
 }
 
 export function profilePresentation(
