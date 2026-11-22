@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Inspect sampled distance and values in RDF and coordination plots using the pointer or keyboard
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
