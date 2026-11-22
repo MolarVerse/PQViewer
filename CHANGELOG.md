@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Choose source units, fs, ps, or ns for the timeline when the trajectory declares physical time
+
 ### Changed
 
 - Show PQ atom velocities in Å/fs and include declared time units next to trajectory frames

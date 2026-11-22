@@ -2137,3 +2137,17 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("changes only the displayed timeline time unit", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await page.getByRole("button", { name: "Next frame" }).click();
+  const metadata = page.locator(".frame-metadata");
+  await expect(metadata).toHaveText("step 10 · t 0.5 fs");
+  await page.locator('summary[aria-label="Playback options"]').click();
+  const selector = page.getByLabel("Time unit", { exact: true });
+  await selector.selectOption("ps");
+  await expect(metadata).toHaveText("step 10 · t 5.000e-4 ps");
+  await expect(page.locator(".frame-counter")).toHaveAttribute("aria-label", "Frame 2 of 2");
+  await selector.selectOption("source");
+  await expect(metadata).toHaveText("step 10 · t 0.5 fs");
+});
