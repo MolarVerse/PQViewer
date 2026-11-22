@@ -444,7 +444,7 @@ function buildSceneCapabilities(
   if (!ribbon) {
     ribbonReason = manifest.topology.residues?.length && manifest.topology.atom_names?.length
       ? "Three complete backbone residues required"
-      : "Backbone topology unavailable";
+      : "Open a PDB or another structure with backbone residue and atom names; plain XYZ has no backbone metadata";
   }
   return {
     water,

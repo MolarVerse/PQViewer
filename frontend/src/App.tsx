@@ -1402,6 +1402,31 @@ export default function App() {
     applyScientificSelection(selections, `Water · ${atomCountLabel(selections.length)}`);
   }, [applyScientificSelection, selectionIndex]);
 
+  const biomoleculeGroups = useMemo(() => {
+    const protein = new Set<number>();
+    const ions = new Set<number>();
+    const topology = manifest?.topology;
+    if (!topology?.residues || !topology.atom_residue_index) return { protein, ions };
+    const proteinResidues = new Set(topology.residues
+      .filter((residue) => residue.category === "amino-acid")
+      .map((residue) => residue.index));
+    const residueSizes = new Map<number, number>();
+    topology.atom_residue_index.forEach((residue) => {
+      residueSizes.set(residue, (residueSizes.get(residue) ?? 0) + 1);
+    });
+    const ionSymbols = new Set(["Li", "Na", "K", "Rb", "Cs", "Mg", "Ca", "Zn", "F", "Cl", "Br", "I"]);
+    const ionResidues = new Set(topology.residues
+      .filter((residue) => residue.category === "other" && residue.name
+        && ionSymbols.has(residue.name[0].toUpperCase() + residue.name.slice(1).toLowerCase()))
+      .map((residue) => residue.index));
+    topology.atom_residue_index.forEach((residue, atom) => {
+      if (proteinResidues.has(residue)) protein.add(atom);
+      if (ionResidues.has(residue) && residueSizes.get(residue) === 1
+        && ionSymbols.has(topology.symbols?.[atom] ?? "")) ions.add(atom);
+    });
+    return { protein, ions };
+  }, [manifest]);
+
   const saveNamedSelection = useCallback((name: string): boolean => {
     if (selectedAtoms.length === 0) return false;
     try {
@@ -2970,6 +2995,20 @@ export default function App() {
         detail: ELEMENT_SYMBOLS[atomicNumber],
         run: run(() => selectElement(atomicNumber)),
       })),
+      ...(["protein", "ions"] as const).filter((group) => biomoleculeGroups[group].size > 0)
+        .map((group) => ({
+          id: `select-${group}`,
+          label: `Select ${group}`,
+          keywords: "residue atoms biomolecule selection",
+          run: run(() => {
+            const atoms = selectionIndex?.selectAtoms(biomoleculeGroups[group]) ?? [];
+            if (!atoms.length) {
+              setNotice({ message: `No visible ${group} found.`, tone: "status" });
+              return;
+            }
+            applyScientificSelection(atoms, `${group} · ${atomCountLabel(atoms.length)}`);
+          }),
+        })),
       ...(selectionContext?.waterAtoms.size ? [{
         id: "select-water",
         label: "Select water",
@@ -3093,6 +3132,8 @@ export default function App() {
     selectView,
     selectElement,
     selectScope,
+    applyScientificSelection,
+    biomoleculeGroups,
     selectWater,
     selectableElements,
     selectionAnchor,
