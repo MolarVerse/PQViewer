@@ -199,6 +199,7 @@ export interface MoleculeSceneProps {
   viewSignal?: number;
   onSelect: (selection: AtomSelection | null, additive: boolean) => void;
   onSelectMany?: (selections: AtomSelection[], additive: boolean) => void;
+  onEngineError?: (error: Error) => void;
   onSceneInfo?: (info: RenderedSceneInfo | null) => void;
   onSelectionContext?: (context: SceneSelectionContext | null) => void;
   onSelectionPositions?: (positions: Float64Array | null) => void;
@@ -534,6 +535,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   viewSignal = 0,
   onSelect,
   onSelectMany,
+  onEngineError,
   onSceneInfo,
   onSelectionContext,
   onSelectionPositions,
@@ -543,6 +545,8 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   const selectRef = useRef(onSelect);
   const selectManyRef = useRef(onSelectMany);
   const selectedAtomsRef = useRef(selectedAtoms);
+  const engineErrorRef = useRef(onEngineError);
+  engineErrorRef.current = onEngineError;
   const sceneInfoRef = useRef(onSceneInfo);
   const selectionContextRef = useRef(onSelectionContext);
   const selectionPositionsRef = useRef(onSelectionPositions);
@@ -604,7 +608,13 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    } catch (reason) {
+      engineErrorRef.current?.(reason instanceof Error ? reason : new Error("WebGL renderer could not start"));
+      return;
+    }
     let pixelRatio = Math.min(window.devicePixelRatio, 2);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;

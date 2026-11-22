@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Explain how to recover when the 3D view cannot start instead of leaving a blank viewport
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
