@@ -20,3 +20,8 @@ MIT License.
 copyright 2023 Jakob Gamper, Josef M. Gallmetzer, and Clarissa A. Seidler. It is
 used under the MIT License. The complete upstream notice is in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+- `zif8.extxyz`: ZIF-8 framework from Crystallography Open Database entry
+  [7111970](https://www.crystallography.net/cod/7111970.html), distributed by COD
+  as public-domain data. Expanded to the conventional cubic cell with guest
+  atoms omitted. The XYZ contains coordinates, not explicit bonds.
