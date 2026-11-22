@@ -105,7 +105,7 @@ describe("scene profiles", () => {
       false,
       false,
       capabilities,
-    )).toMatchObject({ wrap: "atom", color: "element", mode: "lines", bonds: true });
+    )).toMatchObject({ wrap: "atom", color: "element", mode: "ball-stick", bonds: true });
   });
 
   it("uses complete coordination polyhedra for a supported crystal", () => {
@@ -146,7 +146,7 @@ describe("scene profiles", () => {
       false,
       false,
       capabilities,
-    )).toMatchObject({ wrap: "atom", color: "element", cell: true, mode: "lines", bonds: true });
+    )).toMatchObject({ wrap: "atom", color: "element", cell: true, mode: "ball-stick", bonds: true });
   });
 
   it("prefers an available protein ribbon", () => {
@@ -255,7 +255,7 @@ describe("scene profiles", () => {
       false,
       capabilities,
     )).toMatchObject({
-      mode: "lines",
+      mode: "ball-stick",
       bonds: true,
       wrap: "atom",
       cell: true,
