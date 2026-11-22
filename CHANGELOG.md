@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep playback frames in order and show the displayed frame while the next frame loads
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
