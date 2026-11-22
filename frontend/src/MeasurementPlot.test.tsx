@@ -266,17 +266,18 @@ describe("plot shelf accessibility", () => {
     expect(markup).toContain('aria-label="Close plot"');
   });
 
-  it("keeps non-trajectory plots readable without a false seek control", () => {
+  it("labels the RDF slider by radius rather than frame", () => {
     const markup = renderToStaticMarkup(
       <PlotShelf
-        plot={{ ...plot, kind: "rdf", frameIndices: undefined }}
+        plot={{ ...plot, title: "Pair distribution", xLabel: "Radius", xUnit: "Å", kind: "rdf", frameIndices: undefined }}
         onExportCsv={() => undefined}
         onExportSvg={() => undefined}
         onExportPdf={() => undefined}
       />,
     );
 
-    expect(markup).toContain('role="img"');
-    expect(markup).not.toContain('role="slider"');
+    expect(markup).toContain('role="slider"');
+    expect(markup).toContain('aria-label="Pair distribution radius"');
+    expect(markup).not.toContain("Pair distribution frame");
   });
 });
