@@ -5350,6 +5350,18 @@ function AtomEditor({
   </form>;
 }
 
+const timeDisplayUnits = ["source", "fs", "ps", "ns"] as const;
+type TimeDisplayUnit = typeof timeDisplayUnits[number];
+
+const secondsPerUnit = new Map([
+  ["s", 1], ["ms", 1e-3], ["µs", 1e-6], ["us", 1e-6],
+  ["ns", 1e-9], ["ps", 1e-12], ["fs", 1e-15],
+]);
+
+function frameTimeUnit(frame: FrameData | null): string | undefined {
+  return displayUnit(frame?.header.frame_key?.time_unit ?? frame?.header.scalar_units?.time)?.trim();
+}
+
 function Timeline({
   busy,
   frameCount,
@@ -5425,7 +5437,11 @@ function Timeline({
   const compactFrameLabel = displayedFrameIndex === frameIndex
     ? `${compactFrameNumber(displayedFrameIndex + 1)} / ${compactFrameNumber(frameCount)}`
     : `${compactFrameNumber(displayedFrameIndex + 1)} → ${compactFrameNumber(frameIndex + 1)}`;
-  const metadata = frameMetadata(frame);
+  const [timeDisplayUnit, setTimeDisplayUnit] = useState<TimeDisplayUnit>("source");
+  const timeUnit = frameTimeUnit(frame);
+  const canConvertTime = timeUnit !== undefined && secondsPerUnit.has(timeUnit)
+    && numericFrameMetadata(frame, "time") !== null;
+  const metadata = frameMetadata(frame, timeDisplayUnit);
 
   return (
     <section className={`timeline is-compact${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
@@ -5554,6 +5570,16 @@ function Timeline({
             <label><span>Stride</span><select value={stride} onChange={(event) => onStride(Number(event.target.value))}>
               {[1, 2, 5, 10].map((value) => <option key={value} value={value}>{value} frame{value === 1 ? "" : "s"}</option>)}
             </select></label>
+            {canConvertTime && <label><span>Time unit</span>
+              <select aria-label="Time unit" value={timeDisplayUnit} onChange={(event) => {
+                const unit = timeDisplayUnits.find((value) => value === event.target.value);
+                if (unit) setTimeDisplayUnit(unit);
+              }}>
+                {timeDisplayUnits.map((unit) => <option key={unit} value={unit}>
+                  {unit === "source" ? `Source (${timeUnit})` : unit}
+                </option>)}
+              </select>
+            </label>}
             <div className="segmented-options">
               {([
                 ["once", "Once"],
@@ -5574,12 +5600,24 @@ function Timeline({
   );
 }
 
-export function frameMetadata(frame: FrameData | null): string {
+export function frameMetadata(frame: FrameData | null, displayTimeUnit: TimeDisplayUnit = "source"): string {
   const stepValue = numericFrameMetadata(frame, "step");
   const timeValue = numericFrameMetadata(frame, "time");
   const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
-  const timeUnit = displayUnit(frame?.header.frame_key?.time_unit ?? frame?.header.scalar_units?.time);
-  const time = timeValue === null ? "" : `t ${withUnit(formatNumber(timeValue), timeUnit)}`;
+  let timeUnit = frameTimeUnit(frame);
+  let displayedTime = timeValue;
+  if (timeValue !== null && timeUnit && displayTimeUnit !== "source" && displayTimeUnit !== timeUnit) {
+    const sourceScale = secondsPerUnit.get(timeUnit);
+    const targetScale = secondsPerUnit.get(displayTimeUnit);
+    if (sourceScale && targetScale) {
+      const converted = timeValue * (sourceScale / targetScale);
+      if (Number.isFinite(converted)) {
+        displayedTime = converted;
+        timeUnit = displayTimeUnit;
+      }
+    }
+  }
+  const time = displayedTime === null ? "" : `t ${withUnit(formatNumber(displayedTime), timeUnit)}`;
   return [step, time].filter(Boolean).join(" · ");
 }
 
