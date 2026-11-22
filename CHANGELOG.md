@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Fit the visible structure instead of the whole cell when water is hidden or isolated
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed

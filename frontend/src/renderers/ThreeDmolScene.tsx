@@ -64,6 +64,7 @@ interface DmolRuntime {
   layoutKey: string;
   styleKey: string;
   fitMode: ScenePresentation["mode"];
+  fitVisibleOnly: boolean;
   manifestName: string;
   fittedKey: string;
   lastResetSignal: number;
@@ -191,6 +192,7 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
             layoutKey: "",
             styleKey: "",
             fitMode: "ball-stick",
+            fitVisibleOnly: false,
             manifestName: "",
             fittedKey: "",
             lastResetSignal: -1,
@@ -216,9 +218,9 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
               && Number.isFinite(previousAspect)
               && Math.abs(aspect - previousAspect) > 0.04
             ) {
-              viewer.zoomTo();
+              viewer.zoomTo(fitSelection(runtime));
               viewer.zoom(fitZoomFactor(
-                runtime.plan.cellSegments.length > 0,
+                !runtime.fitVisibleOnly && runtime.plan.cellSegments.length > 0,
                 runtime.fitMode,
                 aspect,
               ));
@@ -373,6 +375,7 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
       runtime.plan = plan;
       runtime.layoutKey = plan.layoutKey;
       runtime.fitMode = presentation.mode;
+      runtime.fitVisibleOnly = presentation.water !== "show" && plan.atoms.length > 0;
       runtime.manifestName = manifest.name;
       onSelectionContext?.(selectionContextFromDmolModel(manifest, scene));
       const info: RenderedSceneInfo = {
@@ -398,10 +401,8 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
         || runtime.lastViewSignal !== viewSignal
       ) {
         applyViewPreset(
-          runtime.viewer,
+          runtime,
           viewPreset,
-          plan.cellSegments.length > 0,
-          presentation.mode,
           host.clientWidth / Math.max(1, host.clientHeight),
         );
         runtime.fittedKey = fitKey;
@@ -1161,13 +1162,16 @@ function updateKeyboardShape(
   });
 }
 
+function fitSelection(runtime: DmolRuntime) {
+  return runtime.fitVisibleOnly && runtime.model ? { model: runtime.model } : {};
+}
+
 function applyViewPreset(
-  viewer: GLViewer,
+  runtime: DmolRuntime,
   preset: ViewPreset,
-  includeCell: boolean,
-  mode: ScenePresentation["mode"],
   aspect: number,
 ): void {
+  const { viewer } = runtime;
   const current = viewer.getView();
   viewer.setView([
     current[0],
@@ -1179,7 +1183,7 @@ function applyViewPreset(
     0,
     1,
   ]);
-  viewer.zoomTo();
+  viewer.zoomTo(fitSelection(runtime));
   if (preset === "perspective") {
     viewer.setProjection("perspective");
     viewer.rotate(24, "x");
@@ -1189,7 +1193,8 @@ function applyViewPreset(
     if (preset === "xz") viewer.rotate(90, "x");
     if (preset === "yz") viewer.rotate(-90, "y");
   }
-  viewer.zoom(fitZoomFactor(includeCell, mode, aspect));
+  const includeCell = !runtime.fitVisibleOnly && Boolean(runtime.plan?.cellSegments.length);
+  viewer.zoom(fitZoomFactor(includeCell, runtime.fitMode, aspect));
 }
 
 function fitZoomFactor(

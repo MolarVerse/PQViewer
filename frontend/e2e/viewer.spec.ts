@@ -2137,3 +2137,34 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("fits the solute rather than the periodic cell after hiding water", async ({ page }) => {
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "solvated-carbon.extxyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from(
+      '4\nLattice="40 0 0 0 40 0 0 0 40" Properties=species:S:1:pos:R:3 pbc="T T T"\n'
+      + "C 0 0 0\nO 12 12 12\nH 12.96 12 12\nH 11.76 12.93 12\n",
+    ),
+  });
+  const scene = page.locator(".molecule-canvas");
+  await expect(scene).toHaveAttribute("data-rendered-manifest", "solvated-carbon.extxyz");
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  const carbonPixels = async () => {
+    const { data } = PNG.sync.read(await sceneScreenshot(page, scene));
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const [r, g, b] = [data[i], data[i + 1], data[i + 2]];
+      if (b > r + 6 && b >= g && r < 150) count += 1;
+    }
+    return count;
+  };
+  const initial = await carbonPixels();
+  await page.keyboard.press("w");
+  await expect(scene).toHaveAttribute("data-atom-count", "1");
+  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  expect(await carbonPixels()).toBeGreaterThan(Math.max(100, initial * 2));
+});
