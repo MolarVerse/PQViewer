@@ -288,7 +288,7 @@ export default function App() {
   const [settingTarget, setSettingTarget] = useState<string | null>(null);
   const [canvasHintDismissed, setCanvasHintDismissed] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [helpPopup, setHelpPopup] = useState<"help" | "shortcuts" | null>(null);
   const [vimMode, setVimMode] = useState(initialVimMode);
   const [resetSignal, setResetSignal] = useState(0);
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
@@ -418,7 +418,7 @@ export default function App() {
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setFigureSheetOpen(false);
     setFigureOutput(cloneFigureOutput(defaultFigureOutput));
     setFigureAnnotations([]);
@@ -528,7 +528,7 @@ export default function App() {
         setRdfContext(null);
         setWorkbenchTab(null);
         setCommandOpen(false);
-        setShortcutsOpen(false);
+        setHelpPopup(null);
         setFigureSheetOpen(false);
         setProfile("custom");
         autoProfileKey.current = `${dataset.name}:${dataset.topology.atom_count}`;
@@ -597,7 +597,7 @@ export default function App() {
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setFigureSheetOpen(false);
     setFigureAnnotations([]);
     setRecipeApplying(false);
@@ -984,7 +984,7 @@ export default function App() {
   const showOpen = useCallback(() => {
     if (rendering) return;
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
@@ -994,19 +994,21 @@ export default function App() {
   const showCommands = useCallback(() => {
     if (rendering) return;
     setPlaying(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setCommandOpen(true);
   }, [rendering]);
 
-  const showShortcuts = useCallback(() => {
+  const showHelpPopup = useCallback((popup: "help" | "shortcuts") => {
     if (rendering) return;
     setCommandOpen(false);
     setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
-    setShortcutsOpen(true);
+    setHelpPopup(popup);
   }, [rendering]);
+
+  const showShortcuts = useCallback(() => showHelpPopup("shortcuts"), [showHelpPopup]);
 
   const exportFigure = useCallback(async (
     options: FigureExportOptions,
@@ -1477,7 +1479,7 @@ export default function App() {
     if (!canPlotMeasurement) return;
     setPlaying(false);
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
@@ -1770,7 +1772,7 @@ export default function App() {
     }
     setPlaying(false);
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
@@ -1855,7 +1857,7 @@ export default function App() {
   const showRender = useCallback(() => {
     if (!canRender || rendering) return;
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     void exportFigure({
@@ -1872,7 +1874,7 @@ export default function App() {
     if (!canRender || rendering) return;
     setPlaying(false);
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
     setFigureOutput((current) => ({
@@ -2031,7 +2033,7 @@ export default function App() {
   const showRecipeOpen = useCallback(() => {
     if (!manifest || rendering) return;
     setCommandOpen(false);
-    setShortcutsOpen(false);
+    setHelpPopup(null);
     recipeInputRef.current?.click();
   }, [manifest, rendering]);
 
@@ -2447,8 +2449,8 @@ export default function App() {
     vimSequenceRef.current = { prefix: null, at: 0 };
     if (commandOpen) {
       setCommandOpen(false);
-    } else if (shortcutsOpen) {
-      setShortcutsOpen(false);
+    } else if (helpPopup) {
+      setHelpPopup(null);
     } else if (rdfSetupOpen) {
       setRdfSetupOpen(false);
     } else if (figureSheetOpen) {
@@ -2480,7 +2482,7 @@ export default function App() {
     rdfSetupOpen,
     playbackOptionsOpen,
     selectedAtoms.length,
-    shortcutsOpen,
+    helpPopup,
     study.plot,
     workbenchTab,
   ]);
@@ -2553,7 +2555,7 @@ export default function App() {
         if (!event.repeat) showShortcuts();
         return;
       }
-      if (commandOpen || shortcutsOpen) return;
+      if (commandOpen || helpPopup) return;
       if (vimMode) {
         const now = performance.now();
         const activePrefix = now - vimSequenceRef.current.at <= 750
@@ -2639,7 +2641,7 @@ export default function App() {
     runVimNavigation,
     selectView,
     setFrame,
-    shortcutsOpen,
+    helpPopup,
     stepFrame,
     toggleCurrentBookmark,
     showCommands,
@@ -3313,10 +3315,10 @@ export default function App() {
             <button
               className="help-button"
               type="button"
-              aria-label="Help and keyboard shortcuts"
-              aria-keyshortcuts="?"
+              aria-label="Help"
+              aria-haspopup="dialog"
               disabled={rendering}
-              onClick={showShortcuts}
+              onClick={() => showHelpPopup("help")}
             ><span>Help</span><strong aria-hidden="true">?</strong></button>
           </div>
         </header>
@@ -3843,11 +3845,13 @@ export default function App() {
           resolveAction={resolveCommandAction}
           onClose={() => setCommandOpen(false)}
         />}
-        {shortcutsOpen && <ShortcutSheet
+        {helpPopup && <ShortcutSheet
+          mode={helpPopup}
+          onMode={setHelpPopup}
           shortcutLabels={shortcutLabels}
           vimMode={vimMode}
           onVimMode={setVimMode}
-          onClose={() => setShortcutsOpen(false)}
+          onClose={() => setHelpPopup(null)}
         />}
       </div>
     </main>

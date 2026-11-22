@@ -1388,23 +1388,47 @@ input[type="range"]::-moz-range-thumb {
 
 .viewer-first-steps {
   padding: 12px 18px;
-  border-bottom: 1px solid var(--line);
   font-size: 13px;
   line-height: 1.5;
 }
 
-.viewer-first-steps h3,
-.viewer-shortcut-title {
+.viewer-first-steps h3 {
   margin: 0;
   font-size: 13px;
 }
 
-.viewer-shortcut-title {
-  padding: 12px 18px 0;
+.shortcut-panel.is-help {
+  width: min(520px, 100%);
+}
+
+.viewer-popup-footer {
+  border-top: 1px solid var(--line);
+  padding: 4px 18px;
+}
+
+.viewer-popup-footer button {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.viewer-popup-footer button:hover {
+  color: var(--text);
 }
 
 .viewer-first-steps ol {
   padding-left: 1.5em;
+}
+
+.viewer-first-steps details {
+  margin: 8px 0;
 }
 
 .viewer-first-steps a {

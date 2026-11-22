@@ -7,7 +7,7 @@ user-visible changes.
 
 ### Added
 
-- Add first steps and a guide link to the viewer help, alongside keyboard shortcuts
+- Add first steps and a guide link to the viewer help, with a separate keyboard shortcuts popup
 
 ## [0.2.2] - 2026-11-17
 

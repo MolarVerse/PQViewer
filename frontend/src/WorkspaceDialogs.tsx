@@ -106,11 +106,15 @@ export function CommandPalette({
 }
 
 export function ShortcutSheet({
+  mode,
+  onMode,
   shortcutLabels,
   vimMode,
   onVimMode,
   onClose,
 }: {
+  mode: "help" | "shortcuts";
+  onMode: (mode: "help" | "shortcuts") => void;
   shortcutLabels: ViewerShortcutLabels;
   vimMode: boolean;
   onVimMode: (enabled: boolean) => void;
@@ -159,41 +163,49 @@ export function ShortcutSheet({
     ["Ctrl [", "Close surface"],
   ];
 
+  const title = mode === "help" ? "Viewer help" : "Keyboard shortcuts";
   return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <section ref={panelRef} className="shortcut-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabIndex={-1}>
+    <section ref={panelRef} className={`shortcut-panel is-${mode}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <div className="shortcut-heading">
-        <div><strong>Viewer help</strong></div>
-        <button className="icon-button" type="button" onClick={onClose} aria-label="Close keyboard shortcuts"><Icon name="close" /></button>
+        <strong>{title}</strong>
+        <button className="icon-button" type="button" onClick={onClose} aria-label={`Close ${title.toLowerCase()}`}><Icon name="close" /></button>
       </div>
-      <section className="viewer-first-steps" aria-labelledby="viewer-first-steps">
+      {mode === "help" ? <section className="viewer-first-steps" aria-labelledby="viewer-first-steps">
         <h3 id="viewer-first-steps">First steps</h3>
         <ol>
-          <li>Choose Open or drop a structure or trajectory into the viewer.</li>
-          <li>Drag to rotate, scroll to zoom, and click an atom to inspect it.</li>
-          <li>Open Analyze to measure distances, angles, or dihedrals.</li>
+          <li>Open a structure or trajectory, or drop it into the viewer.</li>
+          <li>Drag to rotate. Scroll to zoom. Click an atom to inspect it.</li>
+          <li>Use Analyze to measure distances, angles, or dihedrals.</li>
         </ol>
-        <p>PQ-centred shows periodic positions within a cell centred on the origin.
-          It changes the view, not the saved coordinates.</p>
+        <details>
+          <summary>What does PQ-centred mean?</summary>
+          <p>It shows positions inside a periodic cell centred on the origin, without changing the saved coordinates.</p>
+        </details>
         <a href="https://molarverse.github.io/PQViewer/viewer-guide.html" target="_blank" rel="noreferrer">
           Read the viewer guide
         </a>
-      </section>
-      <h3 className="viewer-shortcut-title">Keyboard shortcuts</h3>
-      <div className="shortcut-groups">
-        {groups.map((group) => <section key={group.title}>
-          <h3>{group.title}</h3>
-          {group.items.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
-        </section>)}
-      </div>
-      <section className={vimMode ? "vim-shortcuts is-active" : "vim-shortcuts"}>
-        <div className="vim-heading">
-          <div><strong>Vim navigation</strong><span>Optional; standard shortcuts stay active.</span></div>
-          <button type="button" role="switch" aria-label="Vim navigation" aria-checked={vimMode} onClick={() => onVimMode(!vimMode)}><i /></button>
+      </section> : <>
+        <div className="shortcut-groups">
+          {groups.map((group) => <section key={group.title}>
+            <h3>{group.title}</h3>
+            {group.items.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
+          </section>)}
         </div>
-        {vimMode && <div className="vim-shortcut-grid">
-          {vimItems.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
-        </div>}
-      </section>
+        <section className={vimMode ? "vim-shortcuts is-active" : "vim-shortcuts"}>
+          <div className="vim-heading">
+            <div><strong>Vim navigation</strong><span>Optional; standard shortcuts stay active.</span></div>
+            <button type="button" role="switch" aria-label="Vim navigation" aria-checked={vimMode} onClick={() => onVimMode(!vimMode)}><i /></button>
+          </div>
+          {vimMode && <div className="vim-shortcut-grid">
+            {vimItems.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
+          </div>}
+        </section>
+      </>}
+      <footer className="viewer-popup-footer">
+        <button type="button" onClick={() => onMode(mode === "help" ? "shortcuts" : "help")}>
+          {mode === "help" ? "Keyboard shortcuts" : "Viewer help"}
+        </button>
+      </footer>
     </section>
   </div>;
 }
