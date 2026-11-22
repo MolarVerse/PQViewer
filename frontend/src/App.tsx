@@ -291,6 +291,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [vimMode, setVimMode] = useState(initialVimMode);
   const [resetSignal, setResetSignal] = useState(0);
+  const [showElementColors, setShowElementColors] = useState(false);
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
   const [viewSignal, setViewSignal] = useState(0);
   const [sceneRevision, setSceneRevision] = useState(0);
@@ -1141,6 +1142,10 @@ export default function App() {
       : null,
     [selectedAtoms, selectionIndex, workbenchTab],
   );
+  const elementColors = presentation.color === "element"
+    && presentation.mode !== "ribbon" && presentation.mode !== "lines"
+    ? sceneInfo?.elementColors
+    : undefined;
   const selectableElements = useMemo(() => {
     if (!selectionContext) return [];
     const numbers = new Set<number>();
@@ -3359,8 +3364,22 @@ export default function App() {
           <div className="canvas-field" />
         )}
 
+        {showElementColors && elementColors && elementColors.length > 0 && !workbenchVisible
+          && !measurementPlotOpen && !study.plot && selectedAtoms.length === 0 && (
+          <div className="viewport-element-colors">
+            <ElementColors colors={elementColors.slice(0, 6)} />
+            {elementColors.length > 6 && (
+              <button type="button" aria-label={`Show all ${elementColors.length} element colors`}
+                onClick={() => openSetting("view", "view-atoms")}>
+                +{elementColors.length - 6}
+              </button>
+            )}
+          </div>
+        )}
+
         {manifest
           && manifest.frame_count > 0
+          && !(showElementColors && elementColors?.length)
           && !canvasHintDismissed
           && selectedAtoms.length === 0
           && !workbenchVisible
@@ -3456,6 +3475,9 @@ export default function App() {
               velocityAvailable={velocityAvailable}
               pbc={pbc}
               atomCount={manifest.topology.atom_count}
+              elementColors={elementColors}
+              showElementColors={showElementColors}
+              onShowElementColors={setShowElementColors}
               hasHydrogens={hasHydrogens}
               hasResidueColor={hasResidueColor}
               hasChainColor={hasChainColor}
@@ -4346,6 +4368,9 @@ function ScenePanel({
   velocityAvailable,
   pbc,
   atomCount,
+  elementColors,
+  showElementColors,
+  onShowElementColors,
   hasHydrogens,
   hasResidueColor,
   hasChainColor,
@@ -4364,6 +4389,9 @@ function ScenePanel({
   velocityAvailable: boolean;
   pbc: [boolean, boolean, boolean];
   atomCount: number;
+  elementColors?: RenderedSceneInfo["elementColors"];
+  showElementColors: boolean;
+  onShowElementColors: (show: boolean) => void;
   hasHydrogens: boolean;
   hasResidueColor: boolean;
   hasChainColor: boolean;
@@ -4480,6 +4508,19 @@ function ScenePanel({
               ))}
             </select>
           </label>
+        )}
+        {elementColors && elementColors.length > 0 && (
+          <>
+            <div className="panel-select-row element-color-row">
+              <span>Element colors</span>
+              <ElementColors colors={elementColors} />
+            </div>
+            <Toggle
+              label="Show element colors in viewer"
+              checked={showElementColors}
+              onChange={onShowElementColors}
+            />
+          </>
         )}
         <VectorScale label="Atom size" value={presentation.atomScale} min={0.4} max={1.8} onChange={(atomScale) => onPresentation({ atomScale })} />
         {bondCapable && (
@@ -4682,6 +4723,17 @@ function Toggle({
     <span>{label}</span>
     <button type="button" role="switch" aria-label={label} aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}><i /></button>
   </div>;
+}
+
+function ElementColors({ colors }: { colors: NonNullable<RenderedSceneInfo["elementColors"]> }) {
+  return <ul className="element-colors" aria-label="Visible element colors">
+    {colors.map(({ number, color }) => (
+      <li key={number} title={ELEMENT_NAMES[number]}>
+        <i aria-hidden="true" style={{ backgroundColor: color }} />
+        {ELEMENT_SYMBOLS[number] || "Unknown"}
+      </li>
+    ))}
+  </ul>;
 }
 
 function CanvasControls({

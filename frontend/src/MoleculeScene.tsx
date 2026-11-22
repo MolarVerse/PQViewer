@@ -238,6 +238,7 @@ interface ResolvedFigureExportOptions extends ResolvedPngExportOptions {
 }
 
 export interface RenderedSceneInfo {
+  elementColors?: readonly { number: number; color: string }[];
   imageCount: number;
   forceCount: number;
   forceTotal: number;

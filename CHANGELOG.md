@@ -7,7 +7,7 @@ user-visible changes.
 
 ### Added
 
-- Show a collapsible element color key for visible atoms
+- Show visible element colors in the View inspector, with an option to show them in the viewer
 
 ## [0.2.2] - 2026-11-17
 

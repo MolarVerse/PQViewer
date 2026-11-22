@@ -2138,12 +2138,41 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("shows a collapsible color key for visible elements", async ({ page }) => {
+test("shows element colors in the viewer only when requested", async ({ page }) => {
   await openPeriodicFixture(page);
   await openFixture(page, waterFixture, "water.xyz");
-  const key = page.locator(".element-key");
+  const key = page.locator(".viewport-element-colors").getByRole("list", { name: "Visible element colors" });
+  await expect(key).toHaveCount(0);
+  await page.keyboard.press("v");
+  const toggle = page.getByRole("switch", { name: "Show element colors in viewer" });
+  await toggle.click();
+  await page.keyboard.press("Escape");
   await expect(key.getByText("O", { exact: true })).toBeVisible();
   await expect(key.getByText("H", { exact: true })).toBeVisible();
-  await key.getByText("Element colors").click();
-  await expect(key.getByText("O", { exact: true })).not.toBeVisible();
+  await page.keyboard.press("v");
+  await toggle.click();
+  await expect(key).toHaveCount(0);
+});
+
+
+test("keeps a many-element key compact and opens the full list", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "element-key.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from("9\nElement key fixture\n"
+      + ["H", "C", "N", "O", "F", "Na", "Si", "P", "Cl"].map((symbol, index) => `${symbol} ${index * 3} 0 0\n`).join("")),
+  });
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute("data-rendered-manifest", "element-key.xyz");
+  await page.keyboard.press("v");
+  await page.getByRole("switch", { name: "Show element colors in viewer" }).click();
+  await page.keyboard.press("Escape");
+  const key = page.locator(".viewport-element-colors");
+  await expect(key.getByRole("listitem")).toHaveCount(6);
+  await key.getByRole("button", { name: "Show all 9 element colors" }).click();
+  await expect(page.locator("#workbench").getByRole("list", { name: "Visible element colors" })
+    .getByRole("listitem")).toHaveCount(9);
 });
