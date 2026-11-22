@@ -351,6 +351,15 @@ describe("view control availability", () => {
 });
 
 describe("frame metadata", () => {
+  it("shows the declared unit without assuming that unknown time is in ps", () => {
+    const frame = frameWithHeader({
+      frame_key: { source_id: "trajectory", source_index: 1, segment_index: 0, step: 40, time: 1.25, time_unit: "ps" },
+    });
+    expect(frameMetadata(frame)).toBe("step 40 · t 1.25 ps");
+    expect(frameMetadata(frame, "fs")).toBe("step 40 · t 1,250 fs");
+    expect(frameMetadata(frame, "ns")).toBe("step 40 · t 0.0013 ns");
+  });
+
   it("reads canonical header values without dropping scalar compatibility", () => {
     const frame = frameWithHeader({
       step: 40,
@@ -364,7 +373,9 @@ describe("frame metadata", () => {
   it("reads step and time from legacy scalar-only packets", () => {
     const frame = frameWithHeader({ scalars: { step: 12, time: 0.5, energy: -2 } });
 
-    expect(frameMetadata(frame)).toBe("step 12 · t 0.5");
+    expect(frameMetadata(frame, "ps")).toBe("step 12 · t 0.5");
+    const steps = frameWithHeader({ scalars: { time: 5 }, scalar_units: { time: "steps" } });
+    expect(frameMetadata(steps, "ps")).toBe("t 5 steps");
     expect(frame.header.scalars?.energy).toBe(-2);
   });
 });

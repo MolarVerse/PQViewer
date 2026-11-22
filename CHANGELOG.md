@@ -5,8 +5,13 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Choose source units, fs, ps, or ns for the timeline when the trajectory declares physical time
+
 ### Changed
 
+- Show PQ atom velocities in Å/fs and include declared time units next to trajectory frames
 - Start alkali halides and frameworks in an atom-based view and favor protein ribbons over solvent presets
 
 ## [0.2.2] - 2026-11-17
