@@ -5,6 +5,10 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Show a collapsible element color key for visible atoms
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed

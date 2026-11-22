@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import * as THREE from "three";
+import { ELEMENT_NAMES, ELEMENT_SYMBOLS } from "../scientificSelection";
 import { frameArray } from "../api";
 import {
   MAX_DISPLACEMENT_ATOMS,
@@ -154,6 +155,7 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
     const keyboardSelectionRef = useRef<AtomSelection | null>(null);
     const keyboardInstanceRef = useRef<number | null>(null);
     const pendingCameraRef = useRef<SceneCameraState | null>(null);
+    const [elementKey, setElementKey] = useState("");
     const [runtimeVersion, setRuntimeVersion] = useState(0);
     const [boxSelection, setBoxSelection] = useState<SelectionRectangle | null>(null);
     const [keyboardSelection, setKeyboardSelection] = useState<AtomSelection | null>(null);
@@ -371,6 +373,9 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
 
       runtime.scene = scene;
       runtime.plan = plan;
+      const elements = new Set<number>();
+      for (const selection of plan.selections) elements.add(scene.atomicNumbers[selection.atom]);
+      setElementKey([...elements].sort((a, b) => a - b).join(","));
       runtime.layoutKey = plan.layoutKey;
       runtime.fitMode = presentation.mode;
       runtime.manifestName = manifest.name;
@@ -689,6 +694,20 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
         aria-keyshortcuts="ArrowUp ArrowDown Enter"
         tabIndex={0}
       />
+      {elementKey && presentation.color === "element" && presentation.mode !== "ribbon"
+        && presentation.mode !== "lines" && (
+          <details className="element-key" open>
+            <summary>Element colors</summary>
+            <ul>
+              {elementKey.split(",").map(Number).map((number) => (
+                <li key={number} title={ELEMENT_NAMES[number]}>
+                  <span aria-hidden="true" style={{ backgroundColor: dmolElementColor(number) ?? "#65757A" }} />
+                  {ELEMENT_SYMBOLS[number] || "Unknown"}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       {boxSelection && (
         <div
           className="selection-marquee"

@@ -2137,3 +2137,13 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
   );
   expect(errors).toEqual([]);
 });
+
+test("shows a collapsible color key for visible elements", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await openFixture(page, waterFixture, "water.xyz");
+  const key = page.locator(".element-key");
+  await expect(key.getByText("O", { exact: true })).toBeVisible();
+  await expect(key.getByText("H", { exact: true })).toBeVisible();
+  await key.getByText("Element colors").click();
+  await expect(key.getByText("O", { exact: true })).not.toBeVisible();
+});

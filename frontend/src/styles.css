@@ -7675,3 +7675,42 @@ button.measurement-plot__legend-item:hover {
     height: calc(100% - var(--header-height) - var(--timeline-height));
   }
 }
+
+.element-key {
+  position: absolute;
+  z-index: 2;
+  inset: 118px auto auto 12px;
+  max-width: min(220px, 45vw);
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.element-key summary {
+  cursor: pointer;
+}
+
+.element-key ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 9px;
+  max-height: 24vh;
+  overflow: auto;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.element-key li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.element-key li span {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
