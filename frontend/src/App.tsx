@@ -18,6 +18,7 @@ import {
   isStaticDemoMode,
   normalizeSeries,
   openFiles,
+  openServerFile,
   runRdfAnalysis,
 } from "./api";
 import type { RdfAnalysisResult } from "./api";
@@ -81,7 +82,7 @@ import {
 } from "./keyboard";
 import type { VimNavigationAction, VimPrefix } from "./keyboard";
 import { Icon } from "./Icon";
-import { CommandPalette, ShortcutSheet } from "./WorkspaceDialogs";
+import { CommandPalette, OpenDialog, ShortcutSheet } from "./WorkspaceDialogs";
 import type { CommandAction } from "./WorkspaceDialogs";
 import { restoreFocusWhenAvailable, usePanelFocusRestore } from "./workspaceFocus";
 import type { FocusTarget } from "./workspaceFocus";
@@ -288,6 +289,7 @@ export default function App() {
   const [workbenchExpanded, setWorkbenchExpanded] = useState(false);
   const [settingTarget, setSettingTarget] = useState<string | null>(null);
   const [canvasHintDismissed, setCanvasHintDismissed] = useState(false);
+  const [openDialog, setOpenDialog] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
   const [helpPopup, setHelpPopup] = useState<"help" | "shortcuts" | null>(null);
   const [vimMode, setVimMode] = useState(initialVimMode);
@@ -307,6 +309,7 @@ export default function App() {
   const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
   const [dropActive, setDropActive] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [sceneInfo, setSceneInfo] = useState<RenderedSceneInfo | null>(null);
   const [sceneTopology, setSceneTopology] = useState<{
@@ -990,7 +993,7 @@ export default function App() {
     setFigureSheetOpen(false);
     setPlaybackOptionsOpen(false);
     setWorkbenchTab(null);
-    fileInputRef.current?.click();
+    setOpenDialog(true);
   }, [rendering]);
 
   const showCommands = useCallback(() => {
@@ -2438,17 +2441,26 @@ export default function App() {
     rendering,
   ]);
 
-  const openSelectedFiles = useCallback(async (selected: File[]) => {
-    if (selected.length === 0 || rendering) return;
+  const openSource = useCallback(async (source: File[] | string) => {
+    if (rendering || (Array.isArray(source) && source.length === 0)) return;
+    setOpenDialog(false);
     const request = openRequest.current + 1;
     openRequest.current = request;
     openController.current?.abort();
     const controller = new AbortController();
     openController.current = controller;
     setOpening(true);
-    setNotice({ message: "Opening files…", tone: "status" });
+    const fromDevice = Array.isArray(source);
+    setUploadPercent(fromDevice ? 0 : null);
+    setNotice({ message: fromDevice ? "Uploading files…" : "Opening file…", tone: "status" });
     try {
-      const value = await openFiles(selected, controller.signal);
+      const value = fromDevice
+        ? await openFiles(source, controller.signal, (percent) => {
+          if (request !== openRequest.current || controller.signal.aborted) return;
+          setUploadPercent(percent);
+          if (percent === null) setNotice({ message: "Opening files…", tone: "status" });
+        })
+        : await openServerFile(source, controller.signal);
       if (request !== openRequest.current) return;
       activateManifest(value);
       datasetChannel.current?.postMessage({
@@ -2465,6 +2477,7 @@ export default function App() {
       if (request === openRequest.current) {
         openController.current = null;
         setOpening(false);
+        setUploadPercent(null);
       }
     }
   }, [activateManifest, rendering]);
@@ -2479,7 +2492,9 @@ export default function App() {
 
   const dismissActive = useCallback((): boolean => {
     vimSequenceRef.current = { prefix: null, at: 0 };
-    if (commandOpen) {
+    if (openDialog) {
+      setOpenDialog(false);
+    } else if (commandOpen) {
       setCommandOpen(false);
     } else if (helpPopup) {
       setHelpPopup(null);
@@ -2509,6 +2524,7 @@ export default function App() {
     closeStudyPlot,
     closeWorkbench,
     commandOpen,
+    openDialog,
     figureSheetOpen,
     measurementPlotOpen,
     rdfSetupOpen,
@@ -2548,6 +2564,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
       const target = event.target as HTMLElement | null;
+      if (openDialog && event.key !== "Escape") return;
       const primaryModifier = event.metaKey !== event.ctrlKey && !event.altKey;
       if (primaryModifier && event.shiftKey && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -2665,6 +2682,7 @@ export default function App() {
     closeWorkbench,
     commandOpen,
     dismissActive,
+    openDialog,
     forceAvailable,
     manifest?.frame_count,
     openWorkbench,
@@ -3240,7 +3258,7 @@ export default function App() {
         dragDepth.current = 0;
         setDropActive(false);
         if (rendering || staticDemo) return;
-        void openSelectedFiles([...event.dataTransfer.files]);
+        void openSource([...event.dataTransfer.files]);
       }}
     >
       <input
@@ -3252,7 +3270,7 @@ export default function App() {
         multiple
         onChange={(event) => {
           if (rendering) return;
-          void openSelectedFiles([...(event.currentTarget.files ?? [])]);
+          void openSource([...(event.currentTarget.files ?? [])]);
           event.currentTarget.value = "";
         }}
       />
@@ -3425,6 +3443,7 @@ export default function App() {
         {manifest
           && manifest.frame_count > 0
           && !(showElementColors && elementColors?.length)
+          && !notice
           && !canvasHintDismissed
           && selectedAtoms.length === 0
           && !workbenchVisible
@@ -3856,6 +3875,10 @@ export default function App() {
             title={notice.message}
           >
             <span>{notice.message}</span>
+            {uploadPercent !== null && <div className="upload-progress">
+              <progress aria-label="Upload progress" value={uploadPercent} max={100} />
+              <span aria-hidden="true">{uploadPercent}%</span>
+            </div>}
             {notice.tone === "error" && (
               <button
                 className="notice-dismiss"
@@ -3901,6 +3924,11 @@ export default function App() {
           />
         )}
         {dropActive && <DropOverlay replacing={Boolean(manifest)} />}
+        {openDialog && <OpenDialog
+          onClose={() => setOpenDialog(false)}
+          onUpload={() => fileInputRef.current?.click()}
+          onFile={(path) => void openSource(path)}
+        />}
         {commandOpen && <CommandPalette
           actions={commands}
           contextIds={commandContextIds}

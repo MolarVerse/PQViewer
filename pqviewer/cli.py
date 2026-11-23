@@ -154,6 +154,7 @@ def main(argv: list[str] | None = None) -> None:
             topology_path=args.topology,
             dataset=recipe_dataset,
             initial_recipe=initial_recipe,
+            browse_root=Path.cwd(),
         )
         manifest = application.state.dataset.manifest()
     except Exception as error:  # pylint: disable=broad-exception-caught
@@ -249,7 +250,7 @@ def create_app_from_env() -> ASGIApp:
     """Configure a fresh reload child with the browser CLI's event scope."""
     terminal = make_terminal()
     terminal.configure_logging(os.environ.get(LOG_LEVEL_ENV, "info"))
-    application = _app_from_env()
+    application = _app_from_env(browse_root=Path.cwd())
     manifest = application.state.dataset.manifest()
     url = _browser_url(
         os.environ.get(HOST_ENV, DEFAULT_HOST),

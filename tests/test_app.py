@@ -755,3 +755,55 @@ def test_cli_rejects_info_without_energy(tmp_path, capsys):
 
     assert error.value.code == 2
     assert "--info requires --energy" in capsys.readouterr().err
+
+
+def test_browse_launch_folder_and_open_nested_run(tmp_path):
+    root = tmp_path / "runs"
+    folder = root / "model-a" / "300 K"
+    folder.mkdir(parents=True)
+    (folder / "water.xyz").write_text(WATER_DIMER)
+    (folder / "notes.txt").write_text("Run notes")
+    (folder / "run.in").write_text("start_file = initial.rst;\ntraj_file = water.xyz;\n")
+    (folder / "water.force").write_text(WATER_DIMER)
+    with TestClient(create_app(browse_root=root)) as client:
+        assert client.get("/api/open/folder").json() == {
+            "entries": [{"name": "model-a", "directory": True}],
+        }
+        assert client.get("/api/open/folder", params={"path": "model-a/300 K"}).json() == {
+            "entries": [
+                {"name": "run.in", "directory": False},
+                {"name": "water.xyz", "directory": False},
+            ],
+        }
+        opened = client.post("/api/open/server", json={"path": "model-a/300 K/run.in"})
+        assert opened.status_code == 200
+        assert opened.json()["topology"]["atom_count"] == 6
+        assert opened.json()["source"]["kind"] == "pq-run-input"
+        assert opened.json()["companion_files"]["forces"]["complete"]
+
+        manifest = client.get("/api/manifest").json()
+        assert manifest["dataset_generation"] == opened.json()["dataset_generation"]
+
+
+def test_browse_does_not_expose_files_outside_launch_folder(tmp_path):
+    root = tmp_path / "runs"
+    root.mkdir()
+    outside = tmp_path / "outside.xyz"
+    outside.write_text(WATER_DIMER)
+    (root / "linked.xyz").symlink_to(outside)
+    (root / "linked-folder").symlink_to(tmp_path, target_is_directory=True)
+    (root / "run.xyz").write_text(WATER_DIMER)
+    (root / "run.vel").symlink_to(outside)
+    (root / "run.in").write_text("file_prefix = run; start_file = run.xyz;")
+    (root / "linked-run.xyz").symlink_to(outside)
+    (root / "prefix.in").write_text("file_prefix = linked-run; start_file = run.xyz;")
+    with TestClient(create_app(browse_root=root)) as client:
+        entries = client.get("/api/open/folder").json()["entries"]
+        assert {entry["name"] for entry in entries} == {"prefix.in", "run.in", "run.xyz"}
+        assert client.get("/api/open/folder", params={"path": "linked-folder"}).status_code == 400
+        for path in ("../outside.xyz", str(outside), "linked.xyz", "prefix.in"):
+            assert client.post("/api/open/server", json={"path": path}).status_code == 400
+
+        opened = client.post("/api/open/server", json={"path": "run.xyz"})
+        assert opened.status_code == 200
+        assert not opened.json()["companion_files"]["velocities"]["available"]

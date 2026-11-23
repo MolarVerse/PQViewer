@@ -592,6 +592,10 @@ def open_run_dataset(
         if allowed_root is not None
         else None
     )
+    if resolved_root is not None:
+        for override in overrides.values():
+            if override is not None and not override.is_relative_to(resolved_root):
+                raise ValueError("A companion path leaves the source folder.")
     selected_slice = frame_slice or parsed_slice
     if frame_slice is not None and parsed_slice is not None:
         raise ValueError("frame slice was provided twice")
@@ -613,6 +617,8 @@ def open_run_dataset(
             provenance={"kind": "ase-object"},
         )
 
+    if resolved_root is not None and (not path.is_relative_to(resolved_root) or path.is_dir()):
+        raise ValueError("Choose a file inside the source folder.")
     if path.is_dir():
         segments = _segments_from_directory(path, overrides)
         return RunDataset(
@@ -631,6 +637,7 @@ def open_run_dataset(
             files,
             kind="pq-run-input",
             input_path=path,
+            allowed_root=resolved_root,
         )
         return RunDataset(
             [segment],
@@ -670,7 +677,7 @@ def open_run_dataset(
     if _is_xyz(path) and not _is_ase_extxyz(path, overrides):
         files = _discovered_pq_files(path)
         files.update({key: value for key, value in overrides.items() if value})
-        segment = _pq_segment(path, files, kind="pq-trajectory")
+        segment = _pq_segment(path, files, kind="pq-trajectory", allowed_root=resolved_root)
         return RunDataset(
             [segment],
             name=path.name,
@@ -890,7 +897,7 @@ def _files_from_pq_input(
 
     moldescriptor = directory / "moldescriptor.dat"
     if moldescriptor.is_file():
-        files["moldescriptor"] = moldescriptor.resolve()
+        files["moldescriptor"] = _relative_path(directory, moldescriptor.name, allowed_root=allowed_root)
     return files
 
 
@@ -993,7 +1000,7 @@ def _input_family_files(
             allowed_root=allowed_root,
         )
     return {
-        role: path.resolve()
+        role: _relative_path(directory, str(path), allowed_root=allowed_root)
         for role, path in result.items()
         if role == "trajectory" or path.is_file()
     }
@@ -1005,7 +1012,13 @@ def _pq_segment(
     *,
     kind: str,
     input_path: Path | None = None,
+    allowed_root: Path | None = None,
 ) -> SourceSegment:
+    if allowed_root is not None:
+        files = {
+            role: _relative_path(trajectory.parent, str(path), allowed_root=allowed_root)
+            for role, path in files.items()
+        }
     reference_residues = _read_reference_residues(
         files.get("moldescriptor")
     )
@@ -1019,6 +1032,7 @@ def _pq_segment(
         charges_path=files.get("charges"),
         topology_path=files.get("topology"),
         topology=topology,
+        allowed_root=allowed_root,
         reference_residues=(
             None if topology is not None else reference_residues
         ),

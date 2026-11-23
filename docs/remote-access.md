@@ -13,10 +13,11 @@ server. On your desktop, confirm that SSH access works:
 ssh user@server
 ```
 
-In that server terminal, start the viewer:
+In that server terminal, start the viewer from the folder containing your runs:
 
 ```bash
-pqviewer /path/to/trajectory.xyz --no-open --port 8765
+cd /path/to/simulations
+pqviewer --no-open --port 8765
 ```
 
 In a second terminal on your desktop, start the tunnel:
@@ -27,12 +28,19 @@ ssh -N -o ExitOnForwardFailure=yes \
 ```
 
 Open `http://127.0.0.1:8765` in your desktop browser. Replace `user@server` and
-the trajectory path with your own account, hostname, and server path. The same
+the simulations path with your own account, hostname, and server path. The same
 tunnel works on the institution's network when SSH access is available.
 
 Keep PQViewer and the SSH tunnel running. The tunnel terminal normally stays
 quiet; stop it with `Ctrl+C` when finished. `ExitOnForwardFailure` reports a
 local bind failure; it does not check whether PQViewer is running remotely.
+
+Use **Open** to browse the launch folder and its subfolders on the server. Opening
+a run there does not upload it from your device. Select **Upload from this device**
+only for files on the device running your browser; the viewer shows progress until
+the transfer completes, then opens the files. Anyone who can reach the viewer can
+use **Open** to browse supported files in the launch folder, so start it in a
+folder containing only runs you want to share.
 
 ## A compute node behind a login node
 

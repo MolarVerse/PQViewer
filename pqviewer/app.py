@@ -13,6 +13,7 @@ from typing import Any, Callable, Literal, Mapping
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -76,6 +77,44 @@ _UPLOAD_EXTENSIONS = {
     "energy": (".en",),
     "info": (".info",),
 }
+
+
+class _OpenServerFile(BaseModel):
+    path: str
+
+
+def _browse_path(root: Path, name: str) -> Path:
+    relative = Path(name)
+    if relative.is_absolute() or any(part.startswith(".") for part in relative.parts) or "\0" in name:
+        raise ValueError("Choose a path inside the launch folder.")
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root) or any(part.startswith(".") for part in path.relative_to(root).parts):
+        raise ValueError("Choose a path inside the launch folder.")
+    return path
+
+
+def _is_openable(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in {"poscar", "contcar"} or lowered.endswith(
+        _UPLOAD_EXTENSIONS["trajectory"] + _UPLOAD_EXTENSIONS["input"]
+    )
+
+
+def _browse_entries(root: Path, folder: Path) -> list[dict[str, Any]]:
+    entries = []
+    for child in folder.iterdir():
+        if child.name.startswith("."):
+            continue
+        try:
+            target = _browse_path(root, str(child.relative_to(root)))
+            directory = target.is_dir()
+            if directory or (
+                _is_openable(child.name) and _is_openable(target.name) and target.is_file()
+            ):
+                entries.append({"name": child.name, "directory": directory})
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return sorted(entries, key=lambda entry: (not entry["directory"], entry["name"].casefold()))
 
 
 class _UploadLimitExceeded(MultiPartException):
@@ -156,6 +195,7 @@ def create_app(
     initial_recipe: Mapping[str, Any] | None = None,
     frame_encoder: Callable[[Any], bytes] = encode_frame,
     static_dir: str | Path | None = None,
+    browse_root: str | Path | None = None,
 ) -> FastAPI:
     """Create an application with optional initial data."""
 
@@ -279,12 +319,47 @@ def create_app(
         response.headers["Cache-Control"] = "no-store"
         return refreshed_manifest
 
+    launch_folder = Path(browse_root).resolve() if browse_root is not None else None
+
+    @application.get("/api/open/folder")
+    def browse_folder(response: Response, path: str = "") -> dict[str, Any]:
+        response.headers["Cache-Control"] = "no-store"
+        if launch_folder is None:
+            return {"entries": None}
+        try:
+            folder = _browse_path(launch_folder, path)
+            return {"entries": _browse_entries(launch_folder, folder)}
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail="Could not browse that folder.") from error
+
+    def claim_open() -> int:
+        with application.state.dataset_lock:
+            application.state.open_generation += 1
+            return application.state.open_generation
+
+    @application.post("/api/open/server")
+    def open_server_file(selection: _OpenServerFile, response: Response) -> dict[str, Any]:
+        if launch_folder is None:
+            raise HTTPException(status_code=404, detail="Launch folder browsing is unavailable.")
+        generation = claim_open()
+        try:
+            path = _browse_path(launch_folder, selection.path)
+            if not path.is_file() or not _is_openable(path.name):
+                raise ValueError("Choose a supported structure, trajectory, or PQ input.")
+            candidate = open_run_dataset(path, allowed_root=launch_folder)
+            opened_manifest = candidate.manifest()
+        except Exception as error:
+            event_log(application).warning("Could not open server file: %s", error)
+            raise HTTPException(
+                status_code=400,
+                detail="Could not open that file. Check that its run files are inside the launch folder.",
+            ) from error
+        return finish_open(candidate, opened_manifest, generation, response)
+
     @application.post("/api/open")
     async def open_dataset(request: Request, response: Response) -> dict[str, Any]:
         log = event_log(application)
-        with application.state.dataset_lock:
-            application.state.open_generation += 1
-            generation = application.state.open_generation
+        generation = claim_open()
         form = None
         try:
             parser = _LimitedMultiPartParser(
@@ -330,10 +405,21 @@ def create_app(
             if form is not None:
                 await form.close()
 
+        return finish_open(candidate, opened_manifest, generation, response, temporary)
+
+    def finish_open(
+        candidate: RunDataset,
+        opened_manifest: dict[str, Any],
+        generation: int,
+        response: Response,
+        temporary: TemporaryDirectory | None = None,
+    ) -> dict[str, Any]:
+        log = event_log(application)
         with application.state.dataset_lock:
             if generation != application.state.open_generation:
-                temporary.cleanup()
-                log.debug("Upload superseded by a newer open request")
+                if temporary is not None:
+                    temporary.cleanup()
+                log.debug("Open superseded by a newer open request")
                 raise HTTPException(
                     status_code=409,
                     detail="A newer open request superseded this one.",
@@ -392,7 +478,7 @@ def _manifest_with_generation(
     return result
 
 
-def create_app_from_env() -> FastAPI:
+def create_app_from_env(*, browse_root: Path | None = None) -> FastAPI:
     """Create the application configured by the CLI environment."""
 
     trajectory_path = os.environ.get(TRAJECTORY_ENV) or None
@@ -415,6 +501,7 @@ def create_app_from_env() -> FastAPI:
         topology_path=os.environ.get(TOPOLOGY_ENV),
         dataset=recipe_dataset,
         initial_recipe=initial_recipe,
+        browse_root=browse_root,
     )
 
 
