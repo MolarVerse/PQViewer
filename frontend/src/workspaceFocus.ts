@@ -19,8 +19,8 @@ export function useModalFocus<T extends HTMLElement>(
     background.forEach(({ element }) => { element.inert = true; });
 
     const focusable = () => [...panel.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled]):not([tabindex="-1"]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-    )].filter((element) => element.offsetParent !== null);
+      'button:not([disabled]), details > summary:first-child, input:not([disabled]):not([tabindex="-1"]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    )].filter((element) => element.getClientRects().length > 0);
     const focusInitial = () => (initialRef?.current ?? focusable()[0] ?? panel).focus();
     const animation = requestAnimationFrame(focusInitial);
     const keepFocusInside = (event: FocusEvent) => {

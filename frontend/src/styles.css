@@ -1386,6 +1386,56 @@ input[type="range"]::-moz-range-thumb {
   font-size: 10px;
 }
 
+.viewer-first-steps {
+  padding: 12px 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.viewer-first-steps h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.shortcut-panel.is-help {
+  width: min(520px, 100%);
+}
+
+.viewer-popup-footer {
+  border-top: 1px solid var(--line);
+  padding: 4px 18px;
+}
+
+.viewer-popup-footer button {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.viewer-popup-footer button:hover {
+  color: var(--text);
+}
+
+.viewer-first-steps ol {
+  padding-left: 1.5em;
+}
+
+.viewer-first-steps details {
+  margin: 8px 0;
+}
+
+.viewer-first-steps a {
+  color: inherit;
+  text-decoration: underline;
+}
+
 .shortcut-groups {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 13.5em), 1fr));

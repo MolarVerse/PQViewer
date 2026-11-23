@@ -1629,7 +1629,7 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   for (const control of [
     page.getByRole("button", { name: "Open viewer tools" }),
     page.getByRole("button", { name: "Export figure" }),
-    page.getByRole("button", { name: "Help and keyboard shortcuts" }),
+    page.getByRole("button", { name: "Help" }),
   ]) {
     await expect(control).toBeVisible();
     expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(40);
@@ -2038,7 +2038,7 @@ test("keeps camera controls live in the Export inspector", async ({ page }) => {
   await expect(figureOptionsButton).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", {
-    name: "Help and keyboard shortcuts",
+    name: "Help",
   })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Fit", exact: true })).toBeFocused();
@@ -2281,5 +2281,28 @@ test("keeps camera and timeline controls outside the inspector", async ({ page }
       const counter = (await page.locator(".frame-counter").boundingBox())!;
       return counter.x + counter.width <= inspector.x + 1 || counter.y >= inspector.y + inspector.height - 1;
     }).toBe(true);
+  }
+});
+
+test("opens Help and Keyboard shortcuts in separate popups", async ({ page }) => {
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.goto("/");
+    const helpButton = page.getByRole("button", { name: "Help", exact: true });
+    await helpButton.click();
+    const help = page.getByRole("dialog", { name: "Viewer help" });
+    await expect(help.getByRole("heading", { name: "First steps" })).toBeVisible();
+    await expect(help.getByRole("link", { name: "Read the viewer guide" })).toBeVisible();
+    await expect(help.getByRole("switch", { name: "Vim navigation" })).toHaveCount(0);
+    await help.getByRole("button", { name: "Keyboard shortcuts" }).click();
+    const shortcuts = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+    await expect(help).toHaveCount(0);
+    await expect(shortcuts.getByRole("switch", { name: "Vim navigation" })).toBeVisible();
+    expect(await shortcuts.evaluate((panel) => panel.scrollWidth - panel.clientWidth)).toBeLessThanOrEqual(1);
+    await page.keyboard.press("Escape");
+    await expect(helpButton).toBeFocused();
+    await page.keyboard.press("?");
+    await expect(shortcuts).toBeVisible();
+    await expect(help).toHaveCount(0);
   }
 });
