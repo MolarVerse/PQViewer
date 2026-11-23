@@ -4170,7 +4170,7 @@ function sceneFitBounds(state: SceneState, context: FitContext): THREE.Box3 | nu
     state.polyhedra.updateMatrixWorld(true);
     bounds.union(new THREE.Box3().setFromObject(state.polyhedra));
   }
-  if (presentation.cell && model.basis) {
+  if (presentation.cell && model.basis && (presentation.water === "show" || bounds.isEmpty())) {
     const cellBounds = new THREE.Box3();
     model.images.forEach((image) => expandByCell(cellBounds, model.basis!, image, model.cellCenter));
     const atomSpan = bounds.getSize(new THREE.Vector3()).length();

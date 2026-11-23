@@ -24,6 +24,8 @@ user-visible changes.
 
 ### Fixed
 
+- Fit the visible structure instead of the whole cell when water is hidden or isolated
+
 - Explain how to recover when the 3D view cannot start instead of leaving a blank viewport
 
 - Keep camera controls clear of the inspector and wrap formulas between elements
