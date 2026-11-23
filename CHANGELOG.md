@@ -5,9 +5,22 @@ user-visible changes.
 
 ## [Unreleased]
 
+### Added
+
+- Choose source units, fs, ps, or ns for the timeline when the trajectory declares physical time
+- Inspect sampled distance and values in RDF and coordination plots using the pointer or keyboard
+- Select annotated protein and monatomic ion groups from command search and explain which files support ribbons
+- Show visible element colors in the View inspector, with an option to show them in the viewer
+
+### Changed
+
+- Hide metal–linker bonds by default; turn them on in View → Layers
+- Show PQ atom velocities in Å/fs and include declared time units next to trajectory frames
+- Start alkali halides and frameworks in an atom-based view and favor protein ribbons over solvent presets
+
 ### Fixed
 
-- Make small atoms easier to pick, show a clearer selection marker, and distinguish Shift-click from box selection
+- Make small atoms easier to pick and show the measured value first
 
 ## [0.2.2] - 2026-11-17
 

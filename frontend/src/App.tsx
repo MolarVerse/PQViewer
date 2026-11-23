@@ -222,6 +222,7 @@ const defaultFigureOutput: FigureOutput = {
 };
 
 const defaultPresentation: ScenePresentation = {
+  metalLinkerBonds: false,
   mode: "ball-stick",
   water: "show",
   hydrogens: true,
@@ -291,6 +292,7 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [vimMode, setVimMode] = useState(initialVimMode);
   const [resetSignal, setResetSignal] = useState(0);
+  const [showElementColors, setShowElementColors] = useState(false);
   const [viewPreset, setViewPreset] = useState<ViewPreset>("perspective");
   const [viewSignal, setViewSignal] = useState(0);
   const [sceneRevision, setSceneRevision] = useState(0);
@@ -1141,6 +1143,10 @@ export default function App() {
       : null,
     [selectedAtoms, selectionIndex, workbenchTab],
   );
+  const elementColors = presentation.color === "element"
+    && presentation.mode !== "ribbon" && presentation.mode !== "lines"
+    ? sceneInfo?.elementColors
+    : undefined;
   const selectableElements = useMemo(() => {
     if (!selectionContext) return [];
     const numbers = new Set<number>();
@@ -1401,6 +1407,31 @@ export default function App() {
     }
     applyScientificSelection(selections, `Water · ${atomCountLabel(selections.length)}`);
   }, [applyScientificSelection, selectionIndex]);
+
+  const biomoleculeGroups = useMemo(() => {
+    const protein = new Set<number>();
+    const ions = new Set<number>();
+    const topology = manifest?.topology;
+    if (!topology?.residues || !topology.atom_residue_index) return { protein, ions };
+    const proteinResidues = new Set(topology.residues
+      .filter((residue) => residue.category === "amino-acid")
+      .map((residue) => residue.index));
+    const residueSizes = new Map<number, number>();
+    topology.atom_residue_index.forEach((residue) => {
+      residueSizes.set(residue, (residueSizes.get(residue) ?? 0) + 1);
+    });
+    const ionSymbols = new Set(["Li", "Na", "K", "Rb", "Cs", "Mg", "Ca", "Zn", "F", "Cl", "Br", "I"]);
+    const ionResidues = new Set(topology.residues
+      .filter((residue) => residue.category === "other" && residue.name
+        && ionSymbols.has(residue.name[0].toUpperCase() + residue.name.slice(1).toLowerCase()))
+      .map((residue) => residue.index));
+    topology.atom_residue_index.forEach((residue, atom) => {
+      if (proteinResidues.has(residue)) protein.add(atom);
+      if (ionResidues.has(residue) && residueSizes.get(residue) === 1
+        && ionSymbols.has(topology.symbols?.[atom] ?? "")) ions.add(atom);
+    });
+    return { protein, ions };
+  }, [manifest]);
 
   const saveNamedSelection = useCallback((name: string): boolean => {
     if (selectedAtoms.length === 0) return false;
@@ -2970,6 +3001,20 @@ export default function App() {
         detail: ELEMENT_SYMBOLS[atomicNumber],
         run: run(() => selectElement(atomicNumber)),
       })),
+      ...(["protein", "ions"] as const).filter((group) => biomoleculeGroups[group].size > 0)
+        .map((group) => ({
+          id: `select-${group}`,
+          label: `Select ${group}`,
+          keywords: "residue atoms biomolecule selection",
+          run: run(() => {
+            const atoms = selectionIndex?.selectAtoms(biomoleculeGroups[group]) ?? [];
+            if (!atoms.length) {
+              setNotice({ message: `No visible ${group} found.`, tone: "status" });
+              return;
+            }
+            applyScientificSelection(atoms, `${group} · ${atomCountLabel(atoms.length)}`);
+          }),
+        })),
       ...(selectionContext?.waterAtoms.size ? [{
         id: "select-water",
         label: "Select water",
@@ -3093,6 +3138,8 @@ export default function App() {
     selectView,
     selectElement,
     selectScope,
+    applyScientificSelection,
+    biomoleculeGroups,
     selectWater,
     selectableElements,
     selectionAnchor,
@@ -3359,8 +3406,22 @@ export default function App() {
           <div className="canvas-field" />
         )}
 
+        {showElementColors && elementColors && elementColors.length > 0 && !workbenchVisible
+          && !measurementPlotOpen && !study.plot && selectedAtoms.length === 0 && (
+          <div className="viewport-element-colors">
+            <ElementColors colors={elementColors.slice(0, 6)} />
+            {elementColors.length > 6 && (
+              <button type="button" aria-label={`Show all ${elementColors.length} element colors`}
+                onClick={() => openSetting("view", "view-atoms")}>
+                +{elementColors.length - 6}
+              </button>
+            )}
+          </div>
+        )}
+
         {manifest
           && manifest.frame_count > 0
+          && !(showElementColors && elementColors?.length)
           && !canvasHintDismissed
           && selectedAtoms.length === 0
           && !workbenchVisible
@@ -3449,11 +3510,15 @@ export default function App() {
             {workbenchTab === "view" && <ScenePanel
               presentation={presentation}
               capabilities={capabilities}
+              hasMetalLinkerBonds={Boolean(sceneTopology?.value?.metalLinkerBonds?.size)}
               cellAvailable={cellAvailable}
               forceAvailable={forceAvailable}
               velocityAvailable={velocityAvailable}
               pbc={pbc}
               atomCount={manifest.topology.atom_count}
+              elementColors={elementColors}
+              showElementColors={showElementColors}
+              onShowElementColors={setShowElementColors}
               hasHydrogens={hasHydrogens}
               hasResidueColor={hasResidueColor}
               hasChainColor={hasChainColor}
@@ -4338,11 +4403,15 @@ function CellEditor({
 function ScenePanel({
   presentation,
   capabilities,
+  hasMetalLinkerBonds,
   cellAvailable,
   forceAvailable,
   velocityAvailable,
   pbc,
   atomCount,
+  elementColors,
+  showElementColors,
+  onShowElementColors,
   hasHydrogens,
   hasResidueColor,
   hasChainColor,
@@ -4356,11 +4425,15 @@ function ScenePanel({
 }: {
   presentation: ScenePresentation;
   capabilities: SceneCapabilities;
+  hasMetalLinkerBonds: boolean;
   cellAvailable: boolean;
   forceAvailable: boolean;
   velocityAvailable: boolean;
   pbc: [boolean, boolean, boolean];
   atomCount: number;
+  elementColors?: RenderedSceneInfo["elementColors"];
+  showElementColors: boolean;
+  onShowElementColors: (show: boolean) => void;
   hasHydrogens: boolean;
   hasResidueColor: boolean;
   hasChainColor: boolean;
@@ -4478,6 +4551,19 @@ function ScenePanel({
             </select>
           </label>
         )}
+        {elementColors && elementColors.length > 0 && (
+          <>
+            <div className="panel-select-row element-color-row">
+              <span>Element colors</span>
+              <ElementColors colors={elementColors} />
+            </div>
+            <Toggle
+              label="Show element colors in viewer"
+              checked={showElementColors}
+              onChange={onShowElementColors}
+            />
+          </>
+        )}
         <VectorScale label="Atom size" value={presentation.atomScale} min={0.4} max={1.8} onChange={(atomScale) => onPresentation({ atomScale })} />
         {bondCapable && (
           <VectorScale label="Bond size" value={presentation.bondScale} min={0.25} max={1.8} onChange={(bondScale) => onPresentation({ bondScale })} />
@@ -4496,6 +4582,11 @@ function ScenePanel({
           title={bondCapable ? undefined : "Not used by the current representation"}
           onChange={(bonds) => onPresentation({ bonds })}
         />
+        {hasMetalLinkerBonds && bondCapable && presentation.bonds && <Toggle
+          label="Metal–linker bonds"
+          checked={Boolean(presentation.metalLinkerBonds)}
+          onChange={(metalLinkerBonds) => onPresentation({ metalLinkerBonds })}
+        />}
         {capabilities.water && <Toggle label="Water" checked={presentation.water !== "hide"} onChange={(shown) => onPresentation({ water: shown ? "show" : "hide" })} />}
         {cellAvailable && <Toggle label="Cell" checked={presentation.cell} onChange={(cell) => onPresentation({ cell })} />}
         {forceAvailable && <Toggle label="Forces" checked={presentation.forces} onChange={(forces) => onPresentation({ forces })} />}
@@ -4679,6 +4770,17 @@ function Toggle({
     <span>{label}</span>
     <button type="button" role="switch" aria-label={label} aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)}><i /></button>
   </div>;
+}
+
+function ElementColors({ colors }: { colors: NonNullable<RenderedSceneInfo["elementColors"]> }) {
+  return <ul className="element-colors" aria-label="Visible element colors">
+    {colors.map(({ number, color }) => (
+      <li key={number} title={ELEMENT_NAMES[number]}>
+        <i aria-hidden="true" style={{ backgroundColor: color }} />
+        {ELEMENT_SYMBOLS[number] || "Unknown"}
+      </li>
+    ))}
+  </ul>;
 }
 
 function CanvasControls({
@@ -5214,6 +5316,7 @@ function Inspector({
   const symbol = atom !== null ? atomSymbol(manifest, atom) : null;
   const forceUnit = arrayUnit(frame, manifest, "forces");
   const velocityUnit = arrayUnit(frame, manifest, "velocities");
+  const velocityInSeconds = velocityUnit === "Å/s";
   const chargeUnit = arrayUnit(frame, manifest, "charges");
   const residueIndex = atom === null ? -1 : manifest.topology.atom_residue_index?.[atom] ?? -1;
   const residue = manifest.topology.residues?.find((entry) => entry.index === residueIndex);
@@ -5250,7 +5353,8 @@ function Inspector({
         />
       )}
       {forces && <VectorReadout label="Force" values={forces} offset={atom * 3} unit={forceUnit} />}
-      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3} unit={velocityUnit} />}
+      {velocities && <VectorReadout label="Velocity" values={velocities} offset={atom * 3}
+        unit={velocityInSeconds ? "Å/fs" : velocityUnit} scale={velocityInSeconds ? 1e-15 : 1} />}
       {charges && charges[atom] !== undefined && <Readout label="Charge" value={withUnit(formatNumber(charges[atom]), chargeUnit)} />}
       </section>
     </>}
@@ -5333,6 +5437,18 @@ function AtomEditor({
   </form>;
 }
 
+const timeDisplayUnits = ["source", "fs", "ps", "ns"] as const;
+type TimeDisplayUnit = typeof timeDisplayUnits[number];
+
+const secondsPerUnit = new Map([
+  ["s", 1], ["ms", 1e-3], ["µs", 1e-6], ["us", 1e-6],
+  ["ns", 1e-9], ["ps", 1e-12], ["fs", 1e-15],
+]);
+
+function frameTimeUnit(frame: FrameData | null): string | undefined {
+  return displayUnit(frame?.header.frame_key?.time_unit ?? frame?.header.scalar_units?.time)?.trim();
+}
+
 function Timeline({
   busy,
   frameCount,
@@ -5408,7 +5524,11 @@ function Timeline({
   const compactFrameLabel = displayedFrameIndex === frameIndex
     ? `${compactFrameNumber(displayedFrameIndex + 1)} / ${compactFrameNumber(frameCount)}`
     : `${compactFrameNumber(displayedFrameIndex + 1)} → ${compactFrameNumber(frameIndex + 1)}`;
-  const metadata = frameMetadata(frame);
+  const [timeDisplayUnit, setTimeDisplayUnit] = useState<TimeDisplayUnit>("source");
+  const timeUnit = frameTimeUnit(frame);
+  const canConvertTime = timeUnit !== undefined && secondsPerUnit.has(timeUnit)
+    && numericFrameMetadata(frame, "time") !== null;
+  const metadata = frameMetadata(frame, timeDisplayUnit);
 
   return (
     <section className={`timeline is-compact${busy ? " is-busy" : ""}`} aria-label="Trajectory controls">
@@ -5473,7 +5593,7 @@ function Timeline({
             <span className="frame-counter-full">{frameLabel}</span>
             <span className="frame-counter-compact" aria-hidden="true">{compactFrameLabel}</span>
           </output>}
-        {metadata && <span className="frame-metadata">{metadata}</span>}
+        {metadata && <span className="frame-metadata" title={metadata}>{metadata}</span>}
         {frameError && <span className="frame-error" title={frameError} aria-label="Frame unavailable">
           <span className="frame-error-full">Frame error</span>
           <span className="frame-error-compact" aria-hidden="true">Error</span>
@@ -5537,6 +5657,16 @@ function Timeline({
             <label><span>Stride</span><select value={stride} onChange={(event) => onStride(Number(event.target.value))}>
               {[1, 2, 5, 10].map((value) => <option key={value} value={value}>{value} frame{value === 1 ? "" : "s"}</option>)}
             </select></label>
+            {canConvertTime && <label><span>Time unit</span>
+              <select aria-label="Time unit" value={timeDisplayUnit} onChange={(event) => {
+                const unit = timeDisplayUnits.find((value) => value === event.target.value);
+                if (unit) setTimeDisplayUnit(unit);
+              }}>
+                {timeDisplayUnits.map((unit) => <option key={unit} value={unit}>
+                  {unit === "source" ? `Source (${timeUnit})` : unit}
+                </option>)}
+              </select>
+            </label>}
             <div className="segmented-options">
               {([
                 ["once", "Once"],
@@ -5557,11 +5687,24 @@ function Timeline({
   );
 }
 
-export function frameMetadata(frame: FrameData | null): string {
+export function frameMetadata(frame: FrameData | null, displayTimeUnit: TimeDisplayUnit = "source"): string {
   const stepValue = numericFrameMetadata(frame, "step");
   const timeValue = numericFrameMetadata(frame, "time");
   const step = stepValue === null ? "" : `step ${formatNumber(stepValue)}`;
-  const time = timeValue === null ? "" : `t ${formatNumber(timeValue)}`;
+  let timeUnit = frameTimeUnit(frame);
+  let displayedTime = timeValue;
+  if (timeValue !== null && timeUnit && displayTimeUnit !== "source" && displayTimeUnit !== timeUnit) {
+    const sourceScale = secondsPerUnit.get(timeUnit);
+    const targetScale = secondsPerUnit.get(displayTimeUnit);
+    if (sourceScale && targetScale) {
+      const converted = timeValue * (sourceScale / targetScale);
+      if (Number.isFinite(converted)) {
+        displayedTime = converted;
+        timeUnit = displayTimeUnit;
+      }
+    }
+  }
+  const time = displayedTime === null ? "" : `t ${withUnit(formatNumber(displayedTime), timeUnit)}`;
   return [step, time].filter(Boolean).join(" · ");
 }
 
@@ -5837,7 +5980,7 @@ function selectedPosition(positions: Float64Array | null, index: number): Float6
 function numericFrameMetadata(frame: FrameData | null, key: "step" | "time"): number | null {
   const primary = frame?.header[key];
   if (typeof primary === "number" && Number.isFinite(primary)) return primary;
-  const scalar = frame?.header.scalars?.[key];
+  const scalar = frame?.header.scalars?.[key] ?? frame?.header.frame_key?.[key];
   return typeof scalar === "number" && Number.isFinite(scalar) ? scalar : null;
 }
 
@@ -5846,14 +5989,14 @@ function Readout({ label, value }: { label: string; value: string }) {
   return <div className="readout"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function VectorReadout({ label, values, offset, unit }: { label: string; values: ArrayLike<number>; offset: number; unit?: string }) {
+function VectorReadout({ label, values, offset, unit, scale = 1 }: { label: string; values: ArrayLike<number>; offset: number; unit?: string; scale?: number }) {
   return (
     <div className="vector-readout">
       <span>{label}</span>
       <code>
-        <i>x</i>{formatNumber(values[offset])}
-        <i>y</i>{formatNumber(values[offset + 1])}
-        <i>z</i>{formatNumber(values[offset + 2])}
+        <i>x</i>{formatNumber(values[offset] * scale)}
+        <i>y</i>{formatNumber(values[offset + 1] * scale)}
+        <i>z</i>{formatNumber(values[offset + 2] * scale)}
         {unit && <b>{unit}</b>}
       </code>
     </div>
@@ -6019,11 +6162,14 @@ export function selectedProfilePresentation(
   capabilities: SceneCapabilities,
 ): ScenePresentation {
   const resolved = selectedProfile === "auto"
-    ? cellAvailable && capabilities.water
+    ? cellAvailable && capabilities.water && !capabilities.ribbon
       ? "liquid"
       : autoProfile(capabilities, forceAvailable, hasSeries)
     : selectedProfile;
-  return profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  const view = profilePresentation(resolved, current, cellAvailable, forceAvailable, capabilities);
+  return selectedProfile === "auto" && resolved === "mof"
+    ? { ...view, mode: "ball-stick", atomScale: 1, bondScale: 1 }
+    : view;
 }
 
 export function profilePresentation(

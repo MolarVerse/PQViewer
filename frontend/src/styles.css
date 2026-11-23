@@ -7621,6 +7621,60 @@ button.measurement-plot__legend-item:hover {
   }
 }
 
+.element-colors {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: 12px var(--numeric);
+}
+
+.element-colors li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.element-colors li i {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--line-strong);
+}
+
+.viewport-element-colors {
+  position: absolute;
+  z-index: 2;
+  left: 12px;
+  bottom: calc(var(--timeline-height) + 10px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 7px;
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--line-soft);
+}
+
+.viewport-element-colors .element-colors {
+  flex-wrap: nowrap;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.viewport-element-colors button {
+  min-height: 24px;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 11px var(--numeric);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .selection-readout.is-measurement output {
   flex: none;
   color: var(--text);

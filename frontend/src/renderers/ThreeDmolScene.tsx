@@ -371,11 +371,16 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
 
       runtime.scene = scene;
       runtime.plan = plan;
+      const elements = new Set<number>();
+      for (const selection of plan.selections) elements.add(scene.atomicNumbers[selection.atom]);
       runtime.layoutKey = plan.layoutKey;
       runtime.fitMode = presentation.mode;
       runtime.manifestName = manifest.name;
       onSelectionContext?.(selectionContextFromDmolModel(manifest, scene));
       const info: RenderedSceneInfo = {
+        elementColors: [...elements].sort((a, b) => a - b).map((number) => ({
+          number, color: dmolElementColor(number) ?? "#65757A",
+        })),
         imageCount: scene.images.length,
         forceCount: geometry.forceInstances.length,
         forceTotal: geometry.forceTotal,
