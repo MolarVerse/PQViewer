@@ -3020,12 +3020,6 @@ button.measurement-plot__legend-item:hover {
   font-size: 10px;
 }
 
-.selection-hint {
-  color: var(--quiet);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
 .selection-bar > button:not(.icon-button) {
   flex: 0 0 auto;
   min-width: 56px;
@@ -6161,10 +6155,6 @@ button.measurement-plot__legend-item:hover {
 }
 
 @media (max-width: 380px) {
-  .selection-hint {
-    display: none;
-  }
-
   .measurement-plot-open .selection-bar {
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -6250,7 +6240,7 @@ button.measurement-plot__legend-item:hover {
   flex: 0 0 auto;
 }
 
-.selection-tools > summary {
+.selection-tools > button {
   min-width: 54px;
   height: 36px;
   display: grid;
@@ -6261,15 +6251,12 @@ button.measurement-plot__legend-item:hover {
   font-size: 10px;
   font-weight: 650;
   cursor: pointer;
-  list-style: none;
+  border: 0;
+  background: transparent;
 }
 
-.selection-tools > summary::-webkit-details-marker {
-  display: none;
-}
-
-.selection-tools > summary:hover,
-.selection-tools[open] > summary {
+.selection-tools > button:hover,
+.selection-tools > button[aria-expanded="true"] {
   background: var(--accent-soft);
 }
 
@@ -6490,7 +6477,7 @@ button.measurement-plot__legend-item:hover {
     position: static;
   }
 
-  .selection-tools > summary {
+  .selection-tools > button {
     height: 44px;
   }
 
@@ -6529,7 +6516,7 @@ button.measurement-plot__legend-item:hover {
     min-width: 80px;
   }
 
-  .selection-tools > summary {
+  .selection-tools > button {
     min-width: 48px;
     padding-inline: 7px;
   }
@@ -7278,53 +7265,11 @@ button.measurement-plot__legend-item:hover {
   padding: 6px 0 2px;
 }
 
-.analysis-empty strong,
-.analysis-measurement-copy strong {
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.analysis-empty p,
-.analysis-measurement-copy p {
-  margin: 7px 0 0;
-  color: var(--quiet);
+.analysis-empty p {
+  margin: 0;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
-}
-
-.analysis-empty > div {
-  display: grid;
-  gap: 5px;
-  margin-top: 14px;
-}
-
-.analysis-empty > div span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.analysis-empty kbd {
-  min-width: 56px;
-  display: inline-block;
-  margin-right: 7px;
-  padding: 3px 5px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--surface-soft);
-  color: var(--text);
-  text-align: center;
-}
-
-.analysis-measurement-copy strong,
-.analysis-measurement-copy span {
-  display: block;
-}
-
-.analysis-measurement-copy span {
-  margin-top: 3px;
-  color: var(--muted);
-  font: 10px var(--numeric);
 }
 
 .analysis-actions,
@@ -7728,4 +7673,17 @@ button.measurement-plot__legend-item:hover {
   font: 11px var(--numeric);
   text-decoration: underline;
   cursor: pointer;
+}
+
+.selection-readout.is-measurement output {
+  flex: none;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.selection-readout.is-measurement strong {
+  color: var(--muted);
+  font-weight: 500;
 }

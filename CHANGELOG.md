@@ -18,6 +18,10 @@ user-visible changes.
 - Show PQ atom velocities in Å/fs and include declared time units next to trajectory frames
 - Start alkali halides and frameworks in an atom-based view and favor protein ribbons over solvent presets
 
+### Fixed
+
+- Make small atoms easier to pick and show the measured value first
+
 ## [0.2.2] - 2026-11-17
 
 ### Changed
