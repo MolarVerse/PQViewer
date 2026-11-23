@@ -51,6 +51,7 @@ export interface RdfAnalysisRequest {
   frameStart?: number;
   frameStop?: number;
   frameStep?: number;
+  full?: boolean;
   bins?: number;
   rMax?: number;
 }
@@ -158,6 +159,7 @@ export async function runRdfAnalysis(
       frame_start: request.frameStart ?? 0,
       frame_stop: request.frameStop,
       frame_step: request.frameStep ?? 1,
+      full: request.full,
       n_bins: request.bins ?? 200,
       r_max: request.rMax,
     }),

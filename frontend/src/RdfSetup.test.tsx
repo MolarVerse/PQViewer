@@ -32,6 +32,14 @@ describe("RDF setup", () => {
     expect(value).toMatchObject({ frameStart: 0, frameStop: 15, frameStep: 2 });
   });
 
+  it("keeps every requested frame in full mode above the preview pair limit", () => {
+    const oxygen = { id: "oxygen", label: "Oxygen", atomIndices: Array.from({ length: 2_000 }, (_, i) => i * 3) };
+    expect(buildRdfSetupValue({
+      reference: oxygen, target: oxygen, frameCount: 15, frames: "all",
+      full: true, bins: 200, initialView: "rdf",
+    })).toMatchObject({ frameStart: 0, frameStop: 15, frameStep: 1, full: true });
+  });
+
   it("samples oversized trajectories within the backend frame limit", () => {
     const value = buildRdfSetupValue({
       frameCount: 50_000,

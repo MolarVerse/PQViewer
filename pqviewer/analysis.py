@@ -95,6 +95,7 @@ class RDFRequest(StrictModel):
     frame_start: int = Field(default=0, ge=0)
     frame_stop: int | None = Field(default=None, ge=1)
     frame_step: int = Field(default=1, ge=1)
+    full: bool = False
     n_bins: int = Field(default=200, ge=1, le=MAX_RDF_BINS)
     r_max: float | None = Field(default=None, gt=0, le=1_000_000)
 
@@ -330,13 +331,15 @@ def _prepare_rdf_request(
         )
     frame_indices = range(payload.frame_start, stop, payload.frame_step)
     selected_frames = len(frame_indices)
-    if selected_frames > MAX_RDF_FRAMES:
+    if payload.full and payload.frame_step != 1:
+        raise HTTPException(status_code=422, detail="Full RDF requires a frame stride of one.")
+    if not payload.full and selected_frames > MAX_RDF_FRAMES:
         raise HTTPException(
             status_code=422,
             detail=f"RDF is limited to {MAX_RDF_FRAMES:,} frames.",
         )
     evaluations = selected_frames * len(reference_indices) * len(target_indices)
-    if evaluations > MAX_RDF_PAIR_EVALUATIONS:
+    if not payload.full and evaluations > MAX_RDF_PAIR_EVALUATIONS:
         raise HTTPException(
             status_code=422,
             detail=("RDF selection is too large. Reduce frames or selected atoms."),

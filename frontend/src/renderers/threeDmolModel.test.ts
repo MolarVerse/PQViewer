@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { prepareScene } from "../scene/model";
 import type { FrameData, Manifest, ScenePresentation } from "../types";
@@ -24,6 +25,37 @@ const presentation: ScenePresentation = {
   color: "element",
   quality: "auto",
 };
+
+it("keeps all four inferred nitrogen neighbors of each ZIF-8 zinc", () => {
+  const xyz = readFileSync(new URL("../../../examples/zif8.extxyz", import.meta.url), "utf8");
+  const [count, , ...rows] = xyz.trim().split("\n");
+  const elements: Record<string, number> = { Zn: 30, N: 7, C: 6, H: 1 };
+  const atoms = rows.map((row) => row.split(/\s+/));
+  expect(atoms).toHaveLength(Number(count));
+  const numbers = atoms.map(([element]) => elements[element]);
+  const source = manifest(numbers);
+  source.topology.symbols = atoms.map(([element]) => element);
+  source.topology.bond_source = "inferred";
+  const data = frame(atoms.flatMap((row) => row.slice(1).map(Number)),
+    [16.987, 0, 0, 0, 16.987, 0, 0, 0, 16.987], [true, true, true]);
+  const repeated: ScenePresentation = {
+    ...presentation,
+    images: { min: [-1, -1, -1], max: [1, 1, 1] },
+  };
+  const scene = prepareScene(source, data, repeated)!;
+  const plan = buildDmolScenePlan(source, scene, repeated);
+  const zinc = numbers.flatMap((number, index) => number === 30 ? [index] : []);
+  expect(zinc).toHaveLength(12);
+  for (const atom of zinc) {
+    const neighbors = scene.bonds.flatMap(([left, right]) =>
+      left === atom ? [right] : right === atom ? [left] : []);
+    expect(neighbors.filter((neighbor) => numbers[neighbor] === 7)).toHaveLength(4);
+    const center = plan.atoms.findIndex((entry) => entry.properties.pqAtom === atom
+      && entry.properties.pqImageA === 0 && entry.properties.pqImageB === 0 && entry.properties.pqImageC === 0);
+    expect(center).toBeGreaterThanOrEqual(0);
+  }
+  expect(plan.shapeBondSegments.length).toBeGreaterThan(0);
+});
 
 describe("3Dmol scene plan", () => {
   it("keeps PQ's centered periodic cell without drawing through its boundary", () => {
