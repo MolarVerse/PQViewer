@@ -199,6 +199,7 @@ export interface MoleculeSceneProps {
   viewSignal?: number;
   onSelect: (selection: AtomSelection | null, additive: boolean) => void;
   onSelectMany?: (selections: AtomSelection[], additive: boolean) => void;
+  onEngineError?: (error: Error) => void;
   onSceneInfo?: (info: RenderedSceneInfo | null) => void;
   onSelectionContext?: (context: SceneSelectionContext | null) => void;
   onSelectionPositions?: (positions: Float64Array | null) => void;
@@ -238,6 +239,7 @@ interface ResolvedFigureExportOptions extends ResolvedPngExportOptions {
 }
 
 export interface RenderedSceneInfo {
+  elementColors?: readonly { number: number; color: string }[];
   imageCount: number;
   forceCount: number;
   forceTotal: number;
@@ -434,11 +436,17 @@ function buildSceneCapabilities(
   polyhedra: boolean,
   periodic: boolean,
 ): SceneCapabilities {
+  const alkalis = new Set(["Li", "Na", "K", "Rb", "Cs"]);
+  const halogens = new Set(["F", "Cl", "Br", "I"]);
+  const elements = new Set(manifest.topology.symbols);
+  const alkaliHalide = elements.size === 2
+    && [...elements].some((symbol) => alkalis.has(symbol))
+    && [...elements].some((symbol) => halogens.has(symbol));
   let ribbonReason = "Backbone available";
   if (!ribbon) {
     ribbonReason = manifest.topology.residues?.length && manifest.topology.atom_names?.length
       ? "Three complete backbone residues required"
-      : "Backbone topology unavailable";
+      : "Open a PDB or another structure with backbone residue and atom names; plain XYZ has no backbone metadata";
   }
   return {
     water,
@@ -450,11 +458,13 @@ function buildSceneCapabilities(
       : POLYHEDRA_REQUIREMENT,
     suggestedProfile: ribbon
       ? "protein"
-      : polyhedra
-        ? "crystal"
-        : periodic && !water && manifest.topology.atom_count >= MIN_AUTO_MOF_ATOMS
-          ? "mof"
-          : "molecule",
+      : alkaliHalide
+        ? "molecule"
+        : polyhedra
+          ? "crystal"
+          : periodic && !water && manifest.topology.atom_count >= MIN_AUTO_MOF_ATOMS
+            ? "mof"
+            : "molecule",
   };
 }
 
@@ -534,6 +544,7 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   viewSignal = 0,
   onSelect,
   onSelectMany,
+  onEngineError,
   onSceneInfo,
   onSelectionContext,
   onSelectionPositions,
@@ -543,6 +554,8 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   const selectRef = useRef(onSelect);
   const selectManyRef = useRef(onSelectMany);
   const selectedAtomsRef = useRef(selectedAtoms);
+  const engineErrorRef = useRef(onEngineError);
+  engineErrorRef.current = onEngineError;
   const sceneInfoRef = useRef(onSceneInfo);
   const selectionContextRef = useRef(onSelectionContext);
   const selectionPositionsRef = useRef(onSelectionPositions);
@@ -604,7 +617,13 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+    } catch (reason) {
+      engineErrorRef.current?.(reason instanceof Error ? reason : new Error("WebGL renderer could not start"));
+      return;
+    }
     let pixelRatio = Math.min(window.devicePixelRatio, 2);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;

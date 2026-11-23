@@ -38,6 +38,7 @@ export function resolveRendererEngine(_search?: string): RendererEngineId {
 export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>(
   function RendererScene(props, ref) {
     const preferredEngine = resolveRendererEngine();
+    const [rendererFailed, setRendererFailed] = useState(false);
     const [fallback, setFallback] = useState(false);
     const [publicationRequest, setPublicationRequest] =
       useState<PublicationRequest | null>(null);
@@ -160,14 +161,20 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
     }, []);
 
     return <>
-      {engine === "3dmol" ? (
+      {rendererFailed ? (
+        <div className="renderer-error" role="alert">
+          <strong>3D view could not start</strong>
+          <p>PQViewer needs WebGL 2. Enable graphics acceleration in your browser, then reload,
+            or open the viewer in another browser with WebGL 2 support.</p>
+        </div>
+      ) : engine === "3dmol" ? (
         <ThreeDmolScene
           {...props}
           ref={interactiveRef}
           onEngineError={() => setFallback(true)}
         />
       ) : (
-        <ThreeScene {...props} ref={interactiveRef} />
+        <ThreeScene {...props} ref={interactiveRef} onEngineError={() => setRendererFailed(true)} />
       )}
       {publicationRequest && engine === "3dmol" && (
         <div
@@ -178,6 +185,12 @@ export const MoleculeScene = forwardRef<MoleculeSceneHandle, MoleculeSceneProps>
           <ThreeScene
             {...props}
             ref={publicationRef}
+            onEngineError={(error) => {
+              window.clearTimeout(publicationRequest.timeout);
+              publicationRequest.reject(error);
+              publicationRequestRef.current = null;
+              setPublicationRequest(null);
+            }}
             onSelect={() => undefined}
             onSelectMany={() => undefined}
             onSceneInfo={(info) => {

@@ -149,7 +149,7 @@ describe("scheduled playback", () => {
     })).toEqual([9]);
   });
 
-  it("catches up before committing a delayed timer tick", () => {
+  it("advances one stride on a delayed timer tick", () => {
     const steps: number[] = [];
     let pulses = 0;
     const tick = runScheduledPlaybackTick(
@@ -167,15 +167,15 @@ describe("scheduled playback", () => {
 
     expect(tick.schedule).toEqual({
       delayMs: 0,
-      requestTimeMs: 500,
-      stepCount: 4,
+      requestTimeMs: 510,
+      stepCount: 1,
     });
     expect(tick.committed).toBe(true);
-    expect(steps).toEqual([6]);
+    expect(steps).toEqual([3]);
     expect(pulses).toBe(1);
   });
 
-  it("pulses when a complete loop leaves the frame unchanged", () => {
+  it("does not skip a loop when the timer is late", () => {
     const frames: number[] = [];
     let pulses = 0;
     const tick = runScheduledPlaybackTick(
@@ -192,9 +192,9 @@ describe("scheduled playback", () => {
     );
 
     if (!tick.committed) throw new Error("Expected a committed playback tick");
-    expect(tick.schedule.stepCount).toBe(5);
-    expect(tick.step.frameIndex).toBe(3);
-    expect(frames).toEqual([3]);
+    expect(tick.schedule.stepCount).toBe(1);
+    expect(tick.step.frameIndex).toBe(4);
+    expect(frames).toEqual([4]);
     expect(pulses).toBe(1);
   });
 
