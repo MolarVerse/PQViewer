@@ -976,7 +976,7 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toHaveText("O2");
 
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   await page.getByRole("button", { name: "Component", exact: true }).click();
   await expect(page.locator(".selection-readout strong")).toHaveText("CO · 2 atoms");
 
@@ -985,11 +985,11 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toHaveText("O2");
 
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   await page.keyboard.press("Escape");
-  await expect(page.locator(".selection-tools")).not.toHaveAttribute("open", "");
+  await expect(page.locator(".selection-tools > button")).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator(".selection-readout strong")).toHaveText("O2");
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   await page.getByPlaceholder("e.g. active site").fill("boundary oxygen");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await page.locator(".selection-bar").getByRole("button", { name: "Clear selection" }).click();
@@ -1013,7 +1013,7 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toContainText("Distance");
-  await expect(page.locator(".selection-readout output")).toContainText("0.4 Å");
+  await expect(page.locator(".selection-readout output")).toHaveText("0.400 Å");
 
   await page.getByRole("button", { name: "Pin", exact: true }).click();
   const pinSummary = page.locator(".pinned-measurements > summary");
@@ -1425,7 +1425,8 @@ test("keeps centered periodic controls direct and reversible", async ({ page }) 
   await page.getByRole("combobox", { name: "Search atoms, settings, and commands" }).fill("select carbon");
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toHaveText("C1 (+a)");
-  await expect(page.locator(".selection-readout output")).toHaveText("5.2 0.1 0");
+  await page.locator(".selection-bar").getByRole("button", { name: "Details" }).click();
+  await expect(page.locator("#workbench .vector-readout").filter({ hasText: "Position" })).toContainText(/5\.2.*0\.1.*0/);
   expect(errors).toEqual([]);
 });
 
@@ -1745,11 +1746,11 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   await page.getByRole("button", { name: "Search atoms, settings, and commands" }).click();
   await page.getByRole("combobox", { name: "Search atoms, settings, and commands" }).fill("select oxygen");
   await page.keyboard.press("Enter");
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   for (const name of ["boundary", "oxygen shell", "active set"]) {
     await page.getByPlaceholder("e.g. active site").fill(name);
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await page.locator(".selection-tools > summary").click();
+    await page.locator(".selection-tools > button").click();
   }
   const toolsBox = await page.locator(".selection-tools-popover").boundingBox();
   const selectionBox = await page.locator(".selection-bar").boundingBox();
@@ -2169,5 +2170,5 @@ test("adds an atom with Shift-click without starting a selection box", async ({ 
     await page.mouse.click(Math.floor(bounds.x) + x / count, Math.floor(bounds.y) + y / count);
     if (channel === 1) await page.keyboard.up("Shift");
   }
-  await expect(page.locator(".selection-readout")).toContainText("Distance");
+  await expect(page.locator(".selection-readout > :first-child")).toHaveText("2.000 Å");
 });

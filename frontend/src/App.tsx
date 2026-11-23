@@ -3402,10 +3402,8 @@ export default function App() {
               {workbenchTab === "view" && (
                 <span>{representationLabel(presentation.mode)} · interactive scene</span>
               )}
-              {workbenchTab === "analyze" && (
-                <span>{selectedAtoms.length === 0
-                  ? "Selection and trajectory tools"
-                  : `${selectedAtoms.length.toLocaleString()} selected · ${selectionFormula || "selection"}`}</span>
+              {workbenchTab === "analyze" && selectedAtoms.length === 1 && (
+                <span>1 selected · {selectionFormula || "selection"}</span>
               )}
             </div>
             <div className="workbench-heading-actions">
@@ -3527,7 +3525,6 @@ export default function App() {
             />}
             {workbenchTab === "analyze" && selectedAtoms.length !== 1 && <AnalyzePanel
               selectedCount={selectedAtoms.length}
-              selectionFormula={selectionFormula}
               summary={selectionSummary}
               uniqueAtoms={new Set(selectedAtoms.map(({ atom }) => atom)).size}
               canPlot={canPlotMeasurement}
@@ -4781,11 +4778,13 @@ function SelectionBar({
 }) {
   const [name, setName] = useState("");
   const [distance, setDistance] = useState("3.0");
-  const toolsRef = useRef<HTMLDetailsElement>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
+  const toolsButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const tools = toolsRef.current;
-      if (tools?.open && !tools.contains(event.target as Node)) tools.open = false;
+      if (tools && !tools.contains(event.target as Node)) setToolsOpen(false);
     };
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
@@ -4828,11 +4827,11 @@ function SelectionBar({
 
   if (measurement?.ok) {
     title = `${measurement.kind[0].toUpperCase()}${measurement.kind.slice(1)} · ${atomLabels.join("–")}`;
-    value = `${formatNumber(measurement.value)} ${measurement.unit === "angstrom" ? "Å" : "°"}`;
-  } else if (validAtoms.length === 1 && measurementPositions) {
-    value = [measurementPositions[0], measurementPositions[1], measurementPositions[2]]
-      .map((coordinate) => formatNumber(coordinate))
-      .join("  ");
+    const digits = measurement.unit === "angstrom" ? 3 : 2;
+    const rounded = Math.abs(measurement.value) < 10 ** -digits && measurement.value !== 0
+      ? measurement.value.toExponential(digits)
+      : measurement.value.toFixed(digits);
+    value = `${rounded} ${measurement.unit === "angstrom" ? "Å" : "°"}`;
   } else if (
     measurementEnabled
     && validAtoms.length > 1
@@ -4844,7 +4843,8 @@ function SelectionBar({
     ? manifest.topology.atom_residue_index?.[selectionAnchor.atom] ?? -1
     : -1;
   const closeTools = () => {
-    if (toolsRef.current) toolsRef.current.open = false;
+    setToolsOpen(false);
+    toolsButton.current?.focus();
   };
   const applyDistance = () => {
     const parsed = Number(distance);
@@ -4859,9 +4859,10 @@ function SelectionBar({
   };
 
   return <section className="selection-bar" aria-label="Atom selection">
-    <div className="selection-readout">
+    <div className={measurement?.ok ? "selection-readout is-measurement" : "selection-readout"}>
+      {measurement?.ok && <output aria-label={title}>{value}</output>}
       <strong title={title}>{title}</strong>
-      {value && <output>{value}</output>}
+      {!measurement?.ok && value && <output>{value}</output>}
     </div>
     {periodicMeasurement ? (
       <button
@@ -4875,22 +4876,19 @@ function SelectionBar({
         <span className="measurement-mode-full">{minimumImage ? "Minimum image" : "Displayed images"}</span>
         <span className="measurement-mode-compact" aria-hidden="true">{minimumImage ? "Min. image" : "Images"}</span>
       </button>
-    ) : validSelections.length === 1 ? (
-      <span className="selection-hint">Shift-click or Shift-drag</span>
     ) : null}
-    <details
+    <div
       ref={toolsRef}
       className="selection-tools"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || !event.currentTarget.open) return;
+        if (event.key !== "Escape" || !toolsOpen) return;
         event.preventDefault();
         event.stopPropagation();
-        event.currentTarget.open = false;
-        event.currentTarget.querySelector<HTMLElement>("summary")?.focus();
+        closeTools();
       }}
     >
-      <summary>Select</summary>
-      <div className="selection-tools-popover">
+      <button ref={toolsButton} type="button" aria-expanded={toolsOpen} onClick={() => setToolsOpen(!toolsOpen)}>Select</button>
+      {toolsOpen && <div className="selection-tools-popover">
         <section>
           <span>From anchor</span>
           <div className="selection-scope-grid">
@@ -4960,8 +4958,8 @@ function SelectionBar({
             <button type="button" aria-label={`Delete ${named.name}`} onClick={() => onRemoveSaved(named.name)}><Icon name="close" /></button>
           </div>)}
         </section>}
-      </div>
-    </details>
+      </div>}
+    </div>
     {canPlot && (
       <button
         className="selection-plot-button"
@@ -5104,7 +5102,6 @@ function SelectionSummaryPanel({
 
 function AnalyzePanel({
   selectedCount,
-  selectionFormula,
   summary,
   uniqueAtoms,
   canPlot,
@@ -5119,7 +5116,6 @@ function AnalyzePanel({
   onClear,
 }: {
   selectedCount: number;
-  selectionFormula: string;
   summary: SelectionSummary | null;
   uniqueAtoms: number;
   canPlot: boolean;
@@ -5144,27 +5140,16 @@ function AnalyzePanel({
     <section className="workbench-section analysis-selection" data-setting-id="analyze-measurement">
       <div className="workbench-section-heading">
         <h3>{selectedCount === 0 ? "Selection" : measurementName ?? "Selection summary"}</h3>
-        <span>{selectedCount === 0 ? "Canvas" : `${selectedCount.toLocaleString()} atoms`}</span>
+        <span>{selectedCount > 0 ? `${selectedCount.toLocaleString()} atoms` : null}</span>
       </div>
       {selectedCount === 0 ? (
         <div className="analysis-empty">
-          <strong>Start on the structure</strong>
-          <p>Click an atom to inspect it. Shift-click two to four atoms for a distance, angle, or dihedral.</p>
-          <div>
-            <span><kbd>Click</kbd> inspect</span>
-            <span><kbd>Shift</kbd> add atoms</span>
-            <span><kbd>Esc</kbd> clear</span>
-          </div>
+          <p>Click or tap an atom to inspect it. Add atoms with Shift-click or another tap to measure.</p>
         </div>
       ) : selectedCount > 4 ? (
         <SelectionSummaryPanel summary={summary} uniqueAtoms={uniqueAtoms} />
       ) : (
         <>
-          <div className="analysis-measurement-copy">
-            <strong>{measurementName}</strong>
-            <span>{selectionFormula || `${selectedCount} selected atoms`}</span>
-            <p>The live value is shown below the structure. Periodic systems use minimum-image geometry by default.</p>
-          </div>
           <div className="analysis-actions">
             <button type="button" onClick={onPlot} disabled={!canPlot}>
               {plotOpen ? "Hide trajectory plot" : "Plot over trajectory"}
@@ -5178,7 +5163,7 @@ function AnalyzePanel({
     <section className="workbench-section analysis-methods">
       <div className="workbench-section-heading">
         <h3>Periodic analysis</h3>
-        <span>{analysisAvailable ? "PQAnalysis" : staticDemo ? "Local viewer" : "Full 3D cell"}</span>
+        {!analysisAvailable && <span>{staticDemo ? "Local viewer only" : "Needs a 3D periodic cell"}</span>}
       </div>
       <div className="analysis-method-grid">
         <button
