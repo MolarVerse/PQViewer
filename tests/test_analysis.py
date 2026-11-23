@@ -291,6 +291,24 @@ def test_full_pq_rdf_uses_the_native_reader(tmp_path, monkeypatch):
     assert result.json()["frame_range"]["count"] == 4
 
 
+def test_preview_reads_sampled_pq_frames_without_reconstruction(tmp_path, monkeypatch):
+    trajectory = tmp_path / "preview.xyz"
+    trajectory.write_text(_periodic_trajectory(), encoding="utf-8")
+    application = create_app(trajectory)
+    client = TestClient(application)
+    generation = client.get("/api/manifest").json()["dataset_generation"]
+    monkeypatch.setattr(analysis_module, "MAX_GENERIC_RDF_ATOM_FRAMES", 1)
+    result = client.post("/api/analysis/rdf", json={
+        "dataset_generation": generation,
+        "reference_indices": [0],
+        "target_indices": [2],
+        "frame_step": 2,
+        "r_max": 5.0,
+    })
+    assert result.status_code == 200
+    assert result.json()["frame_range"]["count"] == 2
+
+
 def test_generic_rdf_rejects_unsafe_atom_frame_volume(tmp_path, monkeypatch):
     trajectory = tmp_path / "bounded.xyz"
     trajectory.write_text(_periodic_trajectory(), encoding="utf-8")
@@ -307,6 +325,7 @@ def test_generic_rdf_rejects_unsafe_atom_frame_volume(tmp_path, monkeypatch):
             "target_indices": [2],
             "frame_start": 0,
             "frame_stop": 2,
+            "full": True,
             "n_bins": 5,
             "r_max": 5.0,
         },

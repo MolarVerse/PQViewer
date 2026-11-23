@@ -642,6 +642,16 @@ class PQTrajectoryDataset:
             "companion_files": self._companion_manifest(),
         }
 
+    def periodic_frame_byte_ranges(self, indices: range) -> list[tuple[int, int]] | None:
+        """Return complete, independently periodic frame records."""
+        spans = [self._spans[index] for index in indices]
+        if any(
+            span.cell_source != index or "pbc" in span.metadata
+            for index, span in zip(indices, spans)
+        ):
+            return None
+        return [(span.start, span.end - span.start) for span in spans]
+
     def get_frame(
         self,
         index: int,

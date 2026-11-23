@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import contextmanager, nullcontext, suppress
 from dataclasses import asdict
 import math
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from tempfile import TemporaryDirectory
+from typing import Any, Iterator, Literal, Mapping
 
 import numpy as np
 from anyio import to_process
@@ -358,8 +359,11 @@ def _prepare_rdf_request(
         stop,
         payload.frame_step,
     )
+    if not payload.full and not descriptor["native"] and _is_native_pq_source(dataset):
+        descriptor["sample_ranges"] = dataset.segments[0].source.periodic_frame_byte_ranges(frame_indices)
     if (
         not descriptor["native"]
+        and not descriptor.get("sample_ranges")
         and selected_frames * atom_count > MAX_GENERIC_RDF_ATOM_FRAMES
     ):
         raise HTTPException(
@@ -437,6 +441,15 @@ def _can_use_native_reader(
     frame_stop: int,
     frame_step: int,
 ) -> bool:
+    return (
+        _is_native_pq_source(dataset)
+        and frame_start == 0
+        and frame_stop == dataset.frame_count
+        and frame_step == 1
+    )
+
+
+def _is_native_pq_source(dataset: Any) -> bool:
     if not isinstance(dataset, RunDataset) or len(dataset.segments) != 1:
         return False
     segment = dataset.segments[0]
@@ -446,11 +459,7 @@ def _can_use_native_reader(
         and segment.kind.startswith("pq-")
         and str(source.traj_format.value).lower() == "xyz"
         and str(source.md_format.value).lower() == "pq"
-        and dataset.frame_slice.indices(source.frame_count)
-        == (0, source.frame_count, 1)
-        and frame_start == 0
-        and frame_stop == dataset.frame_count
-        and frame_step == 1
+        and dataset.frame_slice.indices(source.frame_count) == (0, source.frame_count, 1)
     )
 
 
@@ -461,37 +470,41 @@ async def _run_rdf_process(
     descriptor: Mapping[str, Any],
     worker_request: Mapping[str, Any],
 ) -> dict[str, Any]:
-    task = asyncio.create_task(
-        to_process.run_sync(
-            _rdf_worker,
-            dict(descriptor),
-            dict(worker_request),
-            cancellable=True,
+    worker_source = dict(descriptor)
+    with TemporaryDirectory(prefix="pqviewer-rdf-") if descriptor.get("sample_ranges") else nullcontext() as temporary:
+        if temporary is not None:
+            worker_source["sample_path"] = str(Path(temporary) / "sample.xyz")
+        task = asyncio.create_task(
+            to_process.run_sync(
+                _rdf_worker,
+                worker_source,
+                dict(worker_request),
+                cancellable=True,
+            )
         )
-    )
-    try:
-        while not task.done():
-            if await request.is_disconnected():
-                task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
-                raise HTTPException(status_code=499, detail="Analysis cancelled.")
-            with application.state.dataset_lock:
-                if generation != application.state.dataset_generation:
+        try:
+            while not task.done():
+                if await request.is_disconnected():
                     task.cancel()
                     with suppress(asyncio.CancelledError):
                         await task
-                    raise HTTPException(
-                        status_code=409,
-                        detail=STALE_DATASET_DETAIL,
-                    )
-            await asyncio.sleep(ANALYSIS_POLL_SECONDS)
-        return await task
-    finally:
-        if not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+                    raise HTTPException(status_code=499, detail="Analysis cancelled.")
+                with application.state.dataset_lock:
+                    if generation != application.state.dataset_generation:
+                        task.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await task
+                        raise HTTPException(
+                            status_code=409,
+                            detail=STALE_DATASET_DETAIL,
+                        )
+                await asyncio.sleep(ANALYSIS_POLL_SECONDS)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 def _rdf_worker(
@@ -503,11 +516,6 @@ def _rdf_worker(
 
     _verify_signatures(descriptor["signatures"])
     try:
-        trajectory = (
-            _native_trajectory(descriptor)
-            if descriptor["native"]
-            else _generic_trajectory(descriptor, request)
-        )
         reference_indices = np.asarray(
             sorted(set(request["reference_indices"])),
             dtype=np.int64,
@@ -516,15 +524,16 @@ def _rdf_worker(
             sorted(set(request["target_indices"])),
             dtype=np.int64,
         )
-        analysis = RDF(
-            trajectory,
-            reference_indices,
-            target_indices,
-            n_bins=request["n_bins"],
-            r_max=request["r_max"],
-            r_min=0.0,
-        )
-        centers, g_r, coordination, _, _ = analysis.run()
+        with _rdf_trajectory(descriptor, request) as trajectory:
+            analysis = RDF(
+                trajectory,
+                reference_indices,
+                target_indices,
+                n_bins=request["n_bins"],
+                r_max=request["r_max"],
+                r_min=0.0,
+            )
+            centers, g_r, coordination, _, _ = analysis.run()
     except AnalysisSourceChangedError:
         raise
     except Exception as error:
@@ -569,6 +578,29 @@ def _rdf_worker(
         "pqanalysis_version": str(pqanalysis_version),
         "elapsed_seconds": max(0.0, float(analysis.elapsed_time)),
     }
+
+
+@contextmanager
+def _rdf_trajectory(descriptor: Mapping[str, Any], request: Mapping[str, Any]) -> Iterator[Any]:
+    if descriptor["native"]:
+        yield _native_trajectory(descriptor)
+    elif ranges := descriptor.get("sample_ranges"):
+        path = Path(descriptor["sample_path"])
+        with Path(descriptor["native_path"]).open("rb") as source, path.open("wb") as output:
+            for start, size in ranges:
+                source.seek(start)
+                frame = source.read(size)
+                if len(frame) != size:
+                    raise AnalysisSourceChangedError(STALE_DATASET_DETAIL)
+                output.write(frame)
+                if not frame.endswith(b"\n"):
+                    output.write(b"\n")
+        yield _native_trajectory({
+            "native_path": path,
+            "expected_frame_count": len(ranges),
+        })
+    else:
+        yield _generic_trajectory(descriptor, request)
 
 
 def _native_trajectory(descriptor: Mapping[str, Any]) -> Any:
