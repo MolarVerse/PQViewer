@@ -8,6 +8,7 @@ user-visible changes.
 ### Added
 
 - Choose source units, fs, ps, or ns for the timeline when the trajectory declares physical time
+- Open PQ restart files as a single frame from the CLI or browser
 - Inspect sampled distance and values in RDF and coordination plots using the pointer or keyboard
 - Select annotated protein and monatomic ion groups from command search and explain which files support ribbons
 - Show visible element colors in the View inspector, with an option to show them in the viewer
