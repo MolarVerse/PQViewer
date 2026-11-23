@@ -89,3 +89,11 @@ reconnect and restart the tunnel.
 Include the operating system, Python version, browser, input type, exact
 command, and the shortest reproducible fixture. Do not attach confidential
 simulation data to a public issue.
+
+## Framework bonds look disconnected
+
+Turn on **Bonds** and choose **Ball + stick** under **View**. A bond can
+cross a periodic face even when the rendered copy on the other side is not
+visible. Use **View → Periodic display** to repeat the cell along that axis.
+With XYZ, the viewer infers bonds from geometry; supply topology if you need
+authoritative connectivity.
