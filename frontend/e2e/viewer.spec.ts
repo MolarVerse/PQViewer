@@ -815,9 +815,14 @@ test("links frame marks, atom tracking, and PQAnalysis pair plots", async ({ pag
     name: /Pair distribution .* trajectory plot/,
   });
   await expect(rdfPlot).toBeVisible();
+  const radius = rdfPlot.getByRole("slider", { name: /radius$/ });
+  await radius.press("End");
+  await expect(radius).toHaveAttribute("aria-valuetext", /Radius .*Å; g\(r\) /);
+  await radius.hover({ position: { x: 60, y: 36 } });
+  await expect(radius).toHaveAttribute("aria-valuenow", "0");
   await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("2 frames");
   await expect(rdfPlot.locator(".measurement-plot__meta span")).toContainText("Δr");
-  await expect(rdfPlot.getByRole("img", { name: /Pair distribution/ })).toBeVisible();
+  await expect(rdfPlot.getByRole("slider", { name: /Pair distribution.*radius/ })).toBeVisible();
   await rdfPlot.getByRole("button", { name: "N(r)", exact: true }).click();
   const coordinationPlot = page.getByRole("region", {
     name: /Coordination .* trajectory plot/,
@@ -880,9 +885,12 @@ test("does not leak crystal display onto a periodic framework", async ({ page })
     { timeout: 30_000 },
   );
 
+  await openFixture(page, path.join(repositoryRoot, "docs/assets/sources/nacl.extxyz"), "nacl.extxyz");
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute("data-representation", "ball-stick");
+
   await openFixture(page, acofFixture, "acof-triclinic.xyz");
   const canvas = page.locator(".molecule-canvas");
-  await expect(canvas).toHaveAttribute("data-representation", "lines");
+  await expect(canvas).toHaveAttribute("data-representation", "ball-stick");
   await expect.poll(
     async () => Number(await canvas.getAttribute("data-bond-count")),
   ).toBeGreaterThan(0);
@@ -890,7 +898,7 @@ test("does not leak crystal display onto a periodic framework", async ({ page })
     name: "View",
     exact: true,
   }).click();
-  await expect(page.getByRole("button", { name: "Lines", exact: true }))
+  await expect(page.getByRole("button", { name: "Ball + stick", exact: true }))
     .toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("switch", { name: "Bonds" }))
     .toHaveAttribute("aria-checked", "true");
@@ -976,7 +984,7 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toHaveText("O2");
 
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   await page.getByRole("button", { name: "Component", exact: true }).click();
   await expect(page.locator(".selection-readout strong")).toHaveText("CO · 2 atoms");
 
@@ -985,11 +993,11 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toHaveText("O2");
 
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   await page.keyboard.press("Escape");
-  await expect(page.locator(".selection-tools")).not.toHaveAttribute("open", "");
+  await expect(page.locator(".selection-tools > button")).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator(".selection-readout strong")).toHaveText("O2");
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   await page.getByPlaceholder("e.g. active site").fill("boundary oxygen");
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await page.locator(".selection-bar").getByRole("button", { name: "Clear selection" }).click();
@@ -1013,7 +1021,7 @@ test("supports scientific selection, saved sets, and pinned measurements", async
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toContainText("Distance");
-  await expect(page.locator(".selection-readout output")).toContainText("0.4 Å");
+  await expect(page.locator(".selection-readout output")).toHaveText("0.400 Å");
 
   await page.getByRole("button", { name: "Pin", exact: true }).click();
   const pinSummary = page.locator(".pinned-measurements > summary");
@@ -1425,7 +1433,8 @@ test("keeps centered periodic controls direct and reversible", async ({ page }) 
   await page.getByRole("combobox", { name: "Search atoms, settings, and commands" }).fill("select carbon");
   await page.keyboard.press("Enter");
   await expect(page.locator(".selection-readout strong")).toHaveText("C1 (+a)");
-  await expect(page.locator(".selection-readout output")).toHaveText("5.2 0.1 0");
+  await page.locator(".selection-bar").getByRole("button", { name: "Details" }).click();
+  await expect(page.locator("#workbench .vector-readout").filter({ hasText: "Position" })).toContainText(/5\.2.*0\.1.*0/);
   expect(errors).toEqual([]);
 });
 
@@ -1745,11 +1754,11 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   await page.getByRole("button", { name: "Search atoms, settings, and commands" }).click();
   await page.getByRole("combobox", { name: "Search atoms, settings, and commands" }).fill("select oxygen");
   await page.keyboard.press("Enter");
-  await page.locator(".selection-tools > summary").click();
+  await page.locator(".selection-tools > button").click();
   for (const name of ["boundary", "oxygen shell", "active set"]) {
     await page.getByPlaceholder("e.g. active site").fill(name);
     await page.getByRole("button", { name: "Save", exact: true }).click();
-    await page.locator(".selection-tools > summary").click();
+    await page.locator(".selection-tools > button").click();
   }
   const toolsBox = await page.locator(".selection-tools-popover").boundingBox();
   const selectionBox = await page.locator(".selection-bar").boundingBox();
@@ -2136,4 +2145,141 @@ test("keeps study sheets reachable in short landscape", async ({ page }) => {
     panelBox!.y + panelBox!.height,
   );
   expect(errors).toEqual([]);
+});
+
+test("changes only the displayed timeline time unit", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await page.getByRole("button", { name: "Next frame" }).click();
+  const metadata = page.locator(".frame-metadata");
+  await expect(metadata).toHaveText("step 10 · t 0.5 fs");
+  await page.locator('summary[aria-label="Playback options"]').click();
+  const selector = page.getByLabel("Time unit", { exact: true });
+  await selector.selectOption("ps");
+  await expect(metadata).toHaveText("step 10 · t 5.000e-4 ps");
+  await expect(page.locator(".frame-counter")).toHaveAttribute("aria-label", "Frame 2 of 2");
+  await selector.selectOption("source");
+  await expect(metadata).toHaveText("step 10 · t 0.5 fs");
+});
+
+test("selects annotated protein from command search", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await openFixture(page, proteinFixture, "1CRN.pdb");
+  await page.getByRole("button", { name: "Search atoms, settings, and commands" }).click();
+  await page.getByRole("combobox").fill("select protein");
+  await page.getByRole("option", { name: "Select protein" }).click();
+  await expect(page.locator(".selection-readout strong")).toContainText("atoms");
+});
+
+test("shows element colors in the viewer only when requested", async ({ page }) => {
+  await openPeriodicFixture(page);
+  await openFixture(page, waterFixture, "water.xyz");
+  const key = page.locator(".viewport-element-colors").getByRole("list", { name: "Visible element colors" });
+  await expect(key).toHaveCount(0);
+  await page.keyboard.press("v");
+  const toggle = page.getByRole("switch", { name: "Show element colors in viewer" });
+  await toggle.click();
+  await page.keyboard.press("Escape");
+  await expect(key.getByText("O", { exact: true })).toBeVisible();
+  await expect(key.getByText("H", { exact: true })).toBeVisible();
+  await page.keyboard.press("v");
+  await toggle.click();
+  await expect(key).toHaveCount(0);
+});
+
+
+test("keeps a many-element key compact and opens the full list", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "element-key.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from("9\nElement key fixture\n"
+      + ["H", "C", "N", "O", "F", "Na", "Si", "P", "Cl"].map((symbol, index) => `${symbol} ${index * 3} 0 0\n`).join("")),
+  });
+  await expect(page.locator(".molecule-canvas")).toHaveAttribute("data-rendered-manifest", "element-key.xyz");
+  await page.keyboard.press("v");
+  await page.getByRole("switch", { name: "Show element colors in viewer" }).click();
+  await page.keyboard.press("Escape");
+  const key = page.locator(".viewport-element-colors");
+  await expect(key.getByRole("listitem")).toHaveCount(6);
+  await key.getByRole("button", { name: "Show all 9 element colors" }).click();
+  await expect(page.locator("#workbench").getByRole("list", { name: "Visible element colors" })
+    .getByRole("listitem")).toHaveCount(9);
+});
+
+test("keeps organic and metal clusters visible while metal–linker rods are off", async ({ page }) => {
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "metal-linker.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from("4\nMetal-linker fixture\nZn 0 0 0\nZn -2.4 0 0\nN 2 0 0\nC 3.4 0 0\n"),
+  });
+  const scene = page.locator(".molecule-canvas");
+  await expect(scene).toHaveAttribute("data-rendered-manifest", "metal-linker.xyz");
+  await expect(scene).toHaveAttribute("data-atom-count", "4");
+  await expect(scene).toHaveAttribute("data-bond-count", "2");
+  await page.keyboard.press("v");
+  const toggle = page.getByRole("switch", { name: "Metal–linker bonds" });
+  await expect(toggle).toHaveAttribute("aria-checked", "false");
+  await toggle.click();
+  await expect(scene).toHaveAttribute("data-bond-count", "3");
+  await toggle.click();
+  await expect(scene).toHaveAttribute("data-bond-count", "2");
+});
+
+test("adds an atom with Shift-click without starting a selection box", async ({ page }) => {
+  await openPeriodicFixture(page);
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await (await chooser).setFiles({
+    name: "pick.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from("2\nPicking fixture\nO -1 0 0\nCl 1 0 0\n"),
+  });
+  const scene = page.locator(".molecule-canvas");
+  await expect(scene).toHaveAttribute("data-rendered-manifest", "pick.xyz");
+  await page.getByRole("button", { name: "XY", exact: true }).click();
+  for (const channel of [0, 1]) {
+    await expect.poll(async () => Math.round((await scene.boundingBox())!.width)).toBe(channel === 0 ? 1280 : 976);
+    const pixels = PNG.sync.read(await sceneScreenshot(page, scene));
+    const bounds = (await scene.boundingBox())!;
+    let count = 0;
+    let x = 0;
+    let y = 0;
+    for (let index = 0; index < pixels.width * pixels.height; index += 1) {
+      const [r, g, b] = pixels.data.subarray(index * 4, index * 4 + 3);
+      if (!(channel === 0 ? r > g * 1.4 && r > b * 1.4 : g > r * 1.35 && g > b * 1.35)) continue;
+      count += 1;
+      x += index % pixels.width;
+      y += Math.floor(index / pixels.width);
+    }
+    expect(count).toBeGreaterThan(10);
+    if (channel === 1) await page.keyboard.down("Shift");
+    await page.mouse.click(Math.floor(bounds.x) + x / count, Math.floor(bounds.y) + y / count);
+    if (channel === 1) await page.keyboard.up("Shift");
+  }
+  await expect(page.locator(".selection-readout > :first-child")).toHaveText("2.000 Å");
+});
+
+test("keeps camera and timeline controls outside the inspector", async ({ page }) => {
+  for (const [width, height] of [[1280, 800], [660, 420]]) {
+    await page.setViewportSize({ width, height });
+    await openPeriodicFixture(page);
+    await page.keyboard.press("v");
+    await expect(page.locator("#workbench")).toBeVisible();
+    await expect.poll(async () => {
+      const inspector = (await page.locator("#workbench").boundingBox())!;
+      const camera = (await page.getByRole("toolbar", { name: "Camera controls" }).boundingBox())!;
+      return camera.x + camera.width - inspector.x;
+    }).toBeLessThanOrEqual(1);
+    await expect.poll(async () => {
+      const inspector = (await page.locator("#workbench").boundingBox())!;
+      const counter = (await page.locator(".frame-counter").boundingBox())!;
+      return counter.x + counter.width <= inspector.x + 1 || counter.y >= inspector.y + inspector.height - 1;
+    }).toBe(true);
+  }
 });
