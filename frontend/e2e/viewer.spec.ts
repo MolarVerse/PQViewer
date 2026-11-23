@@ -1630,8 +1630,9 @@ test("keeps the compact layout readable at 320 px", async ({ page }) => {
   });
   const mobileSearchBox = await mobileSearch.boundingBox();
   expect(mobileSearchBox).not.toBeNull();
-  expect(Math.abs(mobileSearchBox!.x + mobileSearchBox!.width / 2 - 160))
-    .toBeLessThanOrEqual(16);
+  const mobileOpenBox = await page.getByRole("button", { name: "Open", exact: true }).boundingBox();
+  expect(mobileOpenBox).not.toBeNull();
+  expect(mobileSearchBox!.x + mobileSearchBox!.width).toBeLessThanOrEqual(mobileOpenBox!.x);
   for (const control of [
     page.getByRole("button", { name: "Open viewer tools" }),
     page.getByRole("button", { name: "Export figure" }),
@@ -1884,7 +1885,7 @@ test("truncates long filenames at 320 px without losing the full name", async ({
   });
   expect((await openPromise).ok()).toBe(true);
   await expect(page).toHaveTitle(`${name} · PQViewer`);
-  const label = page.locator(".identity span");
+  const label = page.locator(".pq-header-context");
   await expect(label).toHaveAttribute("title", name);
   expect(await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

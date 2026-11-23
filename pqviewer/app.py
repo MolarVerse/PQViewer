@@ -235,6 +235,7 @@ def create_app(
 
     application = FastAPI(title="PQViewer", lifespan=lifespan)
     application.state.dataset = dataset
+    application.state.source_stamp = _source_stamp(dataset)
     application.state.dataset_lock = RLock()
     application.state.dataset_generation = _new_dataset_generation()
     application.state.upload_temp = None
@@ -292,12 +293,22 @@ def create_app(
         )
 
     @application.post("/api/refresh")
-    def refresh(response: Response) -> dict[str, Any]:
+    def refresh(
+        response: Response, watch_generation: str | None = None
+    ) -> Any:
+        response.headers["Cache-Control"] = "no-store"
         log = event_log(application)
         try:
             with application.state.dataset_lock:
                 current = application.state.dataset
+                generation = application.state.dataset_generation
+                if watch_generation is not None and watch_generation != generation:
+                    return _manifest_with_generation(current.manifest(), generation)
+                stamp = _source_stamp(current)
+                if watch_generation is not None and stamp == application.state.source_stamp:
+                    return Response(status_code=204, headers={"Cache-Control": "no-store"})
                 added_frames = current.refresh()
+                application.state.source_stamp = stamp
                 application.state.dataset_generation = _new_dataset_generation()
                 refreshed_manifest = _manifest_with_generation(
                     current.manifest(),
@@ -426,6 +437,7 @@ def create_app(
                 )
             previous_temp = application.state.upload_temp
             application.state.dataset = candidate
+            application.state.source_stamp = _source_stamp(candidate)
             application.state.dataset_generation = _new_dataset_generation()
             application.state.upload_temp = temporary
             application.state.initial_recipe = None
@@ -463,6 +475,26 @@ def create_app(
             )
 
     return application
+
+
+def _source_stamp(dataset: object) -> dict[Path, tuple[int, ...] | None]:
+    if not isinstance(dataset, RunDataset):
+        return {}
+    paths = {
+        path
+        for segment in dataset.segments
+        for path in (segment.path, *(segment.files or {}).values())
+        if path is not None
+    }
+    stamp: dict[Path, tuple[int, ...] | None] = {}
+    for path in paths:
+        try:
+            info = path.stat()
+        except FileNotFoundError:
+            stamp[path] = None
+        else:
+            stamp[path] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return stamp
 
 
 def _new_dataset_generation() -> str:

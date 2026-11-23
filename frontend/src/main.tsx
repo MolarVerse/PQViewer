@@ -16,9 +16,12 @@ import App from "./App";
 import "@molarverse/pq-design/tokens.css";
 import "./styles.css";
 import "./flat-mono.css";
+import "@molarverse/pq-design/search-trigger.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
   </StrictMode>,
 );
+
+import "@molarverse/pq-design/app-header.css";

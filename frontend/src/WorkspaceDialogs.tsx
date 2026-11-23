@@ -1,3 +1,4 @@
+import { DialogHeading, HelpPanels, type HelpPage } from "@molarverse/pq-design";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listLaunchFolder, type LaunchFolderEntry } from "./api";
 
@@ -115,15 +116,13 @@ export function ShortcutSheet({
   onVimMode,
   onClose,
 }: {
-  mode: "help" | "shortcuts";
-  onMode: (mode: "help" | "shortcuts") => void;
+  mode: HelpPage | null;
+  onMode: (mode: HelpPage) => void;
   shortcutLabels: ViewerShortcutLabels;
   vimMode: boolean;
   onVimMode: (enabled: boolean) => void;
   onClose: () => void;
 }) {
-  const panelRef = useRef<HTMLElement>(null);
-  useModalFocus(panelRef);
   const groups: Array<{ title: string; items: Array<[string, string]> }> = [
     {
       title: "Trajectory",
@@ -150,7 +149,7 @@ export function ShortcutSheet({
     {
       title: "Workspace",
       items: [
-        [shortcutLabels.commands, "Search atoms, settings, commands"],
+        [`${shortcutLabels.commands} or /`, "Search atoms, settings, commands"],
         [shortcutLabels.open, "Open files"],
         [shortcutLabels.export, "Export figure"],
         ["? / Esc", "Shortcuts / close"],
@@ -165,51 +164,18 @@ export function ShortcutSheet({
     ["Ctrl [", "Close surface"],
   ];
 
-  const title = mode === "help" ? "Viewer help" : "Keyboard shortcuts";
-  return <div className="command-backdrop shortcut-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
-    <section ref={panelRef} className={`shortcut-panel is-${mode}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
-      <div className="shortcut-heading">
-        <strong>{title}</strong>
-        <button className="icon-button" type="button" onClick={onClose} aria-label={`Close ${title.toLowerCase()}`}><Icon name="close" /></button>
-      </div>
-      {mode === "help" ? <section className="viewer-first-steps" aria-labelledby="viewer-first-steps">
-        <h3 id="viewer-first-steps">First steps</h3>
-        <ol>
-          <li>Open a structure or trajectory, or drop it into the viewer.</li>
-          <li>Drag to rotate. Scroll to zoom. Click an atom to inspect it.</li>
-          <li>Use Analyze to measure distances, angles, or dihedrals.</li>
-        </ol>
-        <details>
-          <summary>What does PQ-centred mean?</summary>
-          <p>It shows positions inside a periodic cell centred on the origin, without changing the saved coordinates.</p>
-        </details>
-        <a href="https://molarverse.github.io/PQViewer/viewer-guide.html" target="_blank" rel="noreferrer">
-          Read the viewer guide
-        </a>
-      </section> : <>
-        <div className="shortcut-groups">
-          {groups.map((group) => <section key={group.title}>
-            <h3>{group.title}</h3>
-            {group.items.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
-          </section>)}
-        </div>
-        <section className={vimMode ? "vim-shortcuts is-active" : "vim-shortcuts"}>
-          <div className="vim-heading">
-            <div><strong>Vim navigation</strong><span>Optional; standard shortcuts stay active.</span></div>
-            <button type="button" role="switch" aria-label="Vim navigation" aria-checked={vimMode} onClick={() => onVimMode(!vimMode)}><i /></button>
-          </div>
-          {vimMode && <div className="vim-shortcut-grid">
-            {vimItems.map(([keys, label]) => <div className="shortcut-row" key={`${keys}:${label}`}><kbd>{keys}</kbd><span>{label}</span></div>)}
-          </div>}
-        </section>
-      </>}
-      <footer className="viewer-popup-footer">
-        <button type="button" onClick={() => onMode(mode === "help" ? "shortcuts" : "help")}>
-          {mode === "help" ? "Keyboard shortcuts" : "Viewer help"}
-        </button>
-      </footer>
-    </section>
-  </div>;
+  return <HelpPanels
+    page={mode}
+    onPage={(page) => page ? onMode(page) : onClose()}
+    docs="https://molarverse.github.io/PQViewer/viewer-guide.html"
+    intro={<p>Open a structure or trajectory. Drag to rotate, select an atom to inspect it, or use Analyze to measure distances and angles.</p>}
+    groups={vimMode ? [...groups, { title: "Vim navigation", items: vimItems }] : groups}
+    shortcutOptions={<div className="pq-help-options">
+      <span>Vim navigation</span>
+      <button type="button" aria-label="Vim navigation" aria-pressed={vimMode}
+        onClick={() => onVimMode(!vimMode)}>{vimMode ? "On" : "Off"}</button>
+    </div>}
+  />;
 }
 
 export function OpenDialog({ onClose, onUpload, onFile }: {
@@ -238,10 +204,7 @@ export function OpenDialog({ onClose, onUpload, onFile }: {
 
   return <div className="command-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
     <section ref={panelRef} className="command-palette open-dialog" role="dialog" aria-modal="true" aria-label="Open files" tabIndex={-1}>
-      <header className="open-dialog-header">
-        <h2>Open files</h2>
-        <button type="button" className="open-dialog-icon" aria-label="Close" onClick={onClose}><Icon name="close" /></button>
-      </header>
+      <DialogHeading title="Open files" onClose={onClose} />
       {(loading || entries !== null || error) && <>
         <div className="open-dialog-location">
           {folder.length > 0 && <button type="button" className="open-dialog-icon" aria-label="Parent folder" onClick={() => setFolder(folder.slice(0, -1))}>
