@@ -70,6 +70,9 @@ npm run build
 npm run test:e2e
 ```
 
+PR and release CI run `npm run test:e2e:smoke`. To run all browser tests in
+GitHub Actions, start **CI** manually with **Run the full browser regression suite** enabled.
+
 `npm run build` writes the packaged frontend to `pqviewer/static`. Commit those
 generated assets when frontend source changes. Do not edit packaged assets by
 hand.

@@ -1981,7 +1981,7 @@ export default function App() {
   const openSetting = useCallback((tab: WorkbenchTab, target: string) => {
     setCommandOpen(false);
     setSettingTarget(target);
-    openWorkbench(tab, true);
+    openWorkbench(tab);
   }, [openWorkbench]);
 
   const openFigureSetting = useCallback((target: string) => {
@@ -1993,27 +1993,33 @@ export default function App() {
     if (!settingTarget) return;
     let frameRequest = 0;
     let clearTimer = 0;
-    let attempts = 0;
+    const deadline = performance.now() + 700;
+    const retry = () => {
+      if (performance.now() < deadline) {
+        frameRequest = requestAnimationFrame(reveal);
+        return true;
+      }
+      return false;
+    };
     const reveal = () => {
       const target = document.querySelector<HTMLElement>(
         `[data-setting-id="${settingTarget}"]`,
       );
       if (!target) {
-        attempts += 1;
-        if (attempts < 6) frameRequest = requestAnimationFrame(reveal);
-        else setSettingTarget((current) => current === settingTarget ? null : current);
+        if (!retry()) setSettingTarget((current) => current === settingTarget ? null : current);
         return;
       }
       if (target instanceof HTMLDetailsElement) target.open = true;
       target.closest<HTMLDetailsElement>("details")?.setAttribute("open", "");
-      target.classList.add("is-search-target");
-      target.scrollIntoView?.({ block: "center", behavior: "smooth" });
       const focusTarget = target.matches("button:not(:disabled), input:not(:disabled), select:not(:disabled), summary")
         ? target
         : target.querySelector<HTMLElement>(
           "button:not(:disabled), input:not(:disabled), select:not(:disabled), summary",
         );
-      requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+      focusTarget?.focus({ preventScroll: true });
+      if (focusTarget && document.activeElement !== focusTarget && retry()) return;
+      target.classList.add("is-search-target");
+      target.scrollIntoView?.({ block: "center", behavior: "smooth" });
       clearTimer = window.setTimeout(() => {
         target.classList.remove("is-search-target");
         setSettingTarget((current) => current === settingTarget ? null : current);

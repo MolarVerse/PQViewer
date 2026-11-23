@@ -7890,6 +7890,12 @@ button.measurement-plot__legend-item:hover {
 
 .topbar.pq-app-header { min-height: var(--header-height); }
 
+@media (min-width: 1200px) {
+  header.topbar.pq-app-header {
+    grid-template-columns: minmax(0, 1fr) min(28vw, 440px) minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 760px) {
   .topbar.pq-app-header .tools-button {
     padding: 0;

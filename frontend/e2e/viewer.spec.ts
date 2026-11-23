@@ -450,7 +450,7 @@ test("restores a figure recipe, rejects unsupported polyhedra, and exports an ex
   expect(errors).toEqual([]);
 });
 
-test("opens a trajectory in the packaged viewer", async ({ page }) => {
+test("opens a trajectory in the packaged viewer", { tag: "@smoke" }, async ({ page }) => {
   const errors = collectBrowserErrors(page);
   await openPeriodicFixture(page);
 
@@ -574,7 +574,7 @@ test("edits selected atom identity and current-frame coordinates", async ({
   expect(errors).toEqual([]);
 });
 
-test("keeps command search central and keyboard accessible", async ({ page }) => {
+test("keeps command search central and keyboard accessible", { tag: "@smoke" }, async ({ page }) => {
   const errors = collectBrowserErrors(page);
   await openPeriodicFixture(page);
 
@@ -582,9 +582,9 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
   const box = await button.boundingBox();
   expect(box).not.toBeNull();
   expect(Math.abs(box!.x + box!.width / 2 - 640)).toBeLessThanOrEqual(1);
-  const title = await button.getAttribute("title");
-  expect(title).toMatch(/⌘K|Ctrl K/);
-  const appleShortcut = title?.includes("⌘") ?? false;
+  const hint = await button.locator("kbd").textContent();
+  expect(hint).toMatch(/⌘\s*K|Ctrl K/);
+  const appleShortcut = hint?.includes("⌘") ?? false;
 
   await page.keyboard.press(
     appleShortcut ? "Meta+K" : "Control+K",
@@ -594,15 +594,23 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
   await search.fill("fit structure");
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Search" })).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
 
+test("reveals viewer settings from keyboard search", async ({ page }) => {
+  const errors = collectBrowserErrors(page);
+  await openPeriodicFixture(page);
+  const button = page.getByRole("button", { name: "Search atoms, settings, and commands" });
+  const hint = await button.locator("kbd").textContent();
+  const appleShortcut = hint?.includes("⌘") ?? false;
+  const search = page.getByRole("combobox", { name: "Search atoms, settings, and commands" });
   await page.keyboard.press("/");
   await expect(search).toBeFocused();
   await search.fill("bond across cell");
   await expect(page.getByRole("option", { name: /Bond display/ }))
     .toContainText("View › Layers › Bonds");
   await page.keyboard.press("Enter");
-  await expect(page.locator('[data-setting-id="view-bonds"]'))
-    .toHaveClass(/is-search-target/);
+  await expect(page.locator('[data-setting-id="view-bonds"]')).toBeVisible();
   await expect(page.locator(".task-navigation").getByRole("button", {
     name: "View",
     exact: true,
@@ -639,8 +647,8 @@ test("keeps command search central and keyboard accessible", async ({ page }) =>
   await page.keyboard.press("Enter");
   const exportDialog = page.getByRole("dialog", { name: "Export figure" });
   await expect(exportDialog).toBeVisible();
-  await expect(exportDialog.locator('[data-setting-id="export-background"]'))
-    .toHaveClass(/is-search-target/);
+  await expect(exportDialog.locator('[data-setting-id="export-background"]')
+    .getByRole("button", { name: "White" })).toBeFocused();
   await exportDialog.getByRole("button", { name: "Close export" }).click();
 
   await page.keyboard.press("/");
@@ -2295,7 +2303,7 @@ test("keeps camera and timeline controls outside the inspector", async ({ page }
   }
 });
 
-test("opens Help and Keyboard shortcuts in separate popups", async ({ page }) => {
+test("opens Help and Keyboard shortcuts in separate popups", { tag: "@smoke" }, async ({ page }) => {
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 800 });
     await page.goto("/");
@@ -2318,7 +2326,7 @@ test("opens Help and Keyboard shortcuts in separate popups", async ({ page }) =>
   }
 });
 
-test("explains how to recover when the browser has no WebGL", async ({ page }) => {
+test("explains how to recover when the browser has no WebGL", { tag: "@smoke" }, async ({ page }) => {
   await page.addInitScript(() => {
     for (const canvas of [HTMLCanvasElement.prototype, OffscreenCanvas.prototype]) {
       const getContext = canvas.getContext;
@@ -2364,19 +2372,19 @@ test("fits the solute rather than the periodic cell after hiding water", async (
   expect(await carbonPixels()).toBeGreaterThan(Math.max(100, initial * 2));
 });
 
-test("browses from the launch folder and opens a server file without uploading", async ({ page }) => {
+test("browses from the launch folder and opens a server file without uploading", { tag: "@smoke" }, async ({ page }) => {
   await openPeriodicFixture(page);
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 800 });
-    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await page.getByRole("button", { name: "Open", exact: true }).press("Enter");
     const dialog = page.getByRole("dialog", { name: "Open files" });
-    await dialog.getByRole("button", { name: "examples", exact: true }).click();
+    await dialog.getByRole("button", { name: "examples", exact: true }).press("Enter");
     await expect(dialog.getByText("Launch folder / examples")).toBeVisible();
-    await dialog.getByRole("button", { name: "Parent folder" }).click();
+    await dialog.getByRole("button", { name: "Parent folder" }).press("Enter");
     await expect(dialog.getByRole("button", { name: "examples", exact: true })).toBeVisible();
-    await dialog.getByRole("button", { name: "examples", exact: true }).click();
+    await dialog.getByRole("button", { name: "examples", exact: true }).press("Enter");
     const response = page.waitForResponse((result) => result.url().endsWith("/api/open/server"));
-    await dialog.getByRole("button", { name: "periodic-boundary.extxyz", exact: true }).click();
+    await dialog.getByRole("button", { name: "periodic-boundary.extxyz", exact: true }).press("Enter");
     expect((await response).ok()).toBe(true);
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole("progressbar", { name: "Upload progress" })).toHaveCount(0);

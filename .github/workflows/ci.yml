@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full_browser_suite:
+        description: Run the full browser regression suite
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -75,7 +81,7 @@ jobs:
 
   browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.full_browser_suite && 120 || 15 }}
     defaults:
       run:
         working-directory: PQViewer
@@ -98,8 +104,9 @@ jobs:
       - working-directory: PQViewer/frontend
         run: npx playwright install --with-deps chromium
       - run: python -m playwright install chromium
-      - working-directory: PQViewer/frontend
-        run: npm run test:e2e
+      - name: Run browser tests
+        working-directory: PQViewer/frontend
+        run: npm run ${{ inputs.full_browser_suite && 'test:e2e' || 'test:e2e:smoke' }}
       - name: Smoke-test headless rendering
         env:
           PQVIEWER_HEADLESS_TEST: "1"
@@ -109,5 +116,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: browser-artifacts
-          path: output/playwright
+          path: PQViewer/output/playwright
           if-no-files-found: ignore

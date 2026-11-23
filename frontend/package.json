@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run src",
     "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test --grep @smoke",
     "test:e2e:update": "playwright test --update-snapshots"
   },
   "dependencies": {
