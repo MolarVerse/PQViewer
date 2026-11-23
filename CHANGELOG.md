@@ -3,7 +3,12 @@
 PQViewer follows [Semantic Versioning](https://semver.org/). This file records
 user-visible changes.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-23
+
+### Added
+
+- Use the shared app header, Help and health checks.
+- Watch a growing trajectory without leaving the frame being inspected.
 
 ### Added
 
@@ -25,6 +30,8 @@ user-visible changes.
 - Start alkali halides and frameworks in an atom-based view and favor protein ribbons over solvent presets
 
 ### Fixed
+
+- Make phone toolbar and inspector controls easier to tap.
 
 - Fit the visible structure instead of the whole cell when water is hidden or isolated
 

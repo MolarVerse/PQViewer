@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 
 export type FocusTarget = Element & { focus: (options?: FocusOptions) => void };
 
@@ -6,7 +6,7 @@ export function useModalFocus<T extends HTMLElement>(
   panelRef: Readonly<{ current: T | null }>,
   initialRef?: Readonly<{ current: HTMLElement | null }>,
 ) {
-  useEffect(() => {
+  useLayoutEffect(() => {
     const panel = panelRef.current;
     if (!panel) return;
     const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -22,7 +22,7 @@ export function useModalFocus<T extends HTMLElement>(
       'button:not([disabled]), details > summary:first-child, input:not([disabled]):not([tabindex="-1"]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
     )].filter((element) => element.getClientRects().length > 0);
     const focusInitial = () => (initialRef?.current ?? focusable()[0] ?? panel).focus();
-    const animation = requestAnimationFrame(focusInitial);
+    focusInitial();
     const keepFocusInside = (event: FocusEvent) => {
       if (!panel.contains(event.target as Node)) focusInitial();
     };
@@ -47,7 +47,6 @@ export function useModalFocus<T extends HTMLElement>(
     document.addEventListener("focusin", keepFocusInside);
     panel.addEventListener("keydown", trapTab);
     return () => {
-      cancelAnimationFrame(animation);
       document.removeEventListener("focusin", keepFocusInside);
       panel.removeEventListener("keydown", trapTab);
       background.forEach(({ element, inert }) => { element.inert = inert; });

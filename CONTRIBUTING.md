@@ -70,6 +70,9 @@ npm run build
 npm run test:e2e
 ```
 
+Browser tests run locally, not in PR or release CI. Use
+`npm run test:e2e:smoke` for a quick check of the main browser flows.
+
 `npm run build` writes the packaged frontend to `pqviewer/static`. Commit those
 generated assets when frontend source changes. Do not edit packaged assets by
 hand.

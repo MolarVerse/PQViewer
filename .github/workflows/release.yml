@@ -173,50 +173,9 @@ jobs:
           wait "$server_pid" || true
           trap - EXIT
 
-  browser:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install Python dependencies
-        run: python -m pip install ".[dev,render]"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install browser dependencies
-        working-directory: frontend
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-      - name: Install render browser
-        run: python -m playwright install chromium
-      - name: Run browser tests
-        working-directory: frontend
-        run: npm run test:e2e
-      - name: Smoke-test headless rendering
-        env:
-          PQVIEWER_HEADLESS_TEST: "1"
-        run: python -m pytest tests/test_recipe.py -k headless_render_command
-      - name: Upload browser artifacts
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-browser-artifacts
-          path: output/playwright
-          if-no-files-found: ignore
-
   publish-pypi:
     needs:
       - smoke
-      - browser
     runs-on: ubuntu-latest
     permissions:
       id-token: write

@@ -5823,15 +5823,6 @@ button.measurement-plot__legend-item:hover {
     color: var(--accent);
   }
 
-  .command-button span,
-  .command-button kbd {
-    display: none;
-  }
-
-  .command-button .icon {
-    width: 18px;
-    height: 18px;
-  }
 
 }
 
@@ -7861,4 +7852,66 @@ button.measurement-plot__legend-item:hover {
 .upload-progress progress {
   width: min(180px, 36vw);
   height: 4px;
+}
+
+@media (max-width: 760px) {
+  .topbar .topbar-tools > button,
+  .topbar .topbar-tools > .export-button.render-button,
+  .open-dialog-icon,
+  .open-dialog-upload,
+  .timeline-options > summary {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .workbench input:not([type="checkbox"]):not([type="radio"]),
+  .workbench select,
+  .timeline-options select {
+    min-height: 44px;
+  }
+
+  .workbench input:not([type="range"]),
+  .workbench select,
+  .command-search input,
+  .timeline-options select {
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 360px) {
+  .tools-button span {
+    display: none;
+  }
+
+  .topbar-tools .tools-button {
+    min-width: 44px;
+  }
+}
+
+.topbar.pq-app-header { min-height: var(--header-height); }
+
+@media (min-width: 1200px) {
+  header.topbar.pq-app-header {
+    grid-template-columns: minmax(0, 1fr) min(28vw, 440px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .topbar.pq-app-header .tools-button {
+    padding: 0;
+  }
+
+  .topbar.pq-app-header .topbar-tools {
+    gap: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .workspace:has(.pq-app-header) { --header-height: var(--pq-mobile-header-height); }
+}
+
+.viewer-help-note p { margin: 4px 0 0; }
+
+.pq-live-single-frame .transport-row {
+  justify-content: space-between;
 }

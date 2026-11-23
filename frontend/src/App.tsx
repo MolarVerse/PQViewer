@@ -1,3 +1,6 @@
+import { FolderOpen, Image, SlidersHorizontal } from "lucide-react";
+import type { ReactNode } from "react";
+import { AppHeader, AutoRefreshButton, HeaderStatus, HelpButton, SearchTrigger, useHealthProbe } from "@molarverse/pq-design";
 import {
   useCallback,
   useEffect,
@@ -14,6 +17,7 @@ import {
   getFrame,
   getInitialRecipe,
   getManifest,
+  watchTrajectory,
   getSelectedPositions,
   isStaticDemoMode,
   normalizeSeries,
@@ -241,8 +245,16 @@ const defaultPresentation: ScenePresentation = {
   quality: "auto",
 };
 
+function isViewerHealth(value: unknown): value is { status: "ok" } {
+  return Boolean(value && typeof value === "object" && "status" in value && value.status === "ok");
+}
+
 export default function App() {
   const staticDemo = isStaticDemoMode();
+  const health = useHealthProbe(staticDemo ? null : "/api/health", isViewerHealth);
+  const [graphicsError, setGraphicsError] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [watchFailed, setWatchFailed] = useState(false);
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [loadError, setLoadError] = useState("");
@@ -1325,6 +1337,53 @@ export default function App() {
     [pinnedMeasurements],
   );
   const hasStructureEdits = editedFrames.size > 0 || topologyEdited;
+
+  useEffect(() => {
+    if (!autoRefresh || staticDemo || opening || rendering || playing || hasStructureEdits || loadState !== "ready") return;
+    let request: AbortController | null = null;
+    const poll = async () => {
+      if (request || document.hidden || datasetCheckPending.current || datasetReloadPending.current) return;
+      const generation = manifestGeneration.current;
+      if (!generation) return;
+      const controller = new AbortController();
+      request = controller;
+      datasetCheckPending.current = true;
+      const timeout = window.setTimeout(() => controller.abort(), 10_000);
+      try {
+        const next = await watchTrajectory(generation, controller.signal);
+        if (controller.signal.aborted || manifestGeneration.current !== generation) return;
+        setWatchFailed(false);
+        if (!next) return;
+        if (compatibleManifestGrowth(activeManifest.current, next)) {
+          cache.current.clear();
+          cache.current = new FrameCache({
+            datasetGeneration: next.dataset_generation,
+            coordinates: frameCoordinateModeRef.current,
+          });
+          manifestGeneration.current = next.dataset_generation ?? "";
+          activeManifest.current = next;
+          originalManifest.current = next;
+          setManifest(next);
+        } else {
+          activateManifest(next);
+        }
+      } catch {
+        if (request === controller && !controller.signal.aborted) setWatchFailed(true);
+      } finally {
+        window.clearTimeout(timeout);
+        datasetCheckPending.current = false;
+        request = null;
+      }
+    };
+    const timer = window.setInterval(poll, 5000);
+    void poll();
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+      request?.abort();
+    };
+  }, [autoRefresh, staticDemo, opening, rendering, playing, hasStructureEdits, loadState, activateManifest]);
   const workbenchVisible = Boolean(workbenchTab && manifest && capabilities);
   const plotFrameAxis = useMemo(
     () => measurementPlotOpen && manifest
@@ -1922,7 +1981,7 @@ export default function App() {
   const openSetting = useCallback((tab: WorkbenchTab, target: string) => {
     setCommandOpen(false);
     setSettingTarget(target);
-    openWorkbench(tab, true);
+    openWorkbench(tab);
   }, [openWorkbench]);
 
   const openFigureSetting = useCallback((target: string) => {
@@ -1934,27 +1993,33 @@ export default function App() {
     if (!settingTarget) return;
     let frameRequest = 0;
     let clearTimer = 0;
-    let attempts = 0;
+    const deadline = performance.now() + 700;
+    const retry = () => {
+      if (performance.now() < deadline) {
+        frameRequest = requestAnimationFrame(reveal);
+        return true;
+      }
+      return false;
+    };
     const reveal = () => {
       const target = document.querySelector<HTMLElement>(
         `[data-setting-id="${settingTarget}"]`,
       );
       if (!target) {
-        attempts += 1;
-        if (attempts < 6) frameRequest = requestAnimationFrame(reveal);
-        else setSettingTarget((current) => current === settingTarget ? null : current);
+        if (!retry()) setSettingTarget((current) => current === settingTarget ? null : current);
         return;
       }
       if (target instanceof HTMLDetailsElement) target.open = true;
       target.closest<HTMLDetailsElement>("details")?.setAttribute("open", "");
-      target.classList.add("is-search-target");
-      target.scrollIntoView?.({ block: "center", behavior: "smooth" });
       const focusTarget = target.matches("button:not(:disabled), input:not(:disabled), select:not(:disabled), summary")
         ? target
         : target.querySelector<HTMLElement>(
           "button:not(:disabled), input:not(:disabled), select:not(:disabled), summary",
         );
-      requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
+      focusTarget?.focus({ preventScroll: true });
+      if (focusTarget && document.activeElement !== focusTarget && retry()) return;
+      target.classList.add("is-search-target");
+      target.scrollIntoView?.({ block: "center", behavior: "smooth" });
       clearTimer = window.setTimeout(() => {
         target.classList.remove("is-search-target");
         setSettingTarget((current) => current === settingTarget ? null : current);
@@ -2564,7 +2629,7 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing) return;
       const target = event.target as HTMLElement | null;
-      if (openDialog && event.key !== "Escape") return;
+      if (helpPopup || (openDialog && event.key !== "Escape")) return;
       const primaryModifier = event.metaKey !== event.ctrlKey && !event.altKey;
       if (primaryModifier && event.shiftKey && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -3110,6 +3175,7 @@ export default function App() {
         detail: "Esc",
         run: run(() => setSelectedAtoms([])),
       }] : []),
+      { id: "help", label: "Help", keywords: "docs documentation guide", run: run(() => showHelpPopup("help")) },
       { id: "shortcuts", label: "Keyboard shortcuts", keywords: "help keys vim", detail: "?", run: run(showShortcuts) },
       { id: "vim", label: vimMode ? "Disable Vim navigation" : "Enable Vim navigation", keywords: "keyboard linux hjkl", detail: vimMode ? "On" : "Off", run: run(() => setVimMode((value) => !value)) },
     ];
@@ -3178,6 +3244,7 @@ export default function App() {
     showMeasurementPlot,
     showRecipeOpen,
     showRender,
+    showHelpPopup,
     showShortcuts,
     stepFrame,
     study.reference,
@@ -3288,40 +3355,72 @@ export default function App() {
         }}
       />
       <div className={workspaceClass} aria-busy={loadState === "loading" || frameLoading || opening || rendering}>
-        <header className="topbar">
-          <div className="identity" aria-label="Current structure">
-            <img className="identity-mark" src={`${import.meta.env.BASE_URL}pq-logo.png`} alt="" />
-            <div>
-              <strong>PQViewer</strong>
-              <span title={manifest?.name || "Molecular trajectory"}>
-                {manifest?.name || "Molecular trajectory"}
-              </span>
-            </div>
-          </div>
-          <div className="topbar-tools">
+        <AppHeader
+          className="topbar"
+          status={<HeaderStatus
+            checks={[
+              { label: "Server connection", state: staticDemo ? "skipped" : health.state,
+                detail: staticDemo ? "This demo runs without a server." : undefined },
+              {
+                label: "Trajectory and frames",
+                state: loadState === "error" || frameError ? "fail" : opening || loadState === "loading" ? "pending"
+                  : frame ? "pass" : "skipped",
+                detail: loadState === "error" || frameError ? "The current trajectory or frame could not be read."
+                  : !frame && loadState === "ready" ? "Open a trajectory to check its frames." : undefined,
+              },
+              {
+                label: "3D rendering (WebGL 2)",
+                state: graphicsError ? "fail" : sceneInfo ? "pass" : manifest?.frame_count ? "pending" : "skipped",
+                detail: graphicsError ? "Enable graphics acceleration or try a browser with WebGL 2." : undefined,
+              },
+              ...(!staticDemo && autoRefresh ? [{
+                label: "Trajectory auto-refresh",
+                state: watchFailed ? "fail" as const : opening || rendering || playing || hasStructureEdits
+                  ? "skipped" as const : health.state,
+                detail: watchFailed ? "The source could not be refreshed."
+                  : hasStructureEdits ? "Paused while the trajectory has unsaved edits."
+                  : playing ? "Paused during playback." : undefined,
+              }] : []),
+            ]}
+          />}
+          name="PQViewer"
+          logo={`${import.meta.env.BASE_URL}pq-logo.png`}
+          actionsClassName="topbar-tools"
+          context={manifest?.name || "Molecular trajectory"}
+          files={manifest?.frame_count ? (manifest.source?.segments ?? [])
+            .flatMap(({ path, input }) => [input, path])
+            .filter((file): file is string => Boolean(file))
+            .map((file) => file.split(/[\\/]/).at(-1) || file)
+            .filter((name, index, names) => names.indexOf(name) === index)
+            .concat(manifest.source?.segments?.some(({ path, input }) => path || input) ? [] : [manifest.name])
+            : undefined}
+          search={<SearchTrigger
+
+              label="Search…"
+              accessibleName="Search atoms, settings, and commands"
+              shortcut={shortcutLabels.commands}
+              open={commandOpen}
+              disabled={rendering}
+              onOpen={showCommands}
+            />}
+          actions={<>
             <button
               className="open-button"
+              data-header-action=""
               type="button"
               disabled={rendering || staticDemo}
+              aria-label="Open"
+              aria-haspopup="dialog"
+              aria-expanded={openDialog}
               aria-keyshortcuts="Meta+O Control+O"
               title={staticDemo ? "Open local files with the installed Python viewer" : undefined}
               onClick={showOpen}
-            ><Icon name="folder" />Open</button>
-            <button
-              className="command-button"
-              type="button"
-              aria-label="Search atoms, settings, and commands"
-              aria-keyshortcuts="Meta+K Control+K"
-              aria-haspopup="dialog"
-              aria-expanded={commandOpen}
-              disabled={rendering}
-              title={`Search atoms, settings, and commands · ${shortcutLabels.commands}`}
-              onClick={showCommands}
-            ><Icon name="search" /><span>Search</span><kbd>{shortcutLabels.commands}</kbd></button>
+            ><FolderOpen aria-hidden="true" /><span className="pq-header-action-label">Open</span></button>
+
             <nav className="task-navigation" aria-label="Viewer tools">
               <button
                 ref={viewButtonRef}
-                className="task-button"
+                className="task-button pq-task-action"
                 type="button"
                 aria-controls="workbench"
                 aria-expanded={workbenchVisible && workbenchTab === "view"}
@@ -3332,7 +3431,7 @@ export default function App() {
               >View</button>
               <button
                 ref={editButtonRef}
-                className="task-button"
+                className="task-button pq-task-action"
                 type="button"
                 aria-controls="workbench"
                 aria-expanded={workbenchVisible && workbenchTab === "edit"}
@@ -3347,7 +3446,7 @@ export default function App() {
               >Edit</button>
               <button
                 ref={analyzeButtonRef}
-                className="task-button"
+                className="task-button pq-task-action"
                 type="button"
                 aria-controls="workbench"
                 aria-expanded={workbenchVisible && workbenchTab === "analyze"}
@@ -3359,16 +3458,18 @@ export default function App() {
             </nav>
             <button
               className="tools-button"
+              data-header-action=""
               type="button"
               aria-label={workbenchVisible ? "Close viewer tools" : "Open viewer tools"}
               aria-controls="workbench"
               aria-expanded={workbenchVisible}
               disabled={rendering || !capabilities}
               onClick={() => workbenchVisible ? closeWorkbench(false) : openWorkbench("view", true)}
-            ><Icon name="sliders" /><span>Tools</span></button>
+            ><SlidersHorizontal aria-hidden="true" /></button>
             <button
               ref={exportButtonRef}
               className="render-button export-button"
+              data-header-action=""
               type="button"
               aria-label="Export figure"
               aria-controls="figure-sheet"
@@ -3377,17 +3478,10 @@ export default function App() {
               disabled={!canRender || rendering}
               aria-keyshortcuts="Meta+Shift+S Control+Shift+S"
               onClick={() => figureSheetOpen ? setFigureSheetOpen(false) : showFigureSheet()}
-            ><Icon name="image" />{rendering ? "Exporting…" : "Export"}</button>
-            <button
-              className="help-button"
-              type="button"
-              aria-label="Help"
-              aria-haspopup="dialog"
-              disabled={rendering}
-              onClick={() => showHelpPopup("help")}
-            ><span>Help</span><strong aria-hidden="true">?</strong></button>
-          </div>
-        </header>
+            ><Image aria-hidden="true" /><span className="pq-header-action-label">{rendering ? "Exporting…" : "Export"}</span></button>
+            <HelpButton open={helpPopup !== null} disabled={rendering} onClick={() => showHelpPopup("help")} />
+          </>}
+        />
 
         {manifest && manifest.frame_count > 0 && capabilities && (
           <CanvasControls
@@ -3420,7 +3514,11 @@ export default function App() {
             appearance={appearance}
             onSelect={selectAtom}
             onSelectMany={selectManyAtoms}
-            onSceneInfo={setSceneInfo}
+            onSceneInfo={(info) => {
+              if (info) setGraphicsError(false);
+              setSceneInfo(info);
+            }}
+            onEngineError={() => setGraphicsError(true)}
             onSelectionContext={setSelectionContext}
           />
         ) : (
@@ -3800,8 +3898,18 @@ export default function App() {
           />
         )}
 
+        {manifest && manifest.frame_count === 1 && !staticDemo && (
+          <section className="timeline is-compact pq-live-single-frame" aria-label="Trajectory controls">
+            <div className="transport-row"><span>1 frame</span>
+              <AutoRefreshButton active={autoRefresh} disabled={rendering}
+                onToggle={() => setAutoRefresh((value) => !value)} />
+            </div>
+          </section>
+        )}
         {manifest && manifest.frame_count > 1 && (
           <Timeline
+            refreshControl={!staticDemo ? <AutoRefreshButton active={autoRefresh} disabled={rendering}
+              onToggle={() => setAutoRefresh((value) => !value)} /> : undefined}
             busy={rendering}
             frameCount={manifest.frame_count}
             frameIndex={frameIndex}
@@ -3936,14 +4044,14 @@ export default function App() {
           resolveAction={resolveCommandAction}
           onClose={() => setCommandOpen(false)}
         />}
-        {helpPopup && <ShortcutSheet
+        <ShortcutSheet
           mode={helpPopup}
           onMode={setHelpPopup}
           shortcutLabels={shortcutLabels}
           vimMode={vimMode}
           onVimMode={setVimMode}
           onClose={() => setHelpPopup(null)}
-        />}
+        />
       </div>
     </main>
   );
@@ -5487,6 +5595,7 @@ function frameTimeUnit(frame: FrameData | null): string | undefined {
 }
 
 function Timeline({
+  refreshControl,
   busy,
   frameCount,
   frameIndex,
@@ -5520,6 +5629,7 @@ function Timeline({
   onTracking,
   onMode,
 }: {
+  refreshControl?: ReactNode;
   busy: boolean;
   frameCount: number;
   frameIndex: number;
@@ -5636,6 +5746,7 @@ function Timeline({
           <span className="frame-error-full">Frame error</span>
           <span className="frame-error-compact" aria-hidden="true">Error</span>
         </span>}
+        {refreshControl}
         <details
           className="timeline-options"
           open={optionsOpen}

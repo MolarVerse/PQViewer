@@ -96,6 +96,16 @@ export async function getManifest(): Promise<Manifest> {
   return manifest;
 }
 
+export async function watchTrajectory(generation: string, signal: AbortSignal): Promise<Manifest | null> {
+  const query = new URLSearchParams({ watch_generation: generation });
+  const response = await fetch(`/api/refresh?${query}`, { method: "POST", signal });
+  if (response.status === 204) return null;
+  if (!response.ok) throw new Error(await responseMessage(response, "Could not refresh the trajectory"));
+  const manifest = (await response.json()) as Manifest;
+  validateManifest(manifest, "The refreshed trajectory manifest is incomplete");
+  return manifest;
+}
+
 export async function getInitialRecipe(): Promise<unknown> {
   if (STATIC_DEMO) return null;
   const response = await fetch("/api/initial-recipe", {
