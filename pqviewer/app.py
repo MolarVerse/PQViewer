@@ -62,6 +62,7 @@ _UPLOAD_EXTENSIONS = {
         ".extxyz",
         ".xyz",
         ".traj",
+        ".rst",
         ".cif",
         ".pdb",
         ".vasp",

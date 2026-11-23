@@ -3070,12 +3070,6 @@ button.measurement-plot__legend-item:hover {
   font-size: 10px;
 }
 
-.selection-hint {
-  color: var(--quiet);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
 .selection-bar > button:not(.icon-button) {
   flex: 0 0 auto;
   min-width: 56px;
@@ -6211,10 +6205,6 @@ button.measurement-plot__legend-item:hover {
 }
 
 @media (max-width: 380px) {
-  .selection-hint {
-    display: none;
-  }
-
   .measurement-plot-open .selection-bar {
     flex-wrap: wrap;
     justify-content: flex-end;
@@ -6300,7 +6290,7 @@ button.measurement-plot__legend-item:hover {
   flex: 0 0 auto;
 }
 
-.selection-tools > summary {
+.selection-tools > button {
   min-width: 54px;
   height: 36px;
   display: grid;
@@ -6311,15 +6301,12 @@ button.measurement-plot__legend-item:hover {
   font-size: 10px;
   font-weight: 650;
   cursor: pointer;
-  list-style: none;
+  border: 0;
+  background: transparent;
 }
 
-.selection-tools > summary::-webkit-details-marker {
-  display: none;
-}
-
-.selection-tools > summary:hover,
-.selection-tools[open] > summary {
+.selection-tools > button:hover,
+.selection-tools > button[aria-expanded="true"] {
   background: var(--accent-soft);
 }
 
@@ -6540,7 +6527,7 @@ button.measurement-plot__legend-item:hover {
     position: static;
   }
 
-  .selection-tools > summary {
+  .selection-tools > button {
     height: 44px;
   }
 
@@ -6579,7 +6566,7 @@ button.measurement-plot__legend-item:hover {
     min-width: 80px;
   }
 
-  .selection-tools > summary {
+  .selection-tools > button {
     min-width: 48px;
     padding-inline: 7px;
   }
@@ -7328,53 +7315,11 @@ button.measurement-plot__legend-item:hover {
   padding: 6px 0 2px;
 }
 
-.analysis-empty strong,
-.analysis-measurement-copy strong {
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.analysis-empty p,
-.analysis-measurement-copy p {
-  margin: 7px 0 0;
-  color: var(--quiet);
+.analysis-empty p {
+  margin: 0;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
-}
-
-.analysis-empty > div {
-  display: grid;
-  gap: 5px;
-  margin-top: 14px;
-}
-
-.analysis-empty > div span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.analysis-empty kbd {
-  min-width: 56px;
-  display: inline-block;
-  margin-right: 7px;
-  padding: 3px 5px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--surface-soft);
-  color: var(--text);
-  text-align: center;
-}
-
-.analysis-measurement-copy strong,
-.analysis-measurement-copy span {
-  display: block;
-}
-
-.analysis-measurement-copy span {
-  margin-top: 3px;
-  color: var(--muted);
-  font: 10px var(--numeric);
 }
 
 .analysis-actions,
@@ -7723,5 +7668,88 @@ button.measurement-plot__legend-item:hover {
   .workbench-open .canvas-field {
     width: calc(100% - min(320px, 48vw));
     height: calc(100% - var(--header-height) - var(--timeline-height));
+  }
+}
+
+.element-colors {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: 12px var(--numeric);
+}
+
+.element-colors li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.element-colors li i {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--line-strong);
+}
+
+.viewport-element-colors {
+  position: absolute;
+  z-index: 2;
+  left: 12px;
+  bottom: calc(var(--timeline-height) + 10px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 7px;
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--line-soft);
+}
+
+.viewport-element-colors .element-colors {
+  flex-wrap: nowrap;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.viewport-element-colors button {
+  min-height: 24px;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 11px var(--numeric);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.selection-readout.is-measurement output {
+  flex: none;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.selection-readout.is-measurement strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.formula-readout strong {
+  white-space: normal;
+}
+
+.formula-readout strong > span {
+  display: inline-block;
+  color: inherit;
+}
+
+@media (min-width: 480px) and (max-width: 760px) and (max-height: 520px) {
+  .workbench-open .canvas-controls {
+    right: calc(min(320px, 48vw) + 8px);
+    width: auto;
   }
 }

@@ -205,7 +205,11 @@ export function PlotShelf({
   );
   const pointCount = xValues.length;
   const frameIndices = plot.frameIndices;
-  const activeDataIndex = currentFrame === undefined
+  const [sample, setSample] = useState<{ plot: PlotShelfData; index: number } | null>(null);
+  const inspectable = plot.kind === "rdf" && pointCount > 0;
+  const activeDataIndex = inspectable
+    ? sample?.plot === plot ? sample.index : 0
+    : currentFrame === undefined
     ? -1
     : plotDataIndexForFrame(currentFrame, frameIndices, pointCount);
   const seekableIndices = useMemo(
@@ -256,7 +260,13 @@ export function PlotShelf({
     ? `${totalCount.toLocaleString()} ${countNoun}`
     : `${boundedLoadedCount.toLocaleString()} / ${totalCount.toLocaleString()} ${countNoun}`;
   const status = plot.context ? `${countStatus} · ${plot.context}` : countStatus;
-  const valueText = activeDataIndex >= 0
+  const sampleText = inspectable
+    ? `${axisLabel} ${formatTick(xValues[activeDataIndex])}${axisUnit ? ` ${axisUnit}` : ""}; ${lines.map((line, index) => {
+      const value = currentValues[index];
+      return `${line.label} ${value === null ? "—" : formatTick(value)}`;
+    }).join("; ")}`
+    : undefined;
+  const valueText = !inspectable && activeDataIndex >= 0
     ? currentPlotValueText(
         activeDataIndex,
         currentFrame!,
@@ -278,13 +288,30 @@ export function PlotShelf({
     if (target !== null) onFrame(target);
   };
 
+  const inspectPointer = (event: PointerEvent<SVGSVGElement>) => {
+    const plotX = clientXToPlotX(event.clientX, event.currentTarget.getBoundingClientRect(), layout.width);
+    if (plotX !== null) {
+      const index = nearestFrameForPlotX(plotX, xValues, layout.left, layout.right);
+      setSample({ plot, index });
+    }
+  };
+
   const handlePointerDown = (event: PointerEvent<SVGSVGElement>) => {
-    if (event.button !== 0 || !seekable) return;
+    if (event.button !== 0) return;
+    if (inspectable) {
+      inspectPointer(event);
+      return;
+    }
+    if (!seekable) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     seekFromPointer(event);
   };
 
   const handlePointerMove = (event: PointerEvent<SVGSVGElement>) => {
+    if (inspectable && event.pointerType !== "touch") {
+      inspectPointer(event);
+      return;
+    }
     if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
     seekFromPointer(event);
   };
@@ -296,6 +323,18 @@ export function PlotShelf({
   };
 
   const handleKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
+    if (inspectable) {
+      const index = {
+        ArrowLeft: Math.max(0, activeDataIndex - 1),
+        ArrowRight: Math.min(pointCount - 1, activeDataIndex + 1),
+        Home: 0,
+        End: pointCount - 1,
+      }[event.key];
+      if (index === undefined) return;
+      event.preventDefault();
+      setSample({ plot, index });
+      return;
+    }
     if (!seekable || !onFrame) return;
     let nextDataIndex: number | null = null;
     const activePosition = Math.max(0, seekableIndices.indexOf(activeDataIndex));
@@ -322,9 +361,10 @@ export function PlotShelf({
       <header className="measurement-plot__header">
         <div className="measurement-plot__meta">
           <strong title={title}>{title}</strong>
-          <span title={complete ? status : undefined}>{complete ? status : "Loading data"}</span>
+          <span title={complete ? status : undefined}>{complete ? status : plot.kind === "rdf" ? "Calculating · close to cancel" : "Loading data"}</span>
         </div>
         <div className="measurement-plot__legend" role="group" aria-label="Current values">
+          {sampleText && <output aria-live="off">{sampleText}</output>}
           {lines.map((line, index) => {
             const color = plotLineColor(line.color, index);
             const value = currentValues[index];
@@ -411,14 +451,14 @@ export function PlotShelf({
           ? "measurement-plot__chart is-seekable"
           : "measurement-plot__chart"}
         viewBox={`0 0 ${layout.width} ${layout.height}`}
-        role={seekable ? "slider" : "img"}
-        tabIndex={seekable ? 0 : undefined}
-        aria-label={seekable ? `${title} frame` : title}
+        role={seekable || inspectable ? "slider" : "img"}
+        tabIndex={seekable || inspectable ? 0 : undefined}
+        aria-label={inspectable ? `${title} radius` : seekable ? `${title} frame` : title}
         aria-orientation={seekable ? "horizontal" : undefined}
-        aria-valuemin={seekable ? seekableBounds?.[0] : undefined}
-        aria-valuemax={seekable ? seekableBounds?.[1] : undefined}
-        aria-valuenow={seekable && currentFrame !== undefined ? currentFrame : undefined}
-        aria-valuetext={seekable ? valueText : undefined}
+        aria-valuemin={inspectable ? 0 : seekable ? seekableBounds?.[0] : undefined}
+        aria-valuemax={inspectable ? pointCount - 1 : seekable ? seekableBounds?.[1] : undefined}
+        aria-valuenow={inspectable ? activeDataIndex : seekable && currentFrame !== undefined ? currentFrame : undefined}
+        aria-valuetext={sampleText ?? (seekable ? valueText : undefined)}
         onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
@@ -426,7 +466,7 @@ export function PlotShelf({
         onPointerCancel={releasePointer}
         style={{
           touchAction: seekable ? "none" : "auto",
-          cursor: seekable ? "crosshair" : "default",
+          cursor: seekable || inspectable ? "crosshair" : "default",
         }}
       >
         <title>{title}</title>
@@ -510,6 +550,13 @@ export function PlotShelf({
           />
         ))}
 
+        {inspectable && (layout.right - layout.left >= 300 ? [0.25, 0.5, 0.75] : [0.5]).map((fraction) => (
+          <text key={fraction} className="measurement-plot__tick"
+            x={layout.left + (layout.right - layout.left) * fraction}
+            y={layout.bottom + 17} textAnchor="middle">
+            {formatTick(geometry.xDomain[0] + (geometry.xDomain[1] - geometry.xDomain[0]) * fraction)}
+          </text>
+        ))}
         <text className="measurement-plot__tick" x={layout.left} y={layout.bottom + 17}>
           {formatTick(geometry.xDomain[0])}
         </text>

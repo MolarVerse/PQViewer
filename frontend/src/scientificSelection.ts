@@ -357,6 +357,10 @@ export class SelectionIndex {
     );
   }
 
+  selectAtoms(atoms: ReadonlySet<number>): AtomSelection[] {
+    return this.collectVisible((atom) => atoms.has(atom));
+  }
+
   selectWater(): AtomSelection[] {
     return this.collectVisible((atom) => this.context.waterAtoms.has(atom));
   }

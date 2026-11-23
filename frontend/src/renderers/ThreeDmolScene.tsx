@@ -371,11 +371,16 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
 
       runtime.scene = scene;
       runtime.plan = plan;
+      const elements = new Set<number>();
+      for (const selection of plan.selections) elements.add(scene.atomicNumbers[selection.atom]);
       runtime.layoutKey = plan.layoutKey;
       runtime.fitMode = presentation.mode;
       runtime.manifestName = manifest.name;
       onSelectionContext?.(selectionContextFromDmolModel(manifest, scene));
       const info: RenderedSceneInfo = {
+        elementColors: [...elements].sort((a, b) => a - b).map((number) => ({
+          number, color: dmolElementColor(number) ?? "#65757A",
+        })),
         imageCount: scene.images.length,
         forceCount: geometry.forceInstances.length,
         forceTotal: geometry.forceTotal,
@@ -475,6 +480,22 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
       let start: { x: number; y: number; pointerId: number } | null = null;
       let moved = false;
       let selecting = false;
+      let primaryStart: { x: number; y: number } | null = null;
+
+      const pickNearby = (runtime: DmolRuntime, x: number, y: number) => {
+        if (!runtime.plan || runtime.plan.atoms.length > 100_000) return null;
+        const points = runtime.viewer.modelToScreen(runtime.plan.atoms);
+        let nearest = -1;
+        let limit = 9 ** 2;
+        points.forEach((point, index) => {
+          const distance = (point.x - x) ** 2 + (point.y - y) ** 2;
+          if (distance < limit) {
+            nearest = index;
+            limit = distance;
+          }
+        });
+        return runtime.plan.selections[nearest] ?? null;
+      };
 
       const rectangle = (event: PointerEvent): SelectionRectangle => {
         const bounds = host.getBoundingClientRect();
@@ -499,6 +520,7 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
         const runtime = runtimeRef.current;
         if (!runtime) return;
         runtime.pointer = event;
+        primaryStart = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
         if (!event.shiftKey || event.button !== 0) return;
         start = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
         selecting = true;
@@ -516,6 +538,8 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
       };
       const pointerUp = (event: PointerEvent) => {
         const runtime = runtimeRef.current;
+        const pressed = primaryStart;
+        primaryStart = null;
         if (selecting && start && event.pointerId === start.pointerId) {
           if (moved && runtime?.plan) {
             const rect = rectangle(event);
@@ -536,6 +560,9 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
               matches.push(selection);
             });
             selectManyRef.current?.(matches, true);
+          } else if (runtime && start && Math.hypot(event.clientX - start.x, event.clientY - start.y) <= 4) {
+            const atom = pickNearby(runtime, event.pageX, event.pageY);
+            if (atom) selectRef.current(atom, true);
           }
           if (host.hasPointerCapture(event.pointerId)) {
             host.releasePointerCapture(event.pointerId);
@@ -545,19 +572,24 @@ export const ThreeDmolScene = forwardRef<MoleculeSceneHandle, ThreeDmolSceneProp
           event.stopImmediatePropagation();
           return;
         }
-        if (!runtime || event.button !== 0) return;
+        if (!runtime || event.button !== 0 || !pressed
+          || Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > 4) return;
         const pickSerial = runtime.pickSerial;
         window.setTimeout(() => {
           if (
             runtimeRef.current === runtime
             && runtime.pickSerial === pickSerial
-            && !isAdditivePick(event)
           ) {
-            selectRef.current(null, false);
+            const atom = pickNearby(runtime, event.pageX, event.pageY);
+            const additive = isAdditivePick(event);
+            if (atom || !additive) selectRef.current(atom, additive);
           }
         }, 0);
       };
-      const pointerCancel = () => reset();
+      const pointerCancel = () => {
+        primaryStart = null;
+        reset();
+      };
       const focus = () => {
         const runtime = runtimeRef.current;
         if (!runtime?.scene) return;
@@ -1115,7 +1147,7 @@ function updateSelectionShape(
   const shape = runtime.viewer.addShape({
     color: appearance === "light" ? LIGHT_PALETTE.selection : DARK_PALETTE.selection,
     wireframe: true,
-    opacity: 0.82,
+    opacity: 1,
   });
   let count = 0;
   runtime.plan.atoms.forEach((atom, index) => {
@@ -1124,10 +1156,10 @@ function updateSelectionShape(
     if (!selected.has(selectionKey(selection))) return;
     shape.addSphere({
       center: { x: atom.x, y: atom.y, z: atom.z },
-      radius: Math.max(0.3, (runtime.scene!.radii[selection.atom] ?? 0.3) * 1.35),
+      radius: Math.max(0.38, (runtime.scene!.radii[selection.atom] ?? 0.3) * 1.55),
       color: appearance === "light" ? LIGHT_PALETTE.selection : DARK_PALETTE.selection,
       wireframe: true,
-      opacity: 0.82,
+      opacity: 1,
       quality: 2,
     });
     count += 1;

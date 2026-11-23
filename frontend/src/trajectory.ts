@@ -166,15 +166,10 @@ export function runScheduledPlaybackTick(
   if (schedule.delayMs > 0) {
     return { committed: false, schedule, step: null };
   }
-  const step = advanceScheduledPlaybackFrame(
-    frameIndex,
-    frameCount,
-    options,
-    schedule,
-  );
+  const step = advancePlaybackFrame(frameIndex, frameCount, options);
   handlers.onStep(step);
   handlers.onPulse();
-  return { committed: true, schedule, step };
+  return { committed: true, schedule: { delayMs: 0, requestTimeMs: nowMs, stepCount: 1 }, step };
 }
 
 export function playbackPrefetchIndices(
