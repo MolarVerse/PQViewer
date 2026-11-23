@@ -22,6 +22,7 @@ user-visible changes.
 
 - Keep camera controls clear of the inspector and wrap formulas between elements
 - Make small atoms easier to pick and show the measured value first
+- Keep playback frames in order and show the displayed frame while the next frame loads
 
 ## [0.2.2] - 2026-11-17
 

@@ -5522,10 +5522,11 @@ function Timeline({
 }) {
   const displayedFrame = String(displayedFrameIndex + 1).padStart(String(frameCount).length, "0");
   const requestedFrame = String(frameIndex + 1).padStart(String(frameCount).length, "0");
-  const frameLabel = displayedFrameIndex === frameIndex
+  const showRequestedFrame = !playing && displayedFrameIndex !== frameIndex;
+  const frameLabel = !showRequestedFrame
     ? `${displayedFrame} / ${frameCount}`
     : `${displayedFrame} → ${requestedFrame}`;
-  const compactFrameLabel = displayedFrameIndex === frameIndex
+  const compactFrameLabel = !showRequestedFrame
     ? `${compactFrameNumber(displayedFrameIndex + 1)} / ${compactFrameNumber(frameCount)}`
     : `${compactFrameNumber(displayedFrameIndex + 1)} → ${compactFrameNumber(frameIndex + 1)}`;
   const [timeDisplayUnit, setTimeDisplayUnit] = useState<TimeDisplayUnit>("source");
@@ -5561,7 +5562,7 @@ function Timeline({
               type="range"
               min={0}
               max={Math.max(frameCount - 1, 0)}
-              value={frameIndex}
+              value={playing ? displayedFrameIndex : frameIndex}
               disabled={busy}
               onChange={(event) => onFrame(Number(event.target.value))}
             />
@@ -5590,7 +5591,7 @@ function Timeline({
         </div>
         {!frameError && <output
             className="frame-counter"
-            aria-label={displayedFrameIndex === frameIndex
+            aria-label={!showRequestedFrame
               ? `Frame ${displayedFrameIndex + 1} of ${frameCount}`
               : `Showing frame ${displayedFrameIndex + 1}; loading frame ${frameIndex + 1}`}
           >
