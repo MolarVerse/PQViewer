@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listLaunchFolder, type LaunchFolderEntry } from "./api";
+
 import { searchCommandActions } from "./commandSearch";
 import { Icon } from "./Icon";
 import type { ViewerShortcutLabels } from "./keyboard";
@@ -205,6 +207,64 @@ export function ShortcutSheet({
         <button type="button" onClick={() => onMode(mode === "help" ? "shortcuts" : "help")}>
           {mode === "help" ? "Keyboard shortcuts" : "Viewer help"}
         </button>
+      </footer>
+    </section>
+  </div>;
+}
+
+export function OpenDialog({ onClose, onUpload, onFile }: {
+  onClose: () => void;
+  onUpload: () => void;
+  onFile: (path: string) => void;
+}) {
+  const panelRef = useRef<HTMLElement>(null);
+  const [folder, setFolder] = useState<string[]>([]);
+  const [entries, setEntries] = useState<LaunchFolderEntry[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const path = folder.join("/");
+  useModalFocus(panelRef);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    listLaunchFolder(path, controller.signal).then(
+      (value) => { if (!controller.signal.aborted) setEntries(value); },
+      (failure: Error) => { if (!controller.signal.aborted) setError(failure.message); },
+    ).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [path]);
+
+  return <div className="command-backdrop" onPointerDown={(event) => event.target === event.currentTarget && onClose()}>
+    <section ref={panelRef} className="command-palette open-dialog" role="dialog" aria-modal="true" aria-label="Open files" tabIndex={-1}>
+      <header className="open-dialog-header">
+        <h2>Open files</h2>
+        <button type="button" className="open-dialog-icon" aria-label="Close" onClick={onClose}><Icon name="close" /></button>
+      </header>
+      {(loading || entries !== null || error) && <>
+        <div className="open-dialog-location">
+          {folder.length > 0 && <button type="button" className="open-dialog-icon" aria-label="Parent folder" onClick={() => setFolder(folder.slice(0, -1))}>
+            <Icon name="back" />
+          </button>}
+          <span title={["Launch folder", ...folder].join(" / ")}>{["Launch folder", ...folder].join(" / ")}</span>
+        </div>
+        <div className="command-results" aria-busy={loading}>
+          {loading ? <p>Reading folder…</p>
+            : error ? <p role="alert">{error}</p>
+            : entries?.length ? entries.map(({ name, directory }) =>
+              <button key={name} type="button" onClick={() => {
+                if (directory) setFolder([...folder, name]);
+                else onFile([...folder, name].join("/"));
+              }}>
+                <span>{directory && <Icon name="folder" />}{name}</span>
+                {directory && <Icon name="next" />}
+              </button>)
+            : <p>No supported files or folders here.</p>}
+        </div>
+      </>}
+      <footer className="open-dialog-footer">
+        <button type="button" className="open-dialog-upload" onClick={onUpload}>Upload from this device</button>
       </footer>
     </section>
   </div>;

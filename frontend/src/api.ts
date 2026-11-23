@@ -176,23 +176,77 @@ export async function runRdfAnalysis(
   return parseRdfAnalysisResult(await response.json(), request.datasetGeneration);
 }
 
-export async function openFiles(files: File[], signal?: AbortSignal): Promise<Manifest> {
+export interface LaunchFolderEntry {
+  name: string;
+  directory: boolean;
+}
+
+export async function listLaunchFolder(path: string, signal: AbortSignal): Promise<LaunchFolderEntry[] | null> {
+  const response = await fetch(`/api/open/folder?path=${encodeURIComponent(path)}`, { signal });
+  if (!response.ok) throw new Error(await responseMessage(response, "Could not browse that folder"));
+  const result: { entries: LaunchFolderEntry[] | null } = await response.json();
+  return result.entries;
+}
+
+export async function openServerFile(path: string, signal: AbortSignal): Promise<Manifest> {
+  const response = await fetch("/api/open/server", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+    signal,
+  });
+  if (!response.ok) throw new Error(await responseMessage(response, "Could not open that file"));
+  return openedManifest(await response.json());
+}
+
+export function openFiles(
+  files: File[],
+  signal: AbortSignal,
+  onProgress: (percent: number | null) => void,
+): Promise<Manifest> {
   if (STATIC_DEMO) {
     throw new Error("Open local files with the installed Python viewer");
   }
   if (files.length === 0) throw new Error("Choose at least one trajectory file");
+  signal.throwIfAborted();
   const body = new FormData();
   files.forEach((file) => body.append("files", file, file.name));
-  const response = await fetch("/api/open", {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    body,
-    signal,
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const abort = () => request.abort();
+    request.open("POST", "/api/open");
+    request.responseType = "json";
+    request.setRequestHeader("Accept", "application/json");
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.min(99, Math.floor(100 * event.loaded / event.total)));
+      }
+    };
+    request.upload.onload = () => onProgress(null);
+    request.onload = () => {
+      try {
+        if (request.status < 200 || request.status >= 300) {
+          const detail = request.response?.detail ?? request.response?.message;
+          throw new Error(typeof detail === "string" ? detail : "Could not open the files");
+        }
+        resolve(openedManifest(request.response));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    request.onerror = () => reject(new Error("Upload failed. Check your connection and try again."));
+    request.onabort = () => reject(signal.reason);
+    request.onloadend = () => signal.removeEventListener("abort", abort);
+    signal.addEventListener("abort", abort, { once: true });
+    request.send(body);
   });
-  if (!response.ok) throw new Error(await responseMessage(response, "Could not open the files"));
-  const result = (await response.json()) as Manifest | { manifest?: Manifest };
-  const manifest = "manifest" in result && result.manifest ? result.manifest : result as Manifest;
-  validateManifest(manifest, "The opened trajectory is incomplete");
+}
+
+function openedManifest(result: Manifest | { manifest?: Manifest } | null): Manifest {
+  const manifest = result && "manifest" in result && result.manifest ? result.manifest : result as Manifest | null;
+  const error = "The opened trajectory is incomplete";
+  if (!manifest) throw new Error(error);
+  validateManifest(manifest, error);
   return manifest;
 }
 

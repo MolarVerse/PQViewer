@@ -504,7 +504,9 @@ class PQTrajectoryDataset:
         reference_residues: Sequence[Any] | None = None,
         md_format: MDEngineFormat | str = MDEngineFormat.PQ,
         name: str | None = None,
+        allowed_root: Path | None = None,
     ) -> None:
+        self._allowed_root = allowed_root
         self.path = Path(trajectory_path).expanduser().resolve()
         if not self.path.is_file():
             raise FileNotFoundError(self.path)
@@ -1018,6 +1020,9 @@ class PQTrajectoryDataset:
             for extension in _COMPANION_SPECS[key].extensions
         ]
         existing = [path for path in matches if path.is_file()]
+        if self._allowed_root is not None:
+            resolved = [path.resolve() for path in existing]
+            existing = [path for path in resolved if path.is_relative_to(self._allowed_root)]
         return existing[0] if len(existing) == 1 else None
 
     def _trajectory_stem(self) -> str:

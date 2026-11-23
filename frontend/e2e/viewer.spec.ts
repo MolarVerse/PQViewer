@@ -93,6 +93,7 @@ async function openPeriodicFixture(page: Page): Promise<void> {
 async function openFixture(page: Page, fixture: string, title: string): Promise<void> {
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const chooser = await chooserPromise;
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
@@ -115,6 +116,7 @@ async function openFixtureBundle(
 ): Promise<void> {
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const chooser = await chooserPromise;
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
@@ -464,6 +466,7 @@ test("opens a trajectory in the packaged viewer", async ({ page }) => {
   );
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const chooser = await chooserPromise;
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
@@ -656,6 +659,7 @@ test("opens a PQ input bundle through the same viewer flow", async ({ page }) =>
 
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const chooser = await chooserPromise;
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
@@ -911,6 +915,7 @@ test("plots supplied frame properties on demand", async ({ page }) => {
 
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const chooser = await chooserPromise;
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
@@ -1531,6 +1536,7 @@ test("streams a large periodic trajectory with bounded frame latency", async ({
   const atomCount = 1_000;
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
       && response.request().method() === "POST",
@@ -1866,6 +1872,7 @@ test("truncates long filenames at 320 px without losing the full name", async ({
   const name = "periodic-production-trajectory-with-a-deliberately-long-scientific-filename.extxyz";
   const chooserPromise = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   const openPromise = page.waitForResponse(
     (response) => response.url().endsWith("/api/open")
       && response.request().method() === "POST",
@@ -2192,6 +2199,7 @@ test("keeps a many-element key compact and opens the full list", async ({ page }
   await openPeriodicFixture(page);
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   await (await chooser).setFiles({
     name: "element-key.xyz",
     mimeType: "text/plain",
@@ -2213,6 +2221,7 @@ test("keeps organic and metal clusters visible while metal–linker rods are off
   await openPeriodicFixture(page);
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   await (await chooser).setFiles({
     name: "metal-linker.xyz",
     mimeType: "text/plain",
@@ -2235,6 +2244,7 @@ test("adds an atom with Shift-click without starting a selection box", async ({ 
   await openPeriodicFixture(page);
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   await (await chooser).setFiles({
     name: "pick.xyz",
     mimeType: "text/plain",
@@ -2325,6 +2335,7 @@ test("fits the solute rather than the periodic cell after hiding water", async (
   await openPeriodicFixture(page);
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
   await (await chooser).setFiles({
     name: "solvated-carbon.extxyz",
     mimeType: "text/plain",
@@ -2350,4 +2361,44 @@ test("fits the solute rather than the periodic cell after hiding water", async (
   await expect(scene).toHaveAttribute("data-atom-count", "1");
   await page.getByRole("button", { name: "Fit", exact: true }).click();
   expect(await carbonPixels()).toBeGreaterThan(Math.max(100, initial * 2));
+});
+
+test("browses from the launch folder and opens a server file without uploading", async ({ page }) => {
+  await openPeriodicFixture(page);
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Open files" });
+    await dialog.getByRole("button", { name: "examples", exact: true }).click();
+    await expect(dialog.getByText("Launch folder / examples")).toBeVisible();
+    await dialog.getByRole("button", { name: "Parent folder" }).click();
+    await expect(dialog.getByRole("button", { name: "examples", exact: true })).toBeVisible();
+    await dialog.getByRole("button", { name: "examples", exact: true }).click();
+    const response = page.waitForResponse((result) => result.url().endsWith("/api/open/server"));
+    await dialog.getByRole("button", { name: "periodic-boundary.extxyz", exact: true }).click();
+    expect((await response).ok()).toBe(true);
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("progressbar", { name: "Upload progress" })).toHaveCount(0);
+  }
+});
+
+test("shows upload progress before opening a file from this device", async ({ page, context }) => {
+  await openPeriodicFixture(page);
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("Network.emulateNetworkConditions", {
+    offline: false, latency: 30, downloadThroughput: -1, uploadThroughput: 128 * 1024,
+  });
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Upload from this device" }).click();
+  await (await chooser).setFiles({
+    name: "slow-upload.xyz",
+    mimeType: "text/plain",
+    buffer: Buffer.from(`1\n${"upload ".repeat(64_000)}\nCl 0 0 0\n`),
+  });
+  const progress = page.getByRole("progressbar", { name: "Upload progress" });
+  await expect(progress).toBeVisible();
+  await expect(progress).toHaveAttribute("value", /^[1-9][0-9]?$/);
+  await expect(page).toHaveTitle("slow-upload.xyz · PQViewer");
+  await expect(progress).toHaveCount(0);
 });

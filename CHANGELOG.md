@@ -7,6 +7,8 @@ user-visible changes.
 
 ### Added
 
+- Browse run subfolders from Open without uploading server files, and see progress when uploading from your device
+
 - Add first steps and a guide link to Help, with a separate keyboard shortcuts popup
 - Choose a sampled RDF preview or a cancellable full calculation over every selected frame
 
