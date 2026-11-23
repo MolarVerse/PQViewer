@@ -146,6 +146,7 @@ export interface ScenePresentation {
   };
   cell: boolean;
   bonds: boolean;
+  metalLinkerBonds?: boolean;
   forces: boolean;
   velocities: boolean;
   atomScale: number;

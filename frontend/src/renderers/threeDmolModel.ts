@@ -7,6 +7,7 @@ import {
   imageTranslation,
   minimumImageBondShift,
   sceneBondSegments,
+  displayedBondPairs,
   unwrapPointNear,
 } from "../scene/model";
 import type {
@@ -193,7 +194,8 @@ export function buildDmolScenePlan(
     );
   }
 
-  const shapeBonds = model.bonds.filter(([left, right]) => (
+  const visibleBonds = displayedBondPairs(model, presentation);
+  const shapeBonds = visibleBonds.filter(([left, right]) => (
     (presentation.wrap === "atom" || presentation.wrap === "unwrapped")
     && minimumImageBondShift(
       model.positions,
@@ -206,7 +208,7 @@ export function buildDmolScenePlan(
   const shapeBondKeys = new Set(shapeBonds.map(([left, right]) => bondKey(left, right)));
   if (presentation.bonds) {
     for (const image of model.images) {
-      for (const [left, right] of model.bonds) {
+      for (const [left, right] of visibleBonds) {
         if (shapeBondKeys.has(bondKey(left, right))) continue;
         const leftInstance = instanceByAtomImage.get(atomImageKey(left, image));
         const rightInstance = instanceByAtomImage.get(atomImageKey(right, image));
@@ -240,6 +242,7 @@ export function buildDmolScenePlan(
       presentation.water,
       presentation.hydrogens ? 1 : 0,
       presentation.bonds ? 1 : 0,
+      presentation.metalLinkerBonds ? 1 : 0,
       presentation.color,
       manifest.topology.residues?.length ?? 0,
     ].join("|"),
