@@ -7687,3 +7687,19 @@ button.measurement-plot__legend-item:hover {
   color: var(--muted);
   font-weight: 500;
 }
+
+.formula-readout strong {
+  white-space: normal;
+}
+
+.formula-readout strong > span {
+  display: inline-block;
+  color: inherit;
+}
+
+@media (min-width: 480px) and (max-width: 760px) and (max-height: 520px) {
+  .workbench-open .canvas-controls {
+    right: calc(min(320px, 48vw) + 8px);
+    width: auto;
+  }
+}

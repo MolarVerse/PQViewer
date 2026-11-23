@@ -20,6 +20,7 @@ user-visible changes.
 
 ### Fixed
 
+- Keep camera controls clear of the inspector and wrap formulas between elements
 - Make small atoms easier to pick and show the measured value first
 
 ## [0.2.2] - 2026-11-17

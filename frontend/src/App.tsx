@@ -5191,7 +5191,11 @@ function SelectionSummaryPanel({
   if (!summary) return <p className="quiet-copy">Selection geometry is unavailable.</p>;
   return <div className="inspector-content selection-summary-panel">
     <section className="readout-section">
-      <Readout label="Formula" value={summary.formula || "—"} />
+      <div className="readout formula-readout"><span>Formula</span><strong>
+        {(summary.formula.match(/[A-Z][a-z]*[0-9]*/g) ?? ["—"]).map((part, index) => (
+          <span key={index}>{part}</span>
+        ))}
+      </strong></div>
       <Readout label="Occurrences" value={summary.count.toLocaleString()} />
       {uniqueAtoms !== summary.count && (
         <Readout label="Unique atoms" value={uniqueAtoms.toLocaleString()} />
