@@ -2306,3 +2306,17 @@ test("opens Help and Keyboard shortcuts in separate popups", async ({ page }) =>
     await expect(help).toHaveCount(0);
   }
 });
+
+test("explains how to recover when the browser has no WebGL", async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const canvas of [HTMLCanvasElement.prototype, OffscreenCanvas.prototype]) {
+      const getContext = canvas.getContext;
+      canvas.getContext = function (type: string, ...options: unknown[]) {
+        if (type.includes("webgl")) return null;
+        return Reflect.apply(getContext, this, [type, ...options]);
+      } as typeof getContext;
+    }
+  });
+  await page.goto("/");
+  await expect(page.getByRole("alert").filter({ hasText: "3D view could not start" })).toContainText("WebGL 2");
+});

@@ -3663,6 +3663,20 @@ button.measurement-plot__legend-item:hover {
   height: 100% !important;
 }
 
+.renderer-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  padding: 1rem;
+  text-align: center;
+}
+
+.renderer-error p {
+  max-width: 36ch;
+}
+
 .publication-renderer-source {
   position: absolute;
   z-index: -1;

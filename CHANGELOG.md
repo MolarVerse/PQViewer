@@ -24,6 +24,8 @@ user-visible changes.
 
 ### Fixed
 
+- Explain how to recover when the 3D view cannot start instead of leaving a blank viewport
+
 - Keep camera controls clear of the inspector and wrap formulas between elements
 - Make small atoms easier to pick and show the measured value first
 - Keep playback frames in order and show the displayed frame while the next frame loads
