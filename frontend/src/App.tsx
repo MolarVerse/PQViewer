@@ -1842,6 +1842,7 @@ export default function App() {
       frameStart: value.frameStart,
       frameStop: value.frameStop,
       frameStep: value.frameStep,
+      full: value.full,
       bins: value.bins,
       rMax: value.rMax,
     }, controller.signal)

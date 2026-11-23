@@ -361,7 +361,7 @@ export function PlotShelf({
       <header className="measurement-plot__header">
         <div className="measurement-plot__meta">
           <strong title={title}>{title}</strong>
-          <span title={complete ? status : undefined}>{complete ? status : "Loading data"}</span>
+          <span title={complete ? status : undefined}>{complete ? status : plot.kind === "rdf" ? "Calculating · close to cancel" : "Loading data"}</span>
         </div>
         <div className="measurement-plot__legend" role="group" aria-label="Current values">
           {sampleText && <output aria-live="off">{sampleText}</output>}
