@@ -1,3 +1,4 @@
+import { appApi } from "./runEmbed";
 import type {
   DisplaySeries,
   FrameData,
@@ -87,7 +88,7 @@ export interface RdfAnalysisResult {
 
 export async function getManifest(): Promise<Manifest> {
   const response = await fetch(
-    STATIC_DEMO ? `${STATIC_DEMO_DATA}/manifest.json` : "/api/manifest",
+    STATIC_DEMO ? `${STATIC_DEMO_DATA}/manifest.json` : appApi("/api/manifest"),
     { headers: { Accept: "application/json" } },
   );
   if (!response.ok) throw new Error(await responseMessage(response, "Could not load the trajectory"));
@@ -98,7 +99,7 @@ export async function getManifest(): Promise<Manifest> {
 
 export async function watchTrajectory(generation: string, signal: AbortSignal): Promise<Manifest | null> {
   const query = new URLSearchParams({ watch_generation: generation });
-  const response = await fetch(`/api/refresh?${query}`, { method: "POST", signal });
+  const response = await fetch(appApi(`/api/refresh?${query}`), { method: "POST", signal });
   if (response.status === 204) return null;
   if (!response.ok) throw new Error(await responseMessage(response, "Could not refresh the trajectory"));
   const manifest = (await response.json()) as Manifest;
@@ -108,7 +109,7 @@ export async function watchTrajectory(generation: string, signal: AbortSignal): 
 
 export async function getInitialRecipe(): Promise<unknown> {
   if (STATIC_DEMO) return null;
-  const response = await fetch("/api/initial-recipe", {
+  const response = await fetch(appApi("/api/initial-recipe"), {
     headers: { Accept: "application/json" },
   });
   if (!response.ok) {
@@ -124,7 +125,7 @@ export async function getSelectedPositions(
   if (STATIC_DEMO) {
     throw new Error("Trajectory analysis is available in the local Python viewer");
   }
-  const response = await fetch("/api/positions", {
+  const response = await fetch(appApi("/api/positions"), {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -156,7 +157,7 @@ export async function runRdfAnalysis(
   if (STATIC_DEMO) {
     throw new Error("Pair analysis is available in the local Python viewer");
   }
-  const response = await fetch("/api/analysis/rdf", {
+  const response = await fetch(appApi("/api/analysis/rdf"), {
     method: "POST",
     headers: {
       Accept: "application/json",
@@ -192,14 +193,14 @@ export interface LaunchFolderEntry {
 }
 
 export async function listLaunchFolder(path: string, signal: AbortSignal): Promise<LaunchFolderEntry[] | null> {
-  const response = await fetch(`/api/open/folder?path=${encodeURIComponent(path)}`, { signal });
+  const response = await fetch(appApi(`/api/open/folder?path=${encodeURIComponent(path)}`), { signal });
   if (!response.ok) throw new Error(await responseMessage(response, "Could not browse that folder"));
   const result: { entries: LaunchFolderEntry[] | null } = await response.json();
   return result.entries;
 }
 
 export async function openServerFile(path: string, signal: AbortSignal): Promise<Manifest> {
-  const response = await fetch("/api/open/server", {
+  const response = await fetch(appApi("/api/open/server"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
@@ -224,7 +225,7 @@ export function openFiles(
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     const abort = () => request.abort();
-    request.open("POST", "/api/open");
+    request.open("POST", appApi("/api/open"));
     request.responseType = "json";
     request.setRequestHeader("Accept", "application/json");
     request.upload.onprogress = (event) => {
@@ -289,7 +290,7 @@ export async function getFrame(
   }
   if (coordinates === "unwrapped") parameters.push("coordinates=unwrapped");
   const query = parameters.length > 0 ? `?${parameters.join("&")}` : "";
-  const response = await fetch(`/api/frames/${index}${query}`, {
+  const response = await fetch(appApi(`/api/frames/${index}${query}`), {
     headers: { Accept: "application/octet-stream" },
     signal,
   });

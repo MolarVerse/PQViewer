@@ -3,6 +3,10 @@
 PQViewer follows [Semantic Versioning](https://semver.org/). This file records
 user-visible changes.
 
+## [Unreleased]
+
+- Open live run output from PQSetup in the same browser.
+
 ## [0.3.0] - 2026-11-23
 
 ### Added
