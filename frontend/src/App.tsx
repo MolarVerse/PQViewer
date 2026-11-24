@@ -1,3 +1,4 @@
+import { appApi, runEmbedded } from "./runEmbed";
 import { FolderOpen, Image, SlidersHorizontal } from "lucide-react";
 import type { ReactNode } from "react";
 import { AppHeader, AutoRefreshButton, HeaderStatus, HelpButton, SearchTrigger, useHealthProbe } from "@molarverse/pq-design";
@@ -251,9 +252,9 @@ function isViewerHealth(value: unknown): value is { status: "ok" } {
 
 export default function App() {
   const staticDemo = isStaticDemoMode();
-  const health = useHealthProbe(staticDemo ? null : "/api/health", isViewerHealth);
+  const health = useHealthProbe(staticDemo ? null : appApi("/api/health"), isViewerHealth);
   const [graphicsError, setGraphicsError] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(runEmbedded);
   const [watchFailed, setWatchFailed] = useState(false);
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
